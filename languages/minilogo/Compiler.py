@@ -4,6 +4,7 @@ from antlr4 import *
 
 # Language specific
 from languages.minilogo.syntax import LanguageParser
+from languages.minilogo.instructions.Addition import Addition
 from languages.minilogo.instructions.Color import Color
 from languages.minilogo.instructions.Division import Division
 from languages.minilogo.instructions.EraseValueFromHeap import EraseValueFromHeap
@@ -22,12 +23,26 @@ from languages.minilogo.instructions.Subtraction import Subtraction
 from backend.Bytecode import Bytecode
 from backend.Environment import Environment
 from backend.instructions.Value import Value
+from backend.instructions.SetLineNumber import SetLineNumber
 
 class Compiler(ParseTreeVisitor):
+
+    def __init__(self):
+        super().__init__()
+        self._last_emitted_line = -1  # Track last line number emitted
+
+    def _emit_line_number(self, ctx):
+        """Emit a SetLineNumber instruction if the line has changed"""
+        if hasattr(ctx, 'start') and ctx.start is not None:
+            line_num = ctx.start.line
+            if line_num != self._last_emitted_line:
+                self._bytecode.add(SetLineNumber(line_num))
+                self._last_emitted_line = line_num
 
     # New implementation
     # Adding control flow, for loop
     def visitForAssign(self, ctx: LanguageParser.ForAssignContext):
+        self._emit_line_number(ctx)
 
         # We only need random end loop identifier since the starting point exist already
         end_loop_identifier = uuid.uuid4().hex[:8]
@@ -83,6 +98,7 @@ class Compiler(ParseTreeVisitor):
         self._bytecode.add(EraseValueFromHeap([start_loop_identifier, end_loop_identifier]))
 
     def visitForVar(self, ctx: LanguageParser.ForVarContext):
+        self._emit_line_number(ctx)
 
         start_loop_identifier = uuid.uuid4().hex[:8]
         end_loop_identifier = uuid.uuid4().hex[:8]
@@ -147,6 +163,7 @@ class Compiler(ParseTreeVisitor):
             self.visit(command)
 
     def visitVarAssignment(self, ctx: LanguageParser.VarAssignmentContext):
+        self._emit_line_number(ctx)
 
         # Evaluate value candidate
         self.visit(ctx.expression())
@@ -158,10 +175,12 @@ class Compiler(ParseTreeVisitor):
         self._bytecode.add(StoreValue())
 
     def visitMove(self, ctx: LanguageParser.MoveContext):
+        self._emit_line_number(ctx)
 
         # In original implementation, movement is only represented by integers
         # Now, it uses an expression that might be a result from arithmetic operation with integers or
         # value of a particular variable
+
         self.visit(ctx.x)
         self.visit(ctx.y)
         self._bytecode.add(Move())
@@ -219,10 +238,12 @@ class Compiler(ParseTreeVisitor):
             self.visit(ctx.expression())
 
     def visitColor(self, ctx: LanguageParser.ColorContext):
+        self._emit_line_number(ctx)
         self._bytecode.add(Value(ctx.code.text))
         self._bytecode.add(Color())
 
     def visitDraw(self, ctx: LanguageParser.DrawContext):
+        self._emit_line_number(ctx)
         self._bytecode.add(StartDrawing())
         self.visitChildren(ctx)
         self._bytecode.add(StopDrawing())

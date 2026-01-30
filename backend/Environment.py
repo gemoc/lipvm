@@ -8,6 +8,7 @@ class Environment:
         self._stack = Stack()
         self._globals = {}
         self._heap = {}
+        self._current_line = 0  # Track current source line number
 
     @property
     def ip(self):
@@ -29,6 +30,14 @@ class Environment:
     def heap(self):
 
         return self._heap
+
+    @property
+    def current_line(self):
+        return self._current_line
+
+    @current_line.setter
+    def current_line(self, line):
+        self._current_line = line
 
     def remove_key_from_heap(self, key: str):
 

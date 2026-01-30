@@ -1,15 +1,29 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lipvm"
 version = "0.1.0"
-description = "Add your description here"
+description = "LipVM - A stack-based virtual machine with LESP (Language Execution Server Protocol)"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "antlr4-python3-runtime>=4.13.2",
     "debugpy>=1.8.19",
 ]
 
+[project.scripts]
+lesp = "lesp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lesp*", "backend*", "languages*"]
+
 [tool.uv.workspace]
 members = [
-    "src/lipvm",
+    "src/lesp",
 ]
+
+[tool.uv]
+package = true
