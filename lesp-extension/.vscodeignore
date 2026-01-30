@@ -1,0 +1,9 @@
+node_modules
+.vscode-test/
+src/
+tsconfig.json
+*.ts
+.git
+.gitignore
+*.vsix
+PACKAGING.md

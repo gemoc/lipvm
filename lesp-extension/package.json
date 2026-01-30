@@ -1,0 +1,124 @@
+{
+    "name": "lesp-runner",
+    "displayName": "LESP Runner",
+    "description": "Debug and run programs with LESP - step forward and backward through execution",
+    "version": "0.0.1",
+    "publisher": "lesp",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Debuggers"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "vsce package",
+        "vscode:prepublish": "npm run compile"
+    },
+    "devDependencies": {
+        "@types/node": "^16.x",
+        "@types/vscode": "^1.60.0",
+        "@vscode/vsce": "^3.7.1",
+        "typescript": "^5.0.0"
+    },
+    "contributes": {
+        "configuration": {
+            "title": "LESP Runner",
+            "properties": {
+                "lespRunner.extensionAssociations": {
+                    "type": "object",
+                    "default": {},
+                    "description": "File extension associations with language and language module",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                            "language": {
+                                "type": "string",
+                                "description": "Language name"
+                            },
+                            "languageModule": {
+                                "type": "string",
+                                "description": "Python package path for language module"
+                            },
+                            "lespBinary": {
+                                "type": "string",
+                                "description": "Path to LESP binary (e.g., .venv/bin/lesp)"
+                            }
+                        },
+                        "required": [
+                            "language",
+                            "languageModule",
+                            "lespBinary"
+                        ]
+                    }
+                }
+            }
+        },
+        "commands": [
+            {
+                "command": "lesp.configure",
+                "title": "LESP: Configure",
+                "icon": "$(gear)"
+            },
+            {
+                "command": "lesp.run",
+                "title": "LESP: Run",
+                "icon": "$(play)"
+            },
+            {
+                "command": "lesp.stepForward",
+                "title": "LESP: Step Forward",
+                "icon": "$(debug-step-over)"
+            },
+            {
+                "command": "lesp.stepBackward",
+                "title": "LESP: Step Backward",
+                "icon": "$(debug-step-back)"
+            },
+            {
+                "command": "lesp.viewTrace",
+                "title": "LESP: View Trace",
+                "icon": "$(list-tree)"
+            },
+            {
+                "command": "lesp.viewCanvas",
+                "title": "LESP: View Canvas",
+                "icon": "$(symbol-color)"
+            },
+            {
+                "command": "lesp.viewBoth",
+                "title": "LESP: View Both",
+                "icon": "$(split-horizontal)"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "lesp.run",
+                "key": "f5"
+            }
+        ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "lesp-runner",
+                    "title": "LESP Runner",
+                    "icon": "$(debug-alt)"
+                }
+            ]
+        },
+        "views": {
+            "lesp-runner": [
+                {
+                    "id": "lespControls",
+                    "name": "Controls",
+                    "icon": "$(debug-alt)"
+                }
+            ]
+        }
+    }
+}
