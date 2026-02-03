@@ -1,21 +1,21 @@
-color #ff0000
+color(#ff0000)
 
-move 200 200
-down
-move 300 200
-up
+move(200,200)
+pen(down)
+move(300,200)
+pen(up)
+halt()
+color(#00ff00)
+pen(down)
+move(300, 300)
+pen(up)
 
-color #00ff00
-down
-move 300 300
-up
+color(#0000ff)
+pen(down)
+move(200, 300)
+pen(up)
 
-color #0000ff
-down
-move 200 300
-up
-
-color #ffff00
-down
-move 200 200
-up
+color(#ffff00)
+pen(down)
+move(200, 200)
+pen(up)

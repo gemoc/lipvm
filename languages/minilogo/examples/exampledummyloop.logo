@@ -1,15 +1,15 @@
-color #ff0000
+color(#ff0000)
 
 var = 0
 span = 100
 
 for var to 3 {
-    move 20+span 20+span
-    down
-    move 60+span 20+span
-    move 60+span 60+span
-    move 20+span 60+span
-    move 20+span 20+span
-    up
+    move(20+span, 20+span)
+    pen(down)
+    move(60+span, 20+span)
+    move(60+span, 60+span)
+    move(20+span, 60+span)
+    move(20+span, 20+span)
+    pen(up)
     span = span + 100
 }

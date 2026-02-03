@@ -1,47 +1,57 @@
 grammar Language;
 
-// Parser rules
-start: (command (NEWLINE+ | EOF))* EOF;
+// == Define parser rules ==
 
-move: 'move' x=expression y=expression;
+// Expressions
+variable: variableName=ID;
+literal: variable | NUMBER;
 
-color: 'color' code=COLOR;
+expression:
+    leftOperand=expression op=OPERATOR rightOperand=expression
+    | literal
+    | LPAREN expression RPAREN;
 
-draw: 'down' NEWLINE (move NEWLINE)* 'up';
+// Function calls
+arguments: expression (',' expression)*;
 
-block: LCBRACKET NEWLINE* (subcommands+=command NEWLINE*)* RCBRACKET;
+halt: 'halt' LPAREN RPAREN;
+move: 'move' LPAREN x=expression ',' y=expression RPAREN;
+color: 'color' LPAREN code=COLOR RPAREN;
+pen: 'pen' LPAREN status=('up'|'down') RPAREN;
 
-expression: leftVal=term (op=(PLUS|SUBSTRACT) rightVal=term)*;
+call: functionName=ID LPAREN args=arguments? RPAREN;
 
-term: leftVal=factor (op=(STAR|DIVIDE) rightVal=factor)*;
+// Function definition
+def: 'def' functionName=ID LPAREN params=parameters? RPAREN body;
+parameters: variableName=ID (',' variableName=ID)*;
 
-varAssignment: identifier=ID '=' init=expression;
+body: LCBRACKET (assignment | call | move | color | pen | halt | forloop | COMMENT)* RCBRACKET;
 
-factor: NUMBER |
-        LPAREN expression RPAREN |
-        ID;
+// Variable definition
+assignment: variableName=ID '=' value=expression;
 
+// Control structures
 forloop
-  : 'for' varAssignment 'to' end=expression block  # ForAssign
-  | 'for' varCall=ID       'to' end=expression block  # ForVar
+  : 'for' assignment 'to' end=expression body
+  | 'for' variable 'to' end=expression body
   ;
 
-command: draw | move | color | forloop | varAssignment;
+// Main rule
+main: (assignment | def | call | move | color | pen | halt | forloop | COMMENT)*;
 
-// Lexer rules
+// == Define lexer rules ==
 ID : [a-zA-Z][a-zA-Z0-9]*;
 NUMBER: '-'?[0-9]+;
 
-PLUS   : '+' ;
-SUBSTRACT   : '-' ;
-STAR   : '*' ;
-DIVIDE   : '/' ;
+OPERATOR: '+' | '-' | '*' | '/';
+
 LPAREN : '(' ;
 RPAREN : ')' ;
 LCBRACKET: '{';
 RCBRACKET: '}';
+
 HEX: '0'..'9' | 'a'..'f' | 'A'..'F';
 COLOR: '#' (HEX HEX HEX | HEX HEX HEX HEX HEX HEX);
 
-WS: [ ]+ -> skip;
-NEWLINE: ('\r'? '\n' | '\r')+;
+WS: [ \t\r\n]+ -> skip;
+COMMENT: ('//') ~( '\r' | '\n' )* -> channel(HIDDEN);

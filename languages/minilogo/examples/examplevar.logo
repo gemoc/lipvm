@@ -1,8 +1,8 @@
-color #ff0000
+color(#ff0000)
 
-var = 2
+var = 8
 
-move 20+(var*20) 20+(var*20)
-down
-move 30+(var*20) 20+(var*20)
-up
+move(20, 20)
+pen(down)
+move(20+(var*20), 20+(var*20))
+pen(up)
