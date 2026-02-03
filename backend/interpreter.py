@@ -1,3 +1,5 @@
+import traceback
+
 from antlr4.ParserRuleContext import ParserRuleContext
 
 from threading import Thread, Event
@@ -54,12 +56,19 @@ class Interpreter:
         :param tree: the AST to be visited
         :return: TODO: Return value not yet determined
         """
-        self._execution.wait()               # Stop the execution until proceed or step command
-        result = tree.accept(self._visitor)
-        if hasattr(tree, "stepNode"):
-            if not self._step.is_set() and self._execution.is_set():
-                Interpreter.EXECUTION_INTERRUPTED.set()
-            self._step.wait()
+        result = None
+        try:
+            self._execution.wait()  # Stop the execution until proceed or step command
+            result = tree.accept(self._visitor)
+            if hasattr(tree, "stepNode"):
+                if not self._step.is_set() and self._execution.is_set():
+                    Interpreter.EXECUTION_INTERRUPTED.set()
+                self._step.wait()
+        except Exception as exception:
+            Interpreter.EXECUTION_INTERRUPTED.set()
+            print("Exception while interpreting source code: " + str(exception))
+            traceback.print_exc()
+
         return result
 
 

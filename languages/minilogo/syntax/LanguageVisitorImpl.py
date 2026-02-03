@@ -1,6 +1,7 @@
 from antlr4 import *
 from copy import deepcopy
 
+from backend.annotation import step
 from backend.interpreter import Interpreter
 
 from languages.minilogo.syntax.LanguageParser import LanguageParser
@@ -67,6 +68,7 @@ class LanguageVisitorImpl(ParseTreeVisitor):
     def visitArguments(self, ctx: LanguageParser.ArgumentsContext):
         return [self._interpreter.visit(arg) for arg in ctx.expression()]
 
+    @step
     def visitMove(self, ctx: LanguageParser.MoveContext):
         x = self._interpreter.visit(ctx.expression(0))
         y = self._interpreter.visit(ctx.expression(1))
