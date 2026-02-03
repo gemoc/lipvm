@@ -1,45 +1,30 @@
-import sys
+from sys import argv
+from importlib import import_module
 
-from antlr4 import *
+from jsonrpclib.SimpleJSONRPCServer import SimpleJSONRPCServer
 
-from languages.minilogo.syntax.LanguageLexer import LanguageLexer
-from languages.minilogo.syntax.LanguageParser import LanguageParser
-from languages.minilogo.Compiler import Compiler
-
-from backend.Environment import Environment
-from backend.Execution import Execution
-
-from io import StringIO
+from backend.parser import Parser
+from backend.interpreter import Interpreter
+from backend.protocols import DebugAdapterProtocol, LanguageExecutionServerProtocol
 
 class LipVM:
 
-    def __init__(self):
-        self._compiler = Compiler()
-        self._executions = []
+    def __init__(self, module: str):
+        # Import language visitor from module
+        LanguageVisitor = getattr(import_module(module + ".LanguageVisitor"), 'LanguageVisitor')
 
-    def compile(self, stream):
-        lexer = LanguageLexer(stream)
-        stream = CommonTokenStream(lexer)
-        
-        parser = LanguageParser(stream)
-        parser.removeErrorListeners()
+        # Create the parser and interpreter
+        parser = Parser(module)
+        self._interpreter = Interpreter(parser, LanguageVisitor)
 
-        tree = parser.start()
+    def serve(self, port: int) -> None:
+        server = SimpleJSONRPCServer(('localhost', port))
 
-        if parser.getNumberOfSyntaxErrors() > 0:
-            raise Exception("Syntax errors")
-        
-        return Execution(self._compiler.compile(tree), Environment())
+        DebugAdapterProtocol(self._interpreter, server)
+        LanguageExecutionServerProtocol(self._interpreter, server)
 
-    def compile_file(self, path):
-        return self.compile(FileStream(path))
-    
-    def compile_code(self, code):
-        return self.compile(InputStream(code))
+        server.serve_forever()
 
-
-if __name__ == '__main__':
-    vm = LipVM()
-    execution = vm.compile_file(sys.argv[1])
-    execution.start()
-    print(execution.environment)
+    @property
+    def interpreter(self) -> Interpreter:
+        return self._interpreter
