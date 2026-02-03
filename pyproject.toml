@@ -4,12 +4,15 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
+testpaths = "tests"
 dependencies = [
     "antlr4-python3-runtime>=4.13.2",
     "debugpy>=1.8.19",
+    "jsonrpclib>=0.2.1",
+    "semantic>=1.0.3",
 ]
 
-[tool.uv.workspace]
-members = [
-    "src/lipvm",
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]

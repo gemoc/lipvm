@@ -4,7 +4,3 @@
 .antlr/
 .idea/
 __pycache__/
-
-**/syntax/*.interp
-**/syntax/*.tokens
-**/syntax/*.py
