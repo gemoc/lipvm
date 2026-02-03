@@ -11,7 +11,7 @@ class LipVM:
 
     def __init__(self, module: str):
         # Import language visitor from module
-        LanguageVisitor = getattr(import_module(module + ".LanguageVisitor"), 'LanguageVisitor')
+        LanguageVisitor = getattr(import_module(module + ".LanguageVisitorImpl"), 'LanguageVisitorImpl')
 
         # Create the parser and interpreter
         parser = Parser(module)
