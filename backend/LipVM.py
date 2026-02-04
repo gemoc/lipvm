@@ -1,4 +1,3 @@
-from sys import argv
 from importlib import import_module
 
 from jsonrpclib.SimpleJSONRPCServer import SimpleJSONRPCServer
@@ -11,11 +10,11 @@ class LipVM:
 
     def __init__(self, module: str):
         # Import language visitor from module
-        LanguageVisitor = getattr(import_module(module + ".LanguageVisitorImpl"), 'LanguageVisitorImpl')
+        interpreter = getattr(import_module(module + ".LanguageInterpreter"), 'LanguageInterpreter')
 
         # Create the parser and interpreter
         parser = Parser(module)
-        self._interpreter = Interpreter(parser, LanguageVisitor)
+        self._interpreter = interpreter(parser)
 
     def serve(self, port: int) -> None:
         server = SimpleJSONRPCServer(('localhost', port))
