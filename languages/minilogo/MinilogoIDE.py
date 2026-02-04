@@ -3,7 +3,7 @@ from tkinter import ttk
 
 from backend.lipvm import LipVM
 
-class Minilogo(Tk):
+class MinilogoIDE(Tk):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -14,7 +14,7 @@ class Minilogo(Tk):
         self.components()
         self.layout()
 
-        self._vm = LipVM("languages.minilogo.syntax")
+        self._vm = LipVM("languages.minilogo")
 
     def components(self):
         self._panes = ttk.PanedWindow(self, orient=HORIZONTAL)
@@ -30,21 +30,8 @@ class Minilogo(Tk):
         self._canvas = Canvas(self._preview_pane, bg="white")
         self._buttons = Frame(self._preview_pane)
 
-        # Slider represents the timeline. We keep it enabled so it can display a position
-        # and (optionally) allow manual navigation too. Buttons will also move it.
-        #self._slider_current_position = 0
-        #self._slider = Scale(
-        #    self._buttons,
-        #    from_=0,
-        #    to=0,
-        #    orient=HORIZONTAL,
-        #    state=DISABLED,
-        #    command=self.navigate
-        #)
-
         self._start_button = Button(self._buttons, text="Run", command=self.start)
         self._step_forward_button = Button(self._buttons, text="Step forward", command=self.step_forward)
-        #self._step_backward_button = Button(self._buttons, text="Step backward", command=self.step_backward)
 
     def layout(self):
         # Main layout
@@ -59,16 +46,12 @@ class Minilogo(Tk):
 
         # Buttons layout
         self._buttons.grid_rowconfigure(0, weight=1)
-        self._buttons.grid_rowconfigure(1, weight=1)
 
         self._buttons.grid_columnconfigure(0, weight=1)
         self._buttons.grid_columnconfigure(1, weight=1)
-        self._buttons.grid_columnconfigure(2, weight=1)
 
-        #self._slider.grid(row=0, column=0, columnspan=3, sticky='nesw')
-        self._start_button.grid(row=1, column=0, sticky='nesw')
-        self._step_forward_button.grid(row=1, column=1, sticky='nesw')
-        #self._step_backward_button.grid(row=1, column=2, sticky='nesw')
+        self._start_button.grid(row=0, column=0, sticky='nesw')
+        self._step_forward_button.grid(row=0, column=1, sticky='nesw')
 
     def code(self):
         return self._code.get('1.0', END)
@@ -97,4 +80,4 @@ class Minilogo(Tk):
                 )
 
 if __name__ == '__main__':
-    Minilogo().mainloop()
+    MinilogoIDE().mainloop()

@@ -4,7 +4,7 @@ from copy import deepcopy
 from backend.annotation import step
 from backend.interpreter import Interpreter
 
-from languages.minilogo.syntax.LanguageParser import LanguageParser
+from languages.minilogo.LanguageParser import LanguageParser
 
 class LanguageVisitorImpl(ParseTreeVisitor):
     """

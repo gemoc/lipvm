@@ -7,7 +7,7 @@ class InterpreterTests(TestCase):
 
     def test_interpret(self):
         # Given
-        vm = LipVM("languages.minilogo.syntax")
+        vm = LipVM("languages.minilogo")
 
         code = "move(200,200)"
         code += "pen(down)"
@@ -24,7 +24,7 @@ class InterpreterTests(TestCase):
 
     def test_halt_proceed(self):
         # Given
-        vm = LipVM("languages.minilogo.syntax")
+        vm = LipVM("languages.minilogo")
 
         code = "move(200,200)"
         code += "pen(down)"
@@ -48,7 +48,7 @@ class InterpreterTests(TestCase):
 
     def test_halt_step_proceed(self):
         # Given
-        vm = LipVM("languages.minilogo.syntax")
+        vm = LipVM("languages.minilogo")
 
         code = "move(200,200)"
         code += "pen(down)"
