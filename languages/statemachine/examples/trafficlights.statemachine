@@ -1,0 +1,39 @@
+statemachine TrafficLight
+
+events
+    switchCapacity
+    next
+
+initialState PowerOff
+
+state PowerOff
+    switchCapacity => RedLight
+    activate: {
+        print("PowerOff")
+    }
+end
+
+state RedLight
+    switchCapacity => PowerOff
+    next => GreenLight
+
+    activate: {
+        print("RedLight")
+    }
+end
+
+state YellowLight
+    switchCapacity => PowerOff
+    next => RedLight
+    activate: {
+        print("YellowLight")
+    }
+end
+
+state GreenLight
+    switchCapacity => PowerOff
+    next => YellowLight
+    activate: {
+        print("GreenLight")
+    }
+end
