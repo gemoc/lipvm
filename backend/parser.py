@@ -14,11 +14,11 @@ class Parser:
         stream = CommonTokenStream(lexer)
 
         parser = self._LanguageParser(stream)
-        parser.removeErrorListeners()
+        #parser.removeErrorListeners()
 
         tree = parser.main()
 
         if parser.getNumberOfSyntaxErrors() > 0:
-            raise Exception("Syntax errors")
+            raise Exception("Syntax errors") # TODO better error management
 
         return tree

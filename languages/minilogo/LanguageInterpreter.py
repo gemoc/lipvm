@@ -38,9 +38,11 @@ class LanguageInterpreter(Interpreter):
 
     def visitLiteral(self, ctx: LanguageParser.LiteralContext):
         if ctx.variable() is not None:
-             yield self.visit(ctx.variable())
-        yield int(ctx.NUMBER().getText())
+            yield self.visit(ctx.variable())
+        else:
+            yield int(ctx.NUMBER().getText())
 
+    @step
     def visitExpression(self, ctx: LanguageParser.ExpressionContext):
         if ctx.leftOperand is not None and ctx.rightOperand is not None:
 
@@ -104,8 +106,7 @@ class LanguageInterpreter(Interpreter):
                 raise Exception("Unexpected number of arguments: " + str(len(ctx.arguments())))
 
         # Creating a lexical closure
-        self._environment.scopes[self._environment.sp + 1] = deepcopy(self._environment.scopes[self._environment.sp])
-        self._environment.sp += 1
+        self._open_closure()
 
         # Binding arguments with parameters
         for i in range(len(parameters)):
@@ -115,11 +116,19 @@ class LanguageInterpreter(Interpreter):
         yield self.visit(body)
 
         # Return to previous scope
+        self._close_closure()
+
+    def _open_closure(self):
+        self._environment.scopes[self._environment.sp + 1] = deepcopy(self._environment.scopes[self._environment.sp])
+        self._environment.sp += 1
+
+    def _close_closure(self):
         self._environment.sp -= 1
 
     def visitDef(self, ctx: LanguageParser.DefContext):
         if ctx.parameters() is not None:
-            self._environment.functions[ctx.ID().getText()] = (yield self.visit(ctx.parameters()), ctx.body())
+            parameters = yield self.visit(ctx.parameters())
+            self._environment.functions[ctx.ID().getText()] = (parameters, ctx.body())
         else:
             self._environment.functions[ctx.ID().getText()] = ([], ctx.body())
 
@@ -134,6 +143,7 @@ class LanguageInterpreter(Interpreter):
         yield self._environment.scopes[self._environment.sp][ctx.ID().getText()]
 
     def visitForloop(self, ctx: LanguageParser.ForloopContext):
+        self._open_closure()
         if ctx.assignment() is not None:
             iterator = yield self.visit(ctx.assignment())
             variable = ctx.assignment().ID().getText()
@@ -150,6 +160,7 @@ class LanguageInterpreter(Interpreter):
         for iterator in range(limit):
             self._environment.scopes[self._environment.sp][variable] = iterator
             yield self.visit(ctx.body())
+        self._close_closure()
 
     def visitMain(self, ctx: LanguageParser.MainContext):
         self._environment.sp = 0

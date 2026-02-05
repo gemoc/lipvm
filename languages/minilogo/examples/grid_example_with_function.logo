@@ -1,0 +1,29 @@
+// Take a point of origin (top-left) and a size
+def square(x, y, size) {
+    move(x, y)
+    pen(down)
+    move(x+size, y)
+    move(x+size, y+size)
+    move(x, y+size)
+    move(x, y)
+    pen(up)
+}
+
+// Take a point of origin (top-left),
+// n, a number of squares on the x axis,
+// m, a number of squares on the y axis,
+// and a size
+def grid(x, y, n, m, size) {
+    coordsX = x
+    coordsY = y
+    for varX = 0 to n {
+        for varY = 0 to m {
+            square(coordsX, coordsY, size)
+            coordsY = coordsY + size
+        }
+       coordsX = coordsX + size
+    }
+}
+
+color(#0000f0)
+grid(100, 100, 10, 10, 20)
