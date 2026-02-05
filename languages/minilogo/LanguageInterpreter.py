@@ -42,7 +42,6 @@ class LanguageInterpreter(Interpreter):
         else:
             yield int(ctx.NUMBER().getText())
 
-    @step
     def visitExpression(self, ctx: LanguageParser.ExpressionContext):
         if ctx.leftOperand is not None and ctx.rightOperand is not None:
 
