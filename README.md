@@ -2,7 +2,6 @@
 
 ## Import the project
 
-
 **Step 1:** install **uv** the Python package and project manager. 
 
 On unix system use the following command:  
@@ -40,47 +39,40 @@ uv sync
 
 **Requirements:**
 
-- An ANTLR4 grammar file, e.g. `languages/Minilogo/syntax/Language.g4`.
+- An ANTLR4 grammar file, e.g. `languages/minilogo/Language.g4`.
   - For now the grammar must be named: **Language**.
   - The root parsing rule must be named **start**. 
 - A Java installation, version 21 or superior.
 - The `antlr-4.13.2-complete.jar` from https://www.antlr.org/download.html.
 
 ```shell
-java -jar antlr-4.13.2-complete.jar -Dlanguage=Python3 languages/Minilogo/syntax/Language.g4 -no-listener -visitor
+java -jar antlr-4.13.2-complete.jar -Dlanguage=Python3 languages/minilogo/syntax/Language.g4 -no-listener -visitor
 ```
 
-Upon the execution of this command, an AST visitor is generated: see `languages/Minilogo/syntax/LanguageVisitor.py`.  
+Upon the execution of this command, an AST visitor is generated: see `languages/minilogo/LanguageVisitor.py`.  
 
 ## Specify the semantic of a language
 
-Based on the generated visitor, create a `Compiler` class in the directory of your language: see `languages/Minilogo/Compiler.py`.
+**Step 1:** Copy the generated visitor, in the directory of your language and rename the file and class to `LanguageInterpreter`.  
+Example: `languages/minilogo/LanguageInterpreter.py`.  
 
-This class is expected to implement a `def compile(self, code)` method returning an instance of `Bytecode` (see at the root of the project).  
+**Step 2:** Modify the `LanguageInterpreter` class definition to extend `Interpreter` from the `backend.interpreter` module.
 
-This instance of `Bytecode` should hold a list of instructions to execute.  
-It is the responsibility of the language implementor to define these instructions.  
-To create one language instruction, create a class that implements the `def execute(self, stack, global_variables, heap)`.   
-This method defines the behavior of each of the language instruction.
-The method parameters represent:
-- **stack**: the underlying interpreter stack (instance of `Stack`)
-- **global_variables**: the global variables of the program
-- **heap**: the long term memory space
+**Step 3:** Create a constructor for the `LanguageInterpreter` class that takes a parameter of type `Parser` from `backend.parser` and invoke the parent constructor with it.  
+Example: `super().__init__(parser)`
 
-## Try Minilogo
+**Step 4:** Define the semantic of your language in the visit methods. The interpreter requires to use Python generators through:
+  - The **yield** keyword when visiting a subtree: `yield self.visit(tree)`, `yield self.visitChildren(tree)`.
+  - The **yield** keyword instead of standard **return** when defining a method's return value.
 
-To start the currently implemented LipVM with Minilogo, execute the following command:
-
-```shell
-python -m languages.minilogo.ide.Minilogo
-```
+The interpreter also expect all values manipulated by the execution to be declared as attributes of the `self._environment` object inherited from the `Interpreter` class.
 
 ## Debug
 
-To debug, for now I use `debugpy` using the following command taking `file.logo` (a logo code file) in argument:
+To debug, for now I use `debugpy` using the following command taking the module of my language to import `file.logo` (a logo code file) in argument:
 
 ```shell
-python -m debugpy --wait-for-client --listen 5678 backend/LipVM.py file.logo
+python -m debugpy --wait-for-client --listen 5678 main.py "languages.minilogo"
 ```
 
 Using VSCode you can use the following `launch.json` configuration to connect to the debugging session:
@@ -100,4 +92,12 @@ Using VSCode you can use the following `launch.json` configuration to connect to
       }
   ]
 }
+```
+
+## Try Minilogo IDE
+
+To start the currently implemented LipVM with Minilogo, execute the following command:
+
+```shell
+python -m languages.minilogo.MinilogoIDE
 ```
