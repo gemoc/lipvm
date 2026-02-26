@@ -81,7 +81,9 @@ class LanguageInterpreter(Interpreter):
         self._environment.pen_up = ctx.status.text == "up"
 
     def visitHalt(self, ctx: LanguageParser.HaltContext):
-        self.halt()
+        if not ctx in self._fired_halts: # Each halt command can be activated only once.
+            self._fired_halts.append(ctx)
+            self.halt()
 
     def visitCall(self, ctx: LanguageParser.CallContext):
         if not ctx.ID().getText() in self._environment.functions:
