@@ -20,6 +20,7 @@ class LanguageInterpreter(Interpreter):
     def __init__(self, parser: Parser):
         super().__init__(parser)
 
+    def initialize(self) -> None:
         # State of minilogo
         self._environment.color = "#FFFFFF"
         self._environment.pen_coordinates = (0, 0)
@@ -27,6 +28,7 @@ class LanguageInterpreter(Interpreter):
         self._environment.lines = []
 
         # State of execution
+        self._fired_halts = []
         self._environment.sp = -1  # Scope pointer
         self._environment.scopes = [None] * 100  # Closure scopes
         self._environment.functions = {}
