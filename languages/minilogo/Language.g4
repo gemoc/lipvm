@@ -4,11 +4,11 @@ grammar Language;
 
 // Expressions
 variable: variableName=ID;
-literal: variable | NUMBER;
+literal: NUMBER;
 
 expression:
     leftOperand=expression op=OPERATOR rightOperand=expression
-    | literal
+    | variable | literal
     | LPAREN expression RPAREN;
 
 // Function calls

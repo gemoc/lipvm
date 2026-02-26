@@ -112,11 +112,14 @@ class Interpreter(ParseTreeVisitor):
         :param node: the parent node of which to visit the children
         :return: a list containing the results of the visit of the children
         """
+        results = []
         n = node.getChildCount()
         for i in range(n):
             c = node.getChild(i)
             if isinstance(c, RuleContext):
-                yield self.visit(c)
+                result = yield self.visit(c)
+                results.append(result)
+        yield results
 
     def halt(self):
         self._halt = True
