@@ -1,7 +1,7 @@
 from antlr4 import *
 from copy import deepcopy
 
-from backend.interpreter import Interpreter
+from backend.interpreter import Interpreter, step
 
 from languages.minilogo.LanguageParser import LanguageParser
 
@@ -63,16 +63,15 @@ class LanguageInterpreter(Interpreter):
     def visitArguments(self, ctx: LanguageParser.ArgumentsContext):
         yield self.visitChildren(ctx)
 
+    @step
     def visitMove(self, ctx: LanguageParser.MoveContext):
         x = yield self.visit(ctx.expression(0))
         y = yield self.visit(ctx.expression(1))
 
-        yield self.signalBeginStep()
         if not self._environment.pen_up:
             self._environment.lines.append((self._environment.pen_coordinates, (x, y), self._environment.color))
 
         self._environment.pen_coordinates = (x, y)
-        yield self.signalEndStep()
 
     def visitColor(self, ctx: LanguageParser.ColorContext):
         self._environment.color = ctx.COLOR().getText()

@@ -47,6 +47,20 @@ class SignalEndStep(Step):
         else:
             super().__init__(handler)
 
+def step(visit_method):
+    """
+    Function to use as a decorator for visit methods in a LanguageInterpreter class.
+    :param visit_method: a visit method decorated with @step.
+    :return: a wrapper function that annotates the node in argument to add the stepNode = True attribute.
+    """
+    def wrapper(*args, **kwargs):
+        yield args[0].signalBeginStep()
+        result = yield visit_method(*args, **kwargs)
+        yield args[0].signalEndStep()
+        return result
+    return wrapper
+
+
 class Interpreter(ParseTreeVisitor):
     """
     AST visitor to extend in order to define the interpretation of a program.
@@ -172,6 +186,7 @@ class Interpreter(ParseTreeVisitor):
 
     # Halt and step commands to use from the interpreter subclasses.
     # Ex: yield signalHalt()
+
     def signalHalt(self) -> Halt:
         return Halt()
 
