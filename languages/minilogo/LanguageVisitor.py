@@ -1,4 +1,4 @@
-# Generated from languages/Minilogo/syntax/Language.g4 by ANTLR 4.13.2
+# Generated from languages/minilogo/Language.g4 by ANTLR 4.13.2
 from antlr4 import *
 if "." in __name__:
     from .LanguageParser import LanguageParser

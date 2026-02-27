@@ -20,6 +20,7 @@ class LanguageInterpreter(Interpreter):
     def __init__(self, parser: Parser):
         super().__init__(parser)
 
+    def initialize(self) -> None:
         # State of minilogo
         self._environment.color = "#FFFFFF"
         self._environment.pen_coordinates = (0, 0)
@@ -27,6 +28,7 @@ class LanguageInterpreter(Interpreter):
         self._environment.lines = []
 
         # State of execution
+        self._fired_halts = []
         self._environment.sp = -1  # Scope pointer
         self._environment.scopes = [None] * 100  # Closure scopes
         self._environment.functions = {}
@@ -37,10 +39,7 @@ class LanguageInterpreter(Interpreter):
         yield self._environment.scopes[self._environment.sp][ctx.ID().getText()]
 
     def visitLiteral(self, ctx: LanguageParser.LiteralContext):
-        if ctx.variable() is not None:
-            yield self.visit(ctx.variable())
-        else:
-            yield int(ctx.NUMBER().getText())
+        yield int(ctx.NUMBER().getText())
 
     def visitExpression(self, ctx: LanguageParser.ExpressionContext):
         if ctx.leftOperand is not None and ctx.rightOperand is not None:
@@ -56,21 +55,14 @@ class LanguageInterpreter(Interpreter):
                 case _:
                     raise Exception("Unknown operator: " + str(ctx.OPERATOR().getText()))
 
-        elif ctx.literal() is not None:
-            yield self.visit(ctx.literal())
-
-        elif ctx.expression(0) is not None:
-            yield self.visit(ctx.expression(0))
-
         else:
-            raise Exception("Unrecognized expression: " + str(ctx))
+            results = yield self.visitChildren(ctx)
+            if len(results) > 1:
+                raise Exception("Unexpected number of results: " + str(len(results)) + " for expression: " + str(ctx))
+            yield results[0]
 
     def visitArguments(self, ctx: LanguageParser.ArgumentsContext):
-        arguments = []
-        for arg_node in ctx.expression():
-            arg = yield self.visit(arg_node)
-            arguments.append(arg)
-        yield arguments
+        yield self.visitChildren(ctx)
 
     @step
     def visitMove(self, ctx: LanguageParser.MoveContext):
@@ -89,7 +81,9 @@ class LanguageInterpreter(Interpreter):
         self._environment.pen_up = ctx.status.text == "up"
 
     def visitHalt(self, ctx: LanguageParser.HaltContext):
-        self.halt()
+        if not ctx in self._fired_halts: # Each halt command can be activated only once.
+            self._fired_halts.append(ctx)
+            self.halt()
 
     def visitCall(self, ctx: LanguageParser.CallContext):
         if not ctx.ID().getText() in self._environment.functions:
