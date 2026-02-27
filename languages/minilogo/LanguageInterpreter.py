@@ -1,8 +1,7 @@
 from antlr4 import *
 from copy import deepcopy
 
-from backend.annotation import step
-from backend.interpreter import Interpreter
+from backend.interpreter import Interpreter, step
 
 from languages.minilogo.LanguageParser import LanguageParser
 
@@ -83,7 +82,7 @@ class LanguageInterpreter(Interpreter):
     def visitHalt(self, ctx: LanguageParser.HaltContext):
         if not ctx in self._fired_halts: # Each halt command can be activated only once.
             self._fired_halts.append(ctx)
-            self.halt()
+            yield self.signalHalt()
 
     def visitCall(self, ctx: LanguageParser.CallContext):
         if not ctx.ID().getText() in self._environment.functions:
