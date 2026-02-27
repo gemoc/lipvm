@@ -1,7 +1,6 @@
 from antlr4 import *
 from copy import deepcopy
 
-from backend.annotation import step
 from backend.interpreter import Interpreter
 
 from languages.minilogo.LanguageParser import LanguageParser
@@ -64,15 +63,16 @@ class LanguageInterpreter(Interpreter):
     def visitArguments(self, ctx: LanguageParser.ArgumentsContext):
         yield self.visitChildren(ctx)
 
-    @step
     def visitMove(self, ctx: LanguageParser.MoveContext):
         x = yield self.visit(ctx.expression(0))
         y = yield self.visit(ctx.expression(1))
 
+        yield self.signalBeginStep()
         if not self._environment.pen_up:
             self._environment.lines.append((self._environment.pen_coordinates, (x, y), self._environment.color))
 
         self._environment.pen_coordinates = (x, y)
+        yield self.signalEndStep()
 
     def visitColor(self, ctx: LanguageParser.ColorContext):
         self._environment.color = ctx.COLOR().getText()
@@ -83,7 +83,7 @@ class LanguageInterpreter(Interpreter):
     def visitHalt(self, ctx: LanguageParser.HaltContext):
         if not ctx in self._fired_halts: # Each halt command can be activated only once.
             self._fired_halts.append(ctx)
-            self.halt()
+            yield self.signalHalt()
 
     def visitCall(self, ctx: LanguageParser.CallContext):
         if not ctx.ID().getText() in self._environment.functions:

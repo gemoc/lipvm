@@ -1,27 +1,11 @@
-from typing import Generator, List
-from types import GeneratorType
+from typing import Callable, Generator
 
 from antlr4.ParserRuleContext import ParserRuleContext
 from antlr4.tree.Tree import ParseTreeVisitor
 
+from backend.dsu import DSU
 from backend.parser import Parser
-
-class Environment:
-    """
-    Environment for interpreting a program.
-    Language designer can dynamically set the attributes they need to keep track of.
-
-    Example:
-
-    - self._environment.attribute = value
-    """
-
-    # Making explicit the fact we use reflectivity to set the attributes of the environment (for debugging)
-    def __setattr__(self, name, value):
-        super().__setattr__(name, value)
-
-    def __getattr__(self, name):
-        return super().__getattribute__(name)
+from backend.environment import Environment
 
 class Visit:
 
@@ -31,6 +15,37 @@ class Visit:
     @property
     def tree(self) -> ParserRuleContext:
         return self._tree
+
+class Signal:
+
+    def __init__(self, handler: Callable[[Interpreter], None] = None):
+        self._handler = handler
+
+    @property
+    def handler(self):
+        return self._handler
+
+class Halt(Signal):
+    pass
+
+class Step(Signal):
+    pass
+
+class SignalBeginStep(Step):
+    
+    def __init__(self, handler: Callable[[Interpreter], None] = None):
+        if handler is None:
+            super().__init__(lambda: print("Begin step"))
+        else:
+            super().__init__(handler)
+    
+class SignalEndStep(Step):
+
+    def __init__(self, handler: Callable[[Interpreter], None] = None):
+        if handler is None:
+            super().__init__(lambda: print("End step"))
+        else:
+            super().__init__(handler)
 
 class Interpreter(ParseTreeVisitor):
     """
@@ -61,16 +76,18 @@ class Interpreter(ParseTreeVisitor):
         """
         self._parser = parser
 
-        # Default initializations
+        # Interpretation related variables 
         self._environment = Environment()
         self._tree = None
-        self._halt = False
+
         self._interpretation_stack = []
         self._interpretation_result = None
-        self._interpretation_steps = []
+
+        # DSU
+        self._dsu = DSU()
 
 
-    def visit(self, tree) -> Visit:
+    def visit(self, tree: ParserRuleContext) -> Visit:
         """
         Mark a node to visit by the interpretation loop.
 
@@ -79,30 +96,35 @@ class Interpreter(ParseTreeVisitor):
         return Visit(tree)
 
     def _interpretation(self) -> None:
-        while self._interpretation_stack and not self._halt:
-            self._interpretation_step()
+        proceed = True
+        while self._interpretation_stack and proceed:
+            proceed = self._interpretation_step()
 
-    def _interpretation_step(self) -> None:
-        while self._interpretation_stack and not self._halt:
+    def _interpretation_step(self) -> bool:
+        proceed = True
+        while self._interpretation_stack and proceed:
             try:
                 current = self._interpretation_stack[-1]
-                if isinstance(current, GeneratorType):
+                if isinstance(current, Generator):
                     self._interpretation_stack.append(current.send(self._interpretation_result))
                     self._interpretation_result = None
                 elif isinstance(current, Visit):
-                    result = self._interpretation_stack.pop().tree.accept(self)
+                    self._interpretation_stack.pop()
+                    result = current.tree.accept(self)
                     self._interpretation_stack.append(result)
-                    if hasattr(current.tree, "stepNode"):
-                        self._interpretation_steps.append(result)
+                elif isinstance(current, Signal):
+                    self._interpretation_stack.pop()
+                    if isinstance(current, Halt):
+                        return False
+                    elif isinstance(current, Step):
+                        proceed = False
+                    if current.handler is not None:
+                        current.handler()
                 else:
                     self._interpretation_result = self._interpretation_stack.pop()
             except StopIteration:  # In case of return (last yield instruction)
-                if self._should_end_step(self._interpretation_stack.pop()):
-                    self._interpretation_steps.pop()
-                    break # Reached the end of a step
-
-    def _should_end_step(self, result):
-        return self._interpretation_steps and self._interpretation_steps[-1] == result
+                self._interpretation_stack.pop()
+        return True
 
     def visitChildren(self, node: ParserRuleContext) -> Generator[ParserRuleContext, None, None]:
         """
@@ -129,7 +151,6 @@ class Interpreter(ParseTreeVisitor):
         self._tree = self._parser.parse(code)
 
         # Initialize the state of the interpretation
-        self._halt = False
         self._interpretation_stack = [self.visit(self._tree)]
         self._interpretation_result = None
 
@@ -137,18 +158,28 @@ class Interpreter(ParseTreeVisitor):
         self._interpretation()
 
     def initialize(self) -> None:
-        raise Exception("Implement this method to initialize the interpretation.")
+        raise Exception("Implement this method to initialize the interpretation.")    
 
-    def halt(self) -> None:
-        self._halt = True
+    # Halt and step commands to use from external code.
+    def halt(self) -> Halt:
+        self._interpretation_stack.append(Halt())
 
     def proceed(self) -> None:
-        self._halt = False
         self._interpretation()
 
     def step(self) -> None:
-        self._halt = False
         self._interpretation_step()
+
+    # Halt and step commands to use from the interpreter subclasses.
+    # Ex: yield signalHalt()
+    def signalHalt(self) -> Halt:
+        return Halt()
+
+    def signalBeginStep(self, handler: Callable = None) -> SignalBeginStep:
+        return SignalBeginStep(handler)
+
+    def signalEndStep(self, handler: Callable = None) -> SignalEndStep:
+        return SignalEndStep(handler)
 
     @property
     def environment(self) -> Environment:
