@@ -3,7 +3,6 @@ from typing import Callable, Generator
 from antlr4.ParserRuleContext import ParserRuleContext
 from antlr4.tree.Tree import ParseTreeVisitor
 
-from backend.dsu import DSU
 from backend.parser import Parser
 from backend.environment import Environment
 
@@ -96,10 +95,6 @@ class Interpreter(ParseTreeVisitor):
 
         self._interpretation_stack = []
         self._interpretation_result = None
-
-        # DSU
-        self._dsu = DSU()
-
 
     def visit(self, tree: ParserRuleContext) -> Visit:
         """
