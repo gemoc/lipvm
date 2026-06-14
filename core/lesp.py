@@ -1,54 +1,36 @@
 from jsonrpclib.SimpleJSONRPCServer import SimpleJSONRPCServer
 
-from core.vm import VM 
+from core.language import AbstractSyntaxElement
+from core.edit import EditScript
+from core.vm import VirtualMachine, ProgramUpdateOption
 
+VM = VirtualMachine()
 
-class Mock:
+def start(program_syntax: AbstractSyntaxElement, scenario_syntax: AbstractSyntaxElement) -> None:
 
-    def __init__(self, expression: str, mock: str):
-        self._expression = expression
-        self._mock = mock
+    VM.program_syntax = program_syntax
+    VM.scenario_syntax = scenario_syntax
 
-    @property
-    def expression(self):
-        return self._expression
+    VM.init()
+    VM.run()  
+
+def stop() -> None:
     
-    @property
-    def mock(self):
-        return self._mock
+    VM.stop()
 
-class Example:
-
-    def __init__(self, source: str, mocks: list[Mock] = []):
-        self._source = source
-        self._mocks = mocks
-
-    @property
-    def source(self):
-        return self._source
-
-    @property
-    def mocks(self):
-        return self._mocks
-
-contexts = {}
-
-def start(context_identifier: str = None, example: Example = None) -> None:
-    VM.pause()
-
-def pause() -> None:
-    VM.pause()
-
-def current_context_identifier() -> str:
-    identifier = hash(VM.operation)
-    contexts[identifier] = VM.operation
-    return identifier
+def update(edit_script: EditScript) -> None:
+    
+    VM.update(edit_script, ProgramUpdateOption.RESTART)
+    
 
 
-def start(port: int = 8080):
+def listen(port: int = 8080):
 
     server = SimpleJSONRPCServer(('localhost', port))
     
     server.register_function(start)
-    server.register_function(pause)
-    server.register_function(current_context_identifier)
+    server.register_function(stop)
+    server.register_function(update)
+
+    print(f"LipVM LESP listening at localhost:{port}")
+    server.serve_forever()

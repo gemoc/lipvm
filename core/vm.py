@@ -1,58 +1,112 @@
-from pyecore import behavior
+from __future__ import annotations
 
-from core.operations import Operation
-from core.metametamodel import *
+from typing import Any, LiteralString, List
 
-"""
-Must stay a constant/singleton
-"""
-VM = VirtualMachine()
+from pyecore.ecore import *
 
-@VirtualMachine.behavior
-@property
-def operation(self):
-    return self._operation
+from core.edit import *
+from core.language import AbstractSyntaxElement, RuntimeState
 
-def store_operation(self):
-    self._operation
+class ProgramUpdateOption:
 
-@VirtualMachine.behavior
-def start(self, model, runtime):
-    self._operation = model.evaluate(runtime)
-    self.running = True
-    return self.run()
+    RESTART = None
+    HOTSWAP = None
 
-@VirtualMachine.behavior
-def run(self):
-    result = self._operation.execute()
-    while self._operation.has_next and self.running:
-        self._operation = self._operation.next
+    def __init__(cls):
+        super().__init__()
+        cls.RESTART = cls("RESTART")
+        cls.HOTSWAP = cls("HOTSWAP")
+
+class VirtualMachine:
+    """
+    A virtual machine runs a single program: it evaluates the program's
+    definitions followed by a scenario's commands, and exposes the
+    resulting chain of operations so it can be stepped through, paused,
+    resumed, or edited while running.
+    """
+
+    def __init__(self) -> None:
+        self._scenario_syntax = None
+        self._program_syntax = None
+
+        self._operation = None
+        self._runtime = None
+
+    @property
+    def scenario_syntax(self) -> AbstractSyntaxElement:
+        return self._scenario_syntax
+
+    @scenario_syntax.setter
+    def scenario_syntax(self, scenario_syntax: AbstractSyntaxElement) -> None:
+        """
+        Sets the expression used to start the execution.
+        """
+        self._scenario_syntax = scenario_syntax
+
+    @property
+    def program_syntax(self) -> AbstractSyntaxElement:
+        return self._program_syntax
+
+    @program_syntax.setter
+    def program_syntax(self, program_syntax: AbstractSyntaxElement) -> None:
+        """
+        Sets the program's definitions, evaluated before the scenario.
+        """
+        self._program_syntax = program_syntax
+
+    @property
+    def state(self) -> RuntimeState:
+        if not self._operation:
+            raise Exception("Trying to access the state of a virtual machine that has not been executed yet.")
+        return self._runtime
+
+    def init(self) -> None:
+        runtime = RuntimeState()
+        self._runtime = runtime
+
+        # First evaluate the program to read function definitions
+        self._operation = self.program_syntax.evaluate(runtime)
+
+        # Attach at the end of the program evaluation the operation that executes the scenario
+        self._operation.tail.after_put(self.scenario_syntax.evaluate(runtime))
+
+    def stop(self) -> None:
+        self.running = False
+
+    def step(self) -> Any:
         result = self._operation.execute()
-    return result
+        if self._operation.has_next:
+           self._operation = self._operation.next
+        return result
 
-@VirtualMachine.behavior
-def pause(self):
-    self.running = False
+    def run(self) -> Any:
+        if not self._operation:
+            raise RuntimeError("Virtual machine not initialized, please call init() first.")
 
-@VirtualMachine.behavior
-def restart(self):
-    self.running = True
-    return self.run()
+        self.running = True
+        result = self._operation.execute()
+        while self._operation.has_next and self.running:
+            self._operation = self._operation.next
+            result = self._operation.execute()
+        return result
 
+    def udpate(self, edit_script: EditScript, option: ProgramUpdateOption) -> None:
+        """
+        Update the definition of the program being executed.
 
-def inject_getattr():
-    """
-    Function needed to avoid having __getattr__ defined in the scope of the file.
-    When invoked in the scope of the file it overrides the default python behavior on import.
-    The expected __getattr__ in the scope of a file expect only one argument, the name,
-    whereas we want to inject our __getattr__ method in the class of an object, so we take one
-    extra argument, self, the reference to the instance.  
-    """
-    @RuntimeState.behavior
-    def __getattr__(self, attr_name: str):
-        for element in self.elements:
-            if element.name == attr_name:
-                return element
-        raise Exception(attr_name + " not found in RuntimeState")
+        Parameters:
+            - edit_script: the edit operations to apply to the running syntax trees.
+            - option: whether to RESTART the execution from scratch or HOTSWAP it in place.
+        """
 
-inject_getattr()
+        self.stop()
+
+        edit_script.attach_to(self.scenario_syntax)
+        edit_script.attach_to(self.program_syntax)
+
+        if option == ProgramUpdateOption.RESTART:
+            self.scenario_syntax = self.scenario_syntax.apply_edit_operations()
+            self.program_syntax = self.program_syntax.apply_edit_operations()
+            self.init()
+
+        self.run()
