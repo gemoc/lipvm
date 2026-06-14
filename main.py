@@ -1,9 +1,13 @@
-from sys import argv
-from backend.lipvm import LipVM
+import sys 
+
+from core.lesp import listen
 
 def main(arguments: list):
-    vm = LipVM(arguments[1])
-    vm.serve(8080)
+    if len(arguments) > 1:
+        listen(arguments[1])
+    else:
+        listen()
 
 if __name__ == '__main__':
-    main(argv)
+    main(sys.argv)
+ 

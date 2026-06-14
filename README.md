@@ -1,14 +1,81 @@
 # LipVM
 
-## Import the project
+LipVM is a prototype of a generic virtual machine for executing DSLs (Domain Specific Languages)
+programs, that are modeled with [pyecore](https://github.com/pyecore/pyecore) (an EMF/Ecore
+implementation in Python).
 
-**Step 1:** install **uv** the Python package and project manager. 
+Instead of compiling a language to some bytecode, each language is described as an **Ecore
+metamodel** (abstract syntax + runtime state) whose classes know how to **evaluate themselves**.  
+The VM turns this evaluation into a chain of resumable `Operation`s, which makes it possible to:
 
-On unix system use the following command:  
+- step through a program operation by operation,
+- pause/resume execution,
+- and apply **edit scripts** to the running abstract syntax tree to hot-swap or part of a program
+  while it executes (live programming).
+
+Two example languages are currently implemented:
+- **Minilogo** (partially-implemented, functions and loops are missing): a graphics language that
+  commands a pen to move accross a canvas coordinates.
+- **Robot** : a maze-navigation language that commands a robot to turn a step through a maze path.
+
+## Roadmap 
+
+- [ ] Test safepoint declaration. (in-progress)
+- [ ] Add the mecanism to prepare and declare a migration after a code change. (in-progress)
+- [ ] Add the probing mecanism and expose it through LESP. (in-progress)
+- [ ] Add connectors for RPC calls from Java (LESP?)
+
+## Project structure
+
+```
+core/            Generic, language-independent VM machinery
+  language.py    Base metamodel: AbstractSyntaxElement, RuntimeState, 
+                 RuntimeStateElement, ASTElementPosition, SafepointCondition...
+
+  identifiers.py Structural identifier helpers (FNV-1a hashing, canonical
+                 value rendering) used by AbstractSyntaxElement.assign_identifiers()
+
+  operations.py  Operation / OperationArguments / OperationVariables and the
+                 @operation decorator and loop() helper used to build chains
+                 of resumable operations
+
+  edit.py        EditScript and edit operations (Insert/Update/Delete) used to
+                 modify a running abstract syntax tree
+
+  vm.py          VirtualMachine: runs programs and applies EditScripts
+                 (with RESTART / HOTSWAP option) to a running (live) execution
+
+  lesp.py        Work-in-progress JSON-RPC server for a "live execution"
+                 protocol (editor integration)
+
+languages/       One package per supported language
+
+  minilogo/
+    runtime.py   Runtime state metamodel (Drawing, PenState, Scope, ...)
+    syntax.py    Abstract syntax metamodel + evaluate() implementations
+
+  robot/
+    runtime.py   Runtime state metamodel (Maze, Robot, MazeCell, ...)
+    syntax.py    Abstract syntax metamodel + evaluate() implementations
+
+tools/
+  export.py      Exports pythonic style pyecore classes to a single .ecore file
+  exploratory.py Scenario: manages multiple VirtualMachine instances (start,
+                 resume, restart, edit) when exploring a language
+
+tests/           pytest test suite; the Robot languages is exercised through the 
+                 VirtualMachine API as usage examples (see tests/test_robot.py)
+```
+
+## Setup
+
+**Step 1:** install **uv**, the Python package and project manager.
+
+On Unix systems:
 ```shell
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
-Refer to [UV's documentation](https://docs.astral.sh) for more information.  
+Refer to [UV's documentation](https://docs.astral.sh) for more information.
 
 **Step 2:** create a Python virtual environment
 
@@ -23,81 +90,107 @@ On Unix systems:
 source .venv/bin/activate
 ```
 
-On Windows:
-
-```shell
-.venv\Scripts\activate
-```
-
-**Step 4:** pull project's dependencies
+**Step 4:** pull the project's dependencies
 
 ```shell
 uv sync
 ```
 
-## Generate parser and visitor for a language
+## Running the tests
 
-**Requirements:**
-
-- An ANTLR4 grammar file, e.g. `languages/minilogo/Language.g4`.
-  - For now the grammar must be named: **Language**.
-  - The root parsing rule must be named **start**. 
-- A Java installation, version 21 or superior.
-- The `antlr-4.13.2-complete.jar` from https://www.antlr.org/download.html.
+The test suite is the best place to see the VM in action, run it using the following command:
 
 ```shell
-java -jar antlr-4.13.2-complete.jar -Dlanguage=Python3 languages/minilogo/syntax/Language.g4 -no-listener -visitor
+python -m pytest
+```
+**Note**: running the pytest command as a python module is important so that other modules required
+by the test suite are recognized.
+
+`tests/test_robot.py` builds a Robot program (a maze definition plus a sequence of commands), runs
+it through `VirtualMachine.init()`/`run()`, and asserts on the resulting `RuntimeState`. It also
+demonstrates applying an `EditScript` to replace part of the program while it runs, and `RESTART`
+it.
+
+## Supporting a new language
+
+A language composed of pyecore metamodels and `evaluate()` implementations. There is no
+parser/grammar generation step at the moment: abstract syntax trees are built directly as pyecore
+object graphs (e.g. in tests). In the future they could be produced by a front-end which could be
+plugged-in later.
+
+To add a language `languages/<name>`:
+
+**Step 1 — Runtime state (`languages/<name>/runtime.py`)**
+
+Define the EClasses that represent the state the program manipulates while running. Each top-level
+state element is a `RuntimeStateElement` (from `core.language`) with a `name`; these elements are
+looked up by name on `RuntimeState` (e.g. `runtime.maze`, `runtime.penstate`). Use plain
+`EObject`/`EClass`/`EEnum` for any supporting value types (positions, colors, cells, ...).
+
+**Step 2 — Abstract syntax (`languages/<name>/syntax.py`)**
+
+Define the EClasses of your abstract syntax tree, each extending `AbstractSyntaxElement` from
+`core.language`. Every node that can be executed implements:
+
+```python
+def evaluate(self, runtime: RuntimeState) -> None:
+    ...
 ```
 
-Upon the execution of this command, an AST visitor is generated: see `languages/minilogo/LanguageVisitor.py`.  
+- For a leaf/terminal command, decorate `evaluate` with `@operation()` (from `core.operations`) and
+  read/mutate `runtime` directly — see `TurnLeft`, `MoveForward` or `Pen` in
+  `languages/robot/syntax.py` / `languages/minilogo/syntax.py`.
+- For nodes whose evaluation depends on the result of evaluating sub-expressions, use
+  `@operation(arg_name=lambda node, runtime: node.sub_expr.evaluate(runtime), ...)` — the results
+  are injected as keyword arguments into `evaluate`, see `BinaryExpression` or `Move`.
+- For a sequence of commands (e.g. a `Program` or a block body), return
+  `loop(self.commands, lambda cmd: cmd.evaluate(runtime))` to chain their operations.
+- For a conditional repetition (while-loop), pass a `condition` Operation as the third argument to
+  `loop(...)`, see `RepeatWhile`.
+- For branching (if/else), splice the chosen branch's operations into the chain using the `_op`
+  keyword parameter, see `IfDoElse`.
 
-## Specify the semantic of a language
+The root `Program` node's `evaluate()` should initialize `runtime.elements` with the language's
+`RuntimeStateElement` instances before returning the chain of operations for its commands.
 
-**Step 1:** Copy the generated visitor, in the directory of your language and rename the file and class to `LanguageInterpreter`.  
-Example: `languages/minilogo/LanguageInterpreter.py`.  
+**Step 3 — Run it**
 
-**Step 2:** Modify the `LanguageInterpreter` class definition to extend `Interpreter` from the `backend.interpreter` module.
+```python
+from core.vm import VirtualMachine
 
-**Step 3:** Create a constructor for the `LanguageInterpreter` class that takes a parameter of type `Parser` from `backend.parser` and invoke the parent constructor with it.  
-Example: `super().__init__(parser)`
+vm = VirtualMachine()
+vm.scenario_syntax = my_program_or_commands
+vm.program_syntax = my_definitions
+vm.init()
+vm.run()
 
-**Step 4:** Define the semantic of your language in the visit methods. The interpreter requires to use Python generators through:
-  - The **yield** keyword when visiting a subtree: `yield self.visit(tree)`, `yield self.visitChildren(tree)`.
-  - The **yield** keyword instead of standard **return** when defining a method's return value.
+state = vm.state  # the RuntimeState after execution
+```
 
-The interpreter also expect all values manipulated by the execution to be declared as attributes of the `self._environment` object inherited from the `Interpreter` class.
+To run and manage several such executions side by side (e.g. while exploring a language
+interactively), wrap them in a `Scenario` from `tools.exploratory`:
 
-## Debug
+```python
+from tools.exploratory import Scenario
 
-To debug, for now I use `debugpy` using the following command taking the module of my language to import `file.logo` (a logo code file) in argument:
+scenario = Scenario()
+identifier = scenario.run_instance(instance=vm)
+
+# later, resume/restart that same instance
+scenario.run_instance(identifier=identifier)
+```
+
+Assign each `AbstractSyntaxElement` a unique `identifier` if you intend to target it later with an
+`EditScript` (`InsertSyntaxOperation`, `UpdateSyntaxOperation`, `DeleteSyntaxOperation`), applied
+through `vm.udpate(...)`.
+
+**Step 4 — (optional) Export the metamodel**
 
 ```shell
-python -m debugpy --wait-for-client --listen 5678 main.py "languages.minilogo"
+python -m tools.export languages.<name>.runtime languages.<name>.syntax -o <name>.ecore -n <name>
 ```
 
-Using VSCode you can use the following `launch.json` configuration to connect to the debugging session:
+This collects all EClasses/EEnums defined in the given modules (and anything they reference) into a
+single, self-contained `.ecore` file, e.g. `robot.ecore`.
 
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-      {
-          "name": "Python Debugger: Remote Attach",
-          "type": "debugpy",
-          "request": "attach",
-          "connect": {
-              "host": "localhost",
-              "port": 5678
-          }
-      }
-  ]
-}
-```
-
-## Try Minilogo IDE
-
-To start the currently implemented LipVM with Minilogo, execute the following command:
-
-```shell
-python -m languages.minilogo.MinilogoIDE
-```
+*tool/export.py was generated by Claude Sonnet 4.6*
