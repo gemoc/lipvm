@@ -6,4 +6,6 @@
 .pytest_cache/
 __pycache__/
 *.py[cod]
-*$py.class
+*$py.classlib/
+lib/
+*.html
