@@ -1,7 +1,7 @@
 from pyecore.ecore import *
 
 from core.language import AbstractSyntaxElement, RuntimeState
-from core.operations import operation, loop, if_then_else
+from core.operation import Operation, lazy_loop, operation, if_then_else
 
 from languages.robot.runtime import (
     Direction,
@@ -12,21 +12,23 @@ from languages.robot.runtime import (
     Maze,
 )
 
+
 # Relative direction for cell checks (relative to robot's current orientation)
 RelativeDirection = EEnum("RelativeDirection")
 RelativeDirection.eLiterals.append(EEnumLiteral("FRONT"))
 RelativeDirection.eLiterals.append(EEnumLiteral("LEFT"))
 RelativeDirection.eLiterals.append(EEnumLiteral("RIGHT"))
 
+
 # Robot Commands
 class Command(AbstractSyntaxElement, metaclass=MetaEClass):
     abstract = True
 
+
 class TurnLeft(Command, metaclass=MetaEClass):
-    
-    @operation()
+
+    @operation
     def evaluate(self, runtime: RuntimeState) -> None:
-        """Turn the robot 90 degrees to the left (counter-clockwise)."""
         robot = runtime.maze.robot
         match robot.direction:
             case Direction.NORTH:
@@ -41,7 +43,7 @@ class TurnLeft(Command, metaclass=MetaEClass):
 
 class TurnRight(Command, metaclass=MetaEClass):
 
-    @operation()
+    @operation
     def evaluate(self, runtime: RuntimeState) -> None:
         """Turn the robot 90 degrees to the right (clockwise)."""
         robot = runtime.maze.robot
@@ -58,7 +60,7 @@ class TurnRight(Command, metaclass=MetaEClass):
 
 class MoveForward(Command, metaclass=MetaEClass):
 
-    @operation()
+    @operation
     def evaluate(self, runtime: RuntimeState) -> None:
         """Move the robot one cell forward in its current direction.
 
@@ -110,7 +112,7 @@ class IfCondition(AbstractSyntaxElement, metaclass=MetaEClass):
 
     direction = EAttribute(eType=RelativeDirection, lower=1, upper=1)
 
-    @operation()
+    @operation
     def evaluate(self, runtime: RuntimeState) -> bool:
         """Evaluate whether the cell in the specified relative direction is empty.
 
@@ -174,14 +176,10 @@ class IfDoElse(Command, metaclass=MetaEClass):
     doBody = EReference(eType=Command, lower=0, upper=-1, containment=True)
     elseBody = EReference(eType=Command, lower=0, upper=-1, containment=True)
 
-    @operation(condition_result=lambda node, runtime: node.condition.evaluate(runtime))
-    def evaluate(self, runtime: RuntimeState, condition_result: bool = None) -> None:
-        """Evaluate the condition and execute the appropriate body.
+    @operation(result=lambda node, runtime: node.condition.evaluate(runtime))
+    def evaluate(self, runtime: RuntimeState, result: bool) -> Operation:
+        return if_then_else(result, self.doBody, self.elseBody, lambda element, rt: element.evaluate(rt), args=(runtime,))
 
-        If the condition_result is True, evaluates the commands of doBody.
-        If the condition_result is False, evaluates the commands of elseBody.
-        """
-        return if_then_else(condition_result, self.doBody, self.elseBody, lambda cmd: cmd.evaluate(runtime))
 
 # Condition to check if robot has reached the destination
 class ReachedDestinationCondition(AbstractSyntaxElement, metaclass=MetaEClass):
@@ -190,18 +188,16 @@ class ReachedDestinationCondition(AbstractSyntaxElement, metaclass=MetaEClass):
     Returns True if the robot's current position matches the destination position.
     """
 
-    @operation()
+    @operation
     def evaluate(self, runtime: RuntimeState) -> bool:
-        """Evaluate whether the robot's position matches the destination position.
-
-        Returns True if the robot has reached the destination, False otherwise.
-        """
+        """Return True if the robot's current position matches the destination."""
         maze = runtime.maze
         robot = maze.robot
         return (
             robot.position.column == maze.destination.column
             and robot.position.row == maze.destination.row
         )
+
 
 class RepeatWhile(Command, metaclass=MetaEClass):
     """A repeat-while statement for the robot DSL.
@@ -213,18 +209,15 @@ class RepeatWhile(Command, metaclass=MetaEClass):
     condition = EReference(eType=ReachedDestinationCondition, lower=1, upper=1, containment=False)
     body = EReference(eType=Command, lower=0, upper=-1, containment=True)
 
-    def evaluate(self, runtime: RuntimeState) -> None:
-        """Evaluate the body commands repeatedly until the condition becomes true.
-
-        Continues evaluating body commands as long as the condition is false.
-        Once the condition returns True (robot reached destination), the loop stops.
-        """
-        return loop(self.body, lambda cmd: cmd.evaluate(runtime), self.condition.evaluate(runtime))
+    @operation
+    def evaluate(self, runtime: RuntimeState) -> Operation:
+        return lazy_loop(self.body, lambda element, runtime: element.evaluate(runtime), self.condition.evaluate(runtime), args=(runtime,))
 
 
 class WallPosition(Command, metaclass=MetaEClass):
     """Specifies the position of a wall cell in the maze."""
     position = EReference(eType=GridPosition, lower=1, upper=1)
+
 
 # So that the language user can define a maze (as we would do with a state machine)
 class ProgramInitializationDefinition(AbstractSyntaxElement, metaclass=MetaEClass):
@@ -242,9 +235,12 @@ class ProgramInitializationDefinition(AbstractSyntaxElement, metaclass=MetaEClas
 
     walls = EReference(eType=WallPosition, lower=0, upper=-1)
 
-    @operation()
+    @operation
     def evaluate(self, runtime: RuntimeState) -> None:
-        """Populates the Maze runtime element with cells, positions for robot and destination, and wall cells."""
+        """Populate the Maze runtime element with cells, robot/destination positions and walls."""
+
+        # Initialize the runtime state when starting the execution
+        runtime.elements = [ Maze(name="maze") ]
 
         runtime.maze.width = self.width
         runtime.maze.height = self.height
@@ -273,7 +269,6 @@ class ProgramInitializationDefinition(AbstractSyntaxElement, metaclass=MetaEClas
         for wall in self.walls:
             runtime.maze.setCellAt(wall.position.column, wall.position.row, WallCell())
 
-
         # Create and configure the robot state
         runtime.maze.robot = Robot(
             position=GridPosition(
@@ -283,14 +278,12 @@ class ProgramInitializationDefinition(AbstractSyntaxElement, metaclass=MetaEClas
             direction=Direction.NORTH
         )
 
+
 # Program / Sequence of Commands
 class Program(AbstractSyntaxElement, metaclass=MetaEClass):
 
     commands = EReference(eType=Command, lower=0, upper=-1, containment=True)
 
-    def evaluate(self, runtime: RuntimeState) -> None:
-
-        # Initialize the runtime state when starting the execution
-        runtime.elements = [ Maze(name="maze") ]
-
-        return loop(self.commands, lambda cmd: cmd.evaluate(runtime))
+    @operation
+    def evaluate(self, runtime: RuntimeState) -> Operation:
+        return lazy_loop(self.commands, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
