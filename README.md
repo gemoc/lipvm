@@ -24,8 +24,8 @@ Two example languages are currently implemented:
 
 ## Roadmap 
 
-- [ ] Test safepoint declaration. (in-progress)
-- [ ] Add the mecanism to prepare and declare a migration after a code change.
+- [x] Test safepoint declaration. (in-progress)
+- [x] Add the mecanism to prepare and declare a migration after a code change.
   (in-progress)
 - [ ] Add the probing mecanism and expose it through LESP. (in-progress)
 - [ ] Add connectors for RPC calls from Java (LESP?)
@@ -108,6 +108,8 @@ following command:
 ```shell
 uv run pytest
 ```
+**Note**: running the pytest command as a python module is important so that other modules required
+by the test suite are recognized.
 
 `tests/test_robot.py` builds a Robot program (a maze definition plus a sequence
 of commands), runs it through `VirtualMachine.init()`/`run()`, and asserts on
