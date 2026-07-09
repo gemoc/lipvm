@@ -3,7 +3,7 @@ from functools import partial
 import pyecore.ecore as Ecore
 from pyecore.ecore import *
 
-from core.language import AbstractSyntaxElement
+from core.language import AbstractSyntaxElement, RuntimeState
 
 from core.operation import operation
 
@@ -261,7 +261,6 @@ else ''
 endif endif"""
         raise NotImplementedError('operation path(...) not yet implemented')
 
-
 class DerivedAnnotatedelement(EDerivedCollection):
     pass
 
@@ -509,7 +508,11 @@ endif
 
     @operation
     def evaluate(self, runtime):
-        return super().evaluate(runtime)
+
+        #TODO Implement
+        # 1. Build all the necessary Element Definition
+        # 2. Once ready, then execute it
+        pass
 
 class DerivedRelatedelement(EDerivedCollection):
     pass
