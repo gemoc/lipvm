@@ -5,10 +5,21 @@ Generate an interactive HTML diagram from a .ecore file.
 
 Reads an Ecore metamodel and produces a force-directed graph where:
   - EClass nodes are shown as blue boxes
+  - Root classes (no supertype) are highlighted with a thick coloured border
+  - Abstract classes are drawn with a dashed border
+  - Composition roots (referenced by no class but referencing others) are
+    marked with a ◆ on the label
   - EEnum nodes are shown as green boxes
   - Inheritance (eSuperTypes) is shown as dashed gray arrows
   - References (EReference) are shown as solid arrows labelled with
     the reference name and multiplicity
+
+The generated page has a "Focus" panel: type or pick one or more element names
+(comma-separated) and a link depth, and only those elements plus everything
+within that many hops stay visible. Leave the field empty or press Reset to show
+the whole graph again. A "Link types" section adds checkboxes (multi-select) to
+show/hide inheritance, containment and reference links; the focus depth walk only
+follows the currently-enabled link types.
 
 Usage:
     uv run python tools/visualization.py path/to/model.ecore [-o output.html]
@@ -42,6 +53,7 @@ THEMES = {
     "dark": {
         "bgcolor": "#1a1a2e",
         "class_bg": "#4a90d9",   "class_border": "#2c5f8a",   "class_font": "white",
+        "root_bg":  "#7a4f70",   "root_border":  "#e58fc2",   # highlight: no supertypes
         "enum_bg":  "#4caf7d",   "enum_border":  "#2e7d52",   "enum_font":  "white",
         "inherit_color": "#888888",
         "contain_color": "#e07b39",
@@ -55,6 +67,7 @@ THEMES = {
         # Okabe-Ito palette — safe for deuteranopia, protanopia, and tritanopia
         "bgcolor": "#ffffff",
         "class_bg": "#d6eaf8",   "class_border": "#0072b2",   "class_font": "#000000",  # blue
+        "root_bg":  "#f7dff0",   "root_border":  "#cc79a7",   # reddish-purple — no supertypes
         "enum_bg":  "#fef3cd",   "enum_border":  "#e69f00",   "enum_font":  "#000000",  # amber
         "inherit_color": "#0072b2",   # blue   — dashed
         "contain_color": "#d55e00",   # vermillion — solid thick
@@ -76,6 +89,9 @@ LEGEND_HTML = """
 ">
   <b style="font-size:13px;">Legend</b><br>
   <span style="display:inline-block;width:14px;height:14px;background:{class_bg};border:2px solid {class_border};vertical-align:middle;margin-right:6px;"></span> EClass<br>
+  <span style="display:inline-block;width:14px;height:14px;background:{root_bg};border:3px solid {root_border};vertical-align:middle;margin-right:6px;"></span> Root class (no supertype)<br>
+  <span style="display:inline-block;width:14px;height:14px;background:{class_bg};border:2px dashed {class_border};vertical-align:middle;margin-right:6px;"></span> Abstract class<br>
+  <span style="display:inline-block;width:14px;text-align:center;margin-right:6px;">◆</span> Composition root (unreferenced, refers to others)<br>
   <span style="display:inline-block;width:14px;height:14px;background:{enum_bg};border:2px solid {enum_border};vertical-align:middle;margin-right:6px;"></span> EEnum<br>
   <svg width="28" height="12" style="vertical-align:middle;margin-right:6px;">
     <line x1="0" y1="6" x2="22" y2="6" stroke="{inherit_color}" stroke-width="1.5" stroke-dasharray="4,2"/>
@@ -92,11 +108,206 @@ LEGEND_HTML = """
 </div>
 """
 
+# Interactive focus panel: type/select one or more element names and a link
+# depth; only those elements and everything within `depth` hops of them stay
+# visible. Empty input (or Reset) shows the whole graph again.
+CONTROLS_HTML = """
+<div id="focus-controls" style="
+    position: fixed; top: 20px; left: 20px; z-index: 1000;
+    background: {legend_bg}; border: 1px solid {legend_border};
+    border-radius: 8px; padding: 12px 16px;
+    font-family: monospace; font-size: 12px; color: {legend_color};
+    line-height: 2;
+">
+  <b style="font-size:13px;">Focus</b><br>
+  <input id="focus-input" list="focus-nodes" placeholder="element(s), comma-separated"
+         style="width: 220px; font-family: monospace;">
+  <datalist id="focus-nodes"></datalist><br>
+  depth <input id="focus-depth" type="number" min="0" value="1" style="width: 48px;">
+  <button id="focus-apply">Apply</button>
+  <button id="focus-reset">Reset</button>
+  <span id="focus-status" style="margin-left: 6px; opacity: 0.8;"></span>
+  <hr style="border: none; border-top: 1px solid {legend_border}; margin: 8px 0;">
+  <b style="font-size:13px;">Link types</b>
+  <div id="linktype-filters"
+       data-inheritance="{inherit_color}"
+       data-containment="{contain_color}"
+       data-reference="{ref_color}"></div>
+</div>
+"""
+
+# Driving script (no theming, so it is injected verbatim — never .format()ed,
+# since it contains JS braces). Relies on the pyvis globals nodes/edges/network.
+CONTROLS_SCRIPT = """
+<script type="text/javascript">
+(function () {
+  function setup() {
+    if (typeof network === 'undefined' || typeof nodes === 'undefined'
+        || typeof edges === 'undefined' || !network) {
+      return setTimeout(setup, 100);
+    }
+    var input = document.getElementById('focus-input');
+    var depthInput = document.getElementById('focus-depth');
+    var status = document.getElementById('focus-status');
+    var datalist = document.getElementById('focus-nodes');
+
+    var allIds = nodes.getIds();
+    var lower = {};
+    allIds.slice().sort().forEach(function (id) {
+      var opt = document.createElement('option');
+      opt.value = id;
+      datalist.appendChild(opt);
+    });
+    allIds.forEach(function (id) { lower[String(id).toLowerCase()] = id; });
+
+    // Snapshot every edge once (id / from / to / linktype).
+    var edgeList = edges.get();
+
+    // Build one checkbox per link type actually present, in a stable order.
+    var TYPE_ORDER = ['inheritance', 'containment', 'reference'];
+    var TYPE_LABEL = { inheritance: 'Inheritance', containment: 'Containment', reference: 'Reference' };
+    var container = document.getElementById('linktype-filters');
+    var typeColor = {
+      inheritance: container.dataset.inheritance,
+      containment: container.dataset.containment,
+      reference: container.dataset.reference
+    };
+    var present = [];
+    edgeList.forEach(function (e) {
+      if (e.linktype && present.indexOf(e.linktype) === -1) present.push(e.linktype);
+    });
+    present.sort(function (a, b) { return TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b); });
+    var checkboxes = {};
+    present.forEach(function (lt) {
+      var label = document.createElement('label');
+      label.style.cssText = 'display:block; cursor:pointer;';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true; cb.value = lt;
+      cb.addEventListener('change', render);
+      var swatch = document.createElement('span');
+      swatch.style.cssText = 'display:inline-block; width:16px; border-top:3px '
+        + (lt === 'inheritance' ? 'dashed ' : 'solid ') + (typeColor[lt] || '#888')
+        + '; vertical-align:middle; margin:0 6px;';
+      label.appendChild(cb);
+      label.appendChild(swatch);
+      label.appendChild(document.createTextNode(TYPE_LABEL[lt] || lt));
+      container.appendChild(label);
+      checkboxes[lt] = cb;
+    });
+
+    function typeEnabled(lt) {
+      // Edges without a known/checkboxed type are always allowed.
+      return !lt || !checkboxes[lt] || checkboxes[lt].checked;
+    }
+
+    function resolve(name) {
+      if (lower[String(name).toLowerCase()] !== undefined) return lower[name.toLowerCase()];
+      return null;
+    }
+
+    // Single renderer honouring both the focus filter and the link-type filter.
+    function render() {
+      // Adjacency over currently-enabled link types only.
+      var adj = {};
+      allIds.forEach(function (id) { adj[id] = []; });
+      edgeList.forEach(function (e) {
+        if (!typeEnabled(e.linktype)) return;
+        if (adj[e.from]) adj[e.from].push(e.to);
+        if (adj[e.to]) adj[e.to].push(e.from);
+      });
+
+      var raw = input.value.trim();
+      var seeds = [], unknown = [];
+      if (raw) {
+        raw.split(',').forEach(function (s) {
+          s = s.trim();
+          if (!s) return;
+          var r = resolve(s);
+          if (r === null) unknown.push(s);
+          else if (seeds.indexOf(r) === -1) seeds.push(r);
+        });
+      }
+      var focusing = seeds.length > 0;
+
+      var visible = {};
+      if (focusing) {
+        var depth = parseInt(depthInput.value, 10);
+        if (isNaN(depth) || depth < 0) depth = 0;
+        seeds.forEach(function (id) { visible[id] = true; });
+        var frontier = seeds.slice();
+        for (var d = 0; d < depth; d++) {
+          var next = [];
+          frontier.forEach(function (id) {
+            adj[id].forEach(function (nb) { if (!visible[nb]) { visible[nb] = true; next.push(nb); } });
+          });
+          frontier = next;
+          if (frontier.length === 0) break;
+        }
+      } else {
+        allIds.forEach(function (id) { visible[id] = true; });
+      }
+
+      nodes.update(allIds.map(function (id) { return { id: id, hidden: !visible[id] }; }));
+      edges.update(edgeList.map(function (e) {
+        return { id: e.id, hidden: !(typeEnabled(e.linktype) && visible[e.from] && visible[e.to]) };
+      }));
+
+      var shown = 0;
+      allIds.forEach(function (id) { if (visible[id]) shown++; });
+      var msg = '';
+      if (raw && !focusing) msg = 'no match: ' + unknown.join(', ');
+      else if (focusing) msg = shown + ' / ' + allIds.length + ' shown'
+        + (unknown.length ? ' (no match: ' + unknown.join(', ') + ')' : '');
+      status.textContent = msg;
+
+      if (focusing) network.fit({ nodes: Object.keys(visible), animation: true });
+    }
+
+    function reset() {
+      input.value = '';
+      present.forEach(function (lt) { checkboxes[lt].checked = true; });
+      render();
+      network.fit({ animation: true });
+    }
+
+    document.getElementById('focus-apply').addEventListener('click', render);
+    document.getElementById('focus-reset').addEventListener('click', reset);
+    input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') render(); });
+  }
+  setup();
+})();
+</script>
+"""
+
+
+def _composition_roots(package):
+    """Returns the set of EClass names that are composition roots.
+
+    A composition root is referenced by no other class but references at least
+    one other class — i.e. it sits at the top of the reference/containment
+    hierarchy. Only cross-class references count (self-references are ignored);
+    inheritance is irrelevant here.
+    """
+    eclass_names = {c.name for c in package.eClassifiers if isinstance(c, EClass)}
+    referenced = set()   # class is the target of some other class's reference
+    referencing = set()  # class references some other class
+    for cls in package.eClassifiers:
+        if not isinstance(cls, EClass):
+            continue
+        for feature in cls.eStructuralFeatures:
+            etype = getattr(feature, "eType", None)
+            if isinstance(etype, EClass) and etype.name in eclass_names and etype.name != cls.name:
+                referencing.add(cls.name)
+                referenced.add(etype.name)
+    return {name for name in referencing if name not in referenced}
+
 
 def build_network(package, theme: str = "light") -> Network:
     t = THEMES[theme]
     net = Network(height="100vh", width="100%", directed=True, bgcolor=t["bgcolor"])
     net.barnes_hut(gravity=-3000, central_gravity=0.3, spring_length=120)
+
+    composition_roots = _composition_roots(package)
 
     for cls in package.eClassifiers:
         if isinstance(cls, EClass):
@@ -105,15 +316,33 @@ def build_network(package, theme: str = "light") -> Network:
                 for f in cls.eStructuralFeatures
                 if not isinstance(getattr(f, "eType", None), EClass)
             ]
-            tooltip = f"<b>{cls.name}</b>"
+            # Independent, composable highlights:
+            #  - inheritance root (no supertypes): thick coloured border
+            #  - abstract (not instantiable): dashed border
+            #  - composition root (referenced by nobody, references others):
+            #    a ◆ marker on the label
+            is_root = len(cls.eSuperTypes) == 0
+            is_abstract = cls.abstract
+            is_composition_root = cls.name in composition_roots
+            stereotypes = "".join([
+                "«abstract» " if is_abstract else "",
+                "«root» " if is_root else "",
+                "«composition-root» " if is_composition_root else "",
+            ])
+            tooltip = f"<b>{stereotypes}{cls.name}</b>"
             if attributes:
                 tooltip += "<br>" + "<br>".join(attributes)
             net.add_node(
                 cls.name,
-                label=cls.name,
+                label=f"◆ {cls.name}" if is_composition_root else cls.name,
                 title=tooltip,
                 shape="box",
-                color={"background": t["class_bg"], "border": t["class_border"]},
+                color={
+                    "background": t["root_bg"] if is_root else t["class_bg"],
+                    "border": t["root_border"] if is_root else t["class_border"],
+                },
+                borderWidth=3 if is_root else 1,
+                shapeProperties={"borderDashes": [6, 4] if is_abstract else False},
                 font={"color": t["class_font"], "size": 14},
             )
 
@@ -140,6 +369,7 @@ def build_network(package, theme: str = "light") -> Network:
                 cls.name, parent.name,
                 label="", color=t["inherit_color"],
                 dashes=True, arrows="to", width=1,
+                linktype="inheritance",
             )
 
         for ref in cls.eStructuralFeatures:
@@ -148,16 +378,19 @@ def build_network(package, theme: str = "light") -> Network:
             if ref.eType.name not in node_ids:
                 continue
             label = f"{ref.name}\n[{multiplicity(ref)}]"
-            color = t["contain_color"] if getattr(ref, "containment", False) else t["ref_color"]
+            is_containment = getattr(ref, "containment", False)
+            color = t["contain_color"] if is_containment else t["ref_color"]
             net.add_edge(
                 cls.name, ref.eType.name,
                 label=label, color=color,
                 arrows="to", width=1.5,
                 font={"color": t["edge_font"], "size": 10},
+                linktype="containment" if is_containment else "reference",
             )
 
-    # Inject legend into the generated HTML after saving
+    # Inject legend and focus controls into the generated HTML after saving
     net._legend_html = LEGEND_HTML.format(**t)
+    net._controls_html = CONTROLS_HTML.format(**t)
     return net
 
 
@@ -187,11 +420,12 @@ def main():
     net = build_network(package, theme=args.theme)
     net.save_graph(output)
 
-    # Inject the legend before the closing </body> tag
+    # Inject the focus controls, legend and driving script before </body>
     with open(output, "r") as f:
         html = f.read()
+    injection = net._controls_html + net._legend_html + CONTROLS_SCRIPT + "\n</body>"
     with open(output, "w") as f:
-        f.write(html.replace("</body>", net._legend_html + "\n</body>"))
+        f.write(html.replace("</body>", injection))
 
     print(f"Diagram written to {output}")
 
