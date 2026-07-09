@@ -170,6 +170,8 @@ class Scenario(AbstractSyntaxElement, metaclass=MetaEClass):
             runtime = RuntimeState()
 
         operation = self.program_definition.evaluate(runtime)
-        operation.continuation = self.program_command.evaluate(runtime)
+
+        if self.program_command is not None:
+            operation.continuation = self.program_command.evaluate(runtime)
 
         return operation
