@@ -176,6 +176,17 @@ def _transition_effect_action(transition_usage):
     return None
 
 
+def _trigger_signal_type(accept_action_usage):
+    """Returns the ItemDefinition AST node that types an AcceptActionUsage's
+    trigger parameter (e.g. IdleTrans for `accept IdleTrans`), if any.
+    """
+    for parameter in _owned_by_kind(accept_action_usage, ParameterMembership):
+        signal_type = _feature_type(parameter)
+        if signal_type is not None:
+            return signal_type
+    return None
+
+
 def _default_transition(state_definition):
     """Returns the TransitionUsage AST node for the unconditional/completion
     transition fired right after `state_definition`'s own entry action, if
@@ -210,6 +221,20 @@ def _build_actual_action(perform_action_usage):
     )
 
 
+def _build_trigger(transition_usage):
+    """Builds a TransitionTriggerBySignal from `transition_usage`'s trigger
+    AcceptActionUsage, if any — `signal_origin` is a bare Reference to the
+    ItemDefinition the trigger accepts (see _build_reference), deferred the
+    same way as everything else built from Namespace.evaluate(). None means
+    an unconditional/completion transition (see Transition.trigger).
+    """
+    trigger_action = _transition_trigger_action(transition_usage)
+    if trigger_action is None:
+        return None
+    signal_type = _trigger_signal_type(trigger_action)
+    return rt.TransitionTriggerBySignal(signal_origin=_build_reference(signal_type, rt.ItemDef.__name__))
+
+
 def _build_transition(transition_usage):
     """Builds a Transition runtime record from a TransitionUsage AST node.
 
@@ -224,6 +249,7 @@ def _build_transition(transition_usage):
     return rt.Transition(
         definition=transition_usage,
         source=_build_reference(source, rt.StateUsage.__name__) if isinstance(source, StateUsage) else None,
+        trigger=_build_trigger(transition_usage),
         effect=_build_actual_action(_transition_effect_action(transition_usage)),
         target=_build_reference(_transition_target(transition_usage), rt.StateUsage.__name__),
     )

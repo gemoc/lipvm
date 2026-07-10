@@ -113,6 +113,14 @@ class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
 
     pass
 
+class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
+
+    signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+class TransitionGuard(RuntimeStateElement, metaclass=MetaEClass):
+
+    pass
+
 class Transition(RuntimeStateElement, metaclass=MetaEClass):
     """A single transition declared by a StateDef, from one of its
     StateUsage substates to another.
@@ -132,6 +140,7 @@ class Transition(RuntimeStateElement, metaclass=MetaEClass):
     # None means an unconditional/completion transition (e.g. the one fired
     # right after MySimulationDefinition's entry action finishes).
     trigger = EReference(eType=TransitionTrigger, lower=0, upper=1, containment=False)
+    guard = EReference(eType=TransitionGuard, lower=0, upper=1, containment=False)
 
     # The effect action performed when this transition fires, if any. None
     # means no effect.

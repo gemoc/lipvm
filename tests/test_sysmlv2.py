@@ -104,14 +104,16 @@ def test_program_simple_machine():
 
     # Each substate's contained_transitions holds the transition(s) firing
     # out of it (matched via the TransitionUsage's plain
-    # Membership.memberElement) — Idle -[NextTrans]-> Next do pNext, and
-    # Next -[IdleTrans]-> Idle do pIdle.
+    # Membership.memberElement) — Idle -[IdleTrans]-> Next do pNext, and
+    # Next -[NextTrans]-> Idle do pIdle.
     idle, next_ = simulation_def.substates
     assert len(idle.contained_transitions) == 1
     idle_to_next = idle.contained_transitions[0]
     assert isinstance(idle_to_next, rt.Transition)
     assert idle_to_next.source.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
-    assert idle_to_next.trigger is None
+    assert isinstance(idle_to_next.trigger, rt.TransitionTriggerBySignal)
+    assert idle_to_next.trigger.signal_origin.qualified_name == "SimpleSimulationPackage::IdleTrans"
+    assert idle_to_next.trigger.signal_origin.reference_type == rt.ItemDef.__name__
     assert idle_to_next.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Next"
     assert idle_to_next.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [argument.value.value for argument in idle_to_next.effect.arguments] == ["Hello World"]
@@ -119,6 +121,8 @@ def test_program_simple_machine():
     assert len(next_.contained_transitions) == 1
     next_to_idle = next_.contained_transitions[0]
     assert isinstance(next_to_idle, rt.Transition)
+    assert isinstance(next_to_idle.trigger, rt.TransitionTriggerBySignal)
+    assert next_to_idle.trigger.signal_origin.qualified_name == "SimpleSimulationPackage::NextTrans"
     assert next_to_idle.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
     assert next_to_idle.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [argument.value.value for argument in next_to_idle.effect.arguments] == ["Next Please"]
