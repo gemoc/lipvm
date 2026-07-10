@@ -22,10 +22,43 @@ def test_program_simple_machine():
     vm.run()
 
     # Then
-    action_defs = [element for element in vm.state.elements if isinstance(element, rt.ActionDef)]
-    assert len(action_defs) == 1
+    sysml_state = vm.state.sysml
+    assert isinstance(sysml_state, rt.SysmlRuntimeState)
 
-    print_def = action_defs[0]
+    action_defs_table = sysml_state.lookup_table_action_defs
+
+    #Test if an action exist
+    assert [reference.qualified_name for reference in action_defs_table.references] == ["SimpleSimulationPackage::Print"]
+
+    print_def = action_defs_table.get_reference("SimpleSimulationPackage::Print").element_type
+    assert isinstance(print_def, rt.ActionDef)
     assert print_def.declared_name == "Print"
     assert print_def.qualified_name == "SimpleSimulationPackage::Print"
-    assert [parameter.qualified_name for parameter in print_def.parameters] == ["msg"]
+    assert [parameter.declared_name for parameter in print_def.parameters] == ["msg"]
+    assert [parameter.qualified_name for parameter in print_def.parameters] == ["SimpleSimulationPackage::Print::msg"]
+
+    # msg is typed by the KerML library's ScalarValues::String, an
+    # unresolved proxy in the loaded model, resolved via the local
+    # kerml_libraries index rather than dereferencing the external resource.
+    msg_type = print_def.parameters[0].type
+    assert msg_type.kind == rt.TypeKind.SCALAR
+    assert msg_type.scalar_type == rt.ScalarType.STRING
+    assert msg_type.reference_type is None
+
+    item_defs_table = sysml_state.lookup_table_item_defs
+
+    # Test if the items exist
+    assert [reference.qualified_name for reference in item_defs_table.references] == [
+        "SimpleSimulationPackage::IdleTrans",
+        "SimpleSimulationPackage::NextTrans",
+    ]
+
+    idle_trans_def = item_defs_table.get_reference("SimpleSimulationPackage::IdleTrans").element_type
+    assert isinstance(idle_trans_def, rt.ItemDef)
+    assert idle_trans_def.declared_name == "IdleTrans"
+    assert idle_trans_def.qualified_name == "SimpleSimulationPackage::IdleTrans"
+
+    next_trans_def = item_defs_table.get_reference("SimpleSimulationPackage::NextTrans").element_type
+    assert isinstance(next_trans_def, rt.ItemDef)
+    assert next_trans_def.declared_name == "NextTrans"
+    assert next_trans_def.qualified_name == "SimpleSimulationPackage::NextTrans"

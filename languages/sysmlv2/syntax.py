@@ -12,6 +12,7 @@ from core.operation import operation
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
 from languages.sysmlv2.sysml_utility_classes import qualified_name
+from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
 
 # --- Hand-written interpreter helpers -------------------------------------
@@ -64,6 +65,45 @@ def _subaction(state_definition, kind):
             for element in relationship.ownedRelatedElement:
                 return element
     return None
+
+
+def _build_type_ref(type_node):
+    """Builds the TypeRef describing a Parameter's type from `type_node` (the
+    AST node/proxy found via a feature's FeatureTyping relationship).
+
+    This only classifies `kind` from `type_node`'s own AST class (or, for a
+    KerML library scalar, from the local library index) — it never resolves
+    the actual runtime Definition, so it needs no LookupTable and doesn't
+    care whether the target Definition has been registered yet. For
+    anything but a scalar, `reference_type` is a bare Reference carrying
+    just the target's qualified name; looking it up against the right
+    LookupTable to get the actual ActionDef/ItemDef/StateDef is left to
+    whoever dereferences it later.
+    """
+    if type_node is None:
+        return None
+
+    if isinstance(type_node, EProxy) and not type_node.resolved:
+        name = resolve_kerml_library_name(type_node._proxy_path)
+        scalar_type = rt._SCALAR_TYPE_BY_NAME.get(name) if name else None
+        return rt.TypeRef(kind=rt.TypeKind.SCALAR, scalar_type=scalar_type)
+
+    # StateDefinition/PartDefinition extend ActionDefinition/ItemDefinition
+    # respectively in the metamodel, so the more specific check comes first.
+    if isinstance(type_node, StateDefinition):
+        kind = rt.TypeKind.CUSTOM
+    elif isinstance(type_node, ActionDefinition):
+        kind = rt.TypeKind.ACTION
+    elif isinstance(type_node, PartDefinition):
+        kind = rt.TypeKind.PART
+    elif isinstance(type_node, ItemDefinition):
+        kind = rt.TypeKind.ITEM
+    elif isinstance(type_node, EnumerationDefinition):
+        kind = rt.TypeKind.ENUM
+    else:
+        kind = rt.TypeKind.UNKNOWN
+
+    return rt.TypeRef(kind=kind, reference_type=rt.Reference(qualified_name=qualified_name(type_node)))
 
 
 name = 'sysml'
@@ -567,34 +607,51 @@ endif
     @operation
     def evaluate(self, runtime: RuntimeState):
 
-        # 1. Build all the necessary Element Definitions: register every
-        # ActionDefinition/ItemDefinition/StateDefinition first, then a
-        # second pass to wire up cross-references (parameter types, entry/
-        # do/exit, substates) now that every Definition has a registry
-        # entry to resolve against.
-        registry = {}
+        # A single SysmlRuntimeState, one LookupTable per Definition kind,
+        # keyed by qualified name, doubles as both the registry built up
+        # below and the structure the rest of the AST resolves against.
+        sysml_state = rt.SysmlRuntimeState(name="sysml")
+        sysml_state.lookup_table_action_defs = rt.LookupTable()
+        sysml_state.lookup_table_item_defs = rt.LookupTable()
+        sysml_state.lookup_table_state_defs = rt.LookupTable()
 
+        action_defs = sysml_state.lookup_table_action_defs
+        item_defs = sysml_state.lookup_table_item_defs
+        state_defs = sysml_state.lookup_table_state_defs
+
+        # Register every ActionDefinition/ItemDefinition/StateDefinition into
+        # its LookupTable and wire up its own parameters/substates in the
+        # same pass: Parameter.type no longer needs every other Definition
+        # to already be registered (it only classifies `kind` from the AST
+        # node itself and defers resolving the actual Definition to later),
+        # so there's no forward reference left to wait out with a second
+        # pass over self.eAllContents().
         for element in self.eAllContents():
             # StateDefinition extends1 ActionDefinition in the metamodel, so
             # it's checked first — otherwise it would be misclassified as a
             # plain ActionDef and never reach the StateDef branch below.
             if isinstance(element, StateDefinition):
-                registry[element] = rt.StateDef(
+                record = rt.StateDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                state_defs.set_reference(record.qualified_name, record)
             elif isinstance(element, ActionDefinition):
-                registry[element] = rt.ActionDef(
+                record = rt.ActionDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                action_defs.set_reference(record.qualified_name, record)
             elif isinstance(element, ItemDefinition):
-                registry[element] = rt.ItemDef(
+                record = rt.ItemDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                item_defs.set_reference(record.qualified_name, record)
+                continue
+            else:
+                continue
 
-        for element, record in registry.items():
-            if isinstance(record, (rt.ActionDef, rt.StateDef)):
-                for feature in _formal_parameters(element):
-                    record.parameters.append(rt.Parameter(
-                        qualified_name=feature.declaredName,
-                        type=registry.get(_feature_type(feature)),
-                    ))
+            for feature in _formal_parameters(element):
+                record.parameters.append(rt.Parameter(
+                    declared_name=feature.declaredName,
+                    qualified_name=qualified_name(feature),
+                    type=_build_type_ref(_feature_type(feature)),
+                ))
 
             if isinstance(record, rt.StateDef):
                 # TODO: rt.StateDef.entry/do/exit are declared eType=Reference
@@ -610,13 +667,14 @@ endif
                 for feature in _owned_by_kind(element, FeatureMembership):
                     if isinstance(feature, StateUsage):
                         record.substates.append(rt.StateUsage(
-                            qualified_name=feature.declaredName,
+                            declared_name=feature.declaredName,
+                            qualified_name=qualified_name(feature),
                             definition=feature,
                         ))
 
-        runtime.elements.extend(registry.values())
+        runtime.elements.append(sysml_state)
 
-        # 2. Once ready, then execute it — deferred until dispatch (how a
+        # Once ready, then execute it — deferred until dispatch (how a
         # running StateUsage advances through entry/transitions) is designed.
 
 

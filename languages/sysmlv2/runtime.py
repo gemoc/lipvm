@@ -1,6 +1,15 @@
-from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject
+from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement
+from languages.sysmlv2.sysml_utility_classes import qualified_name
+
+# Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
+# requires an EClassifier (EEnum), which a Python Enum class isn't.
+TypeKind = EEnum('TypeKind', literals=['SCALAR', 'PART', 'ITEM', 'ACTION', 'CUSTOM', 'ENUM', 'UNKNOWN'])
+
+ParamDirection = EEnum('ParamDirection', literals=['IN', 'OUT', 'INOUT'])
+
+ScalarType = EEnum('ScalarType', literals=['BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
 
 class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     """Runtime registry entry for a named SysML Definition.
@@ -16,28 +25,33 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     qualified_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
     definition = EReference(eType=AbstractSyntaxElement, lower=0, upper=1, containment=False)
 
-
 class Reference(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=0, upper=1, containment=False)
 
 class LookupTable(EObject, metaclass=MetaEClass):
     references = EReference(eType=Reference, lower=0, upper=-1, containment=True)
 
-    def get_reference(self, name):
+    def get_reference(self, qualified_name):
         for b in self.references:
-            if b.name == name:
+            if b.qualified_name == qualified_name:
                 return b
         return None
 
-    def has_reference(self, name):
-        return self.get_reference(name) is not None
+    def has_reference(self, qualified_name):
+        return self.get_reference(qualified_name) is not None
 
-    def set_reference(self, name, value):
-        reference = self.get_reference(name)
+    def set_reference(self, qualified_name, value):
+        reference = self.get_reference(qualified_name)
         if reference is not None:
-            reference.value = value
+            reference.element_type = value
         else:
-            self.references.append(Reference(name=name, value=value))
+            self.references.append(Reference(qualified_name=qualified_name, element_type=value))
+
+class TypeRef(RuntimeStateElement, metaclass=MetaEClass):
+
+    kind =  EAttribute(eType=TypeKind, lower=0, upper=1, containment=False)
+    scalar_type =  EAttribute(eType=ScalarType, lower=0, upper=1, containment=False)
+    reference_type = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
 class Parameter(ElementDefinition, metaclass=MetaEClass):
     """A named parameter slot: either a formal parameter declared on an
@@ -46,7 +60,8 @@ class Parameter(ElementDefinition, metaclass=MetaEClass):
     AST literal/expression node it was bound to, `type` pointing back at the
     formal Parameter it fulfills).
     """
-    type = EReference(eType=ElementDefinition, lower=0, upper=1, containment=False)
+    type = EReference(eType=TypeRef, lower=0, upper=1, containment=False)
+    direction = EAttribute(eType=ParamDirection, lower=0, upper=1, containment=False)
     default_value = EReference(eType=EObject, lower=0, upper=1, containment=False)
 
 class Argument(ElementDefinition, metaclass=MetaEClass):
@@ -163,9 +178,42 @@ StateUsage.type.eType = StateDef
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
-    lookup_table_item_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
-    lookup_table_part_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
-    lookup_table_enum_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
-    lookup_table_state_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
-    lookup_table_action_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
-    lookup_table_attribute_defs = EReference(eType=LookupTable, lower=0, upper=-1, containment=True)
+    lookup_table_item_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+    lookup_table_part_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+    lookup_table_enum_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+    lookup_table_state_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+    lookup_table_action_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+    lookup_table_attribute_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+
+
+def _resolve_definition(tables, type_node):
+    """Looks up the ElementDefinition registered under `type_node`'s qualified
+    name in any of `tables`, if any (e.g. a scalar-typed feature resolves to
+    None, since no LookupTable holds an entry for it).
+
+    Unresolved proxies (e.g. a feature typed by a KerML library element that
+    isn't part of this document) are skipped rather than dereferenced, since
+    resolving them would try to load an external resource the loader never
+    registered; they can never match a locally-registered Definition anyway.
+    """
+    if type_node is None:
+        return None
+    if isinstance(type_node, EProxy) and not type_node.resolved:
+        return None
+    name = qualified_name(type_node)
+    for table in tables:
+        reference = table.get_reference(name)
+        if reference is not None:
+            return reference.element_type
+    return None
+
+
+# Only the scalar names ScalarValues.json actually declares are mapped;
+# names outside this set (e.g. Rational, Natural, Complex) still get a
+# SCALAR TypeRef, just with scalar_type left unset.
+_SCALAR_TYPE_BY_NAME = {
+    'Boolean': ScalarType.BOOLEAN,
+    'String': ScalarType.STRING,
+    'Integer': ScalarType.INTEGER,
+    'Real': ScalarType.REAL,
+}
