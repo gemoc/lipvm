@@ -185,6 +185,12 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
     lookup_table_action_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
     lookup_table_attribute_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
 
+    # StateUsages declared outside any StateDefinition (e.g. `main :
+    # MySimulationDefinition`) — actual instances of a state machine, as
+    # opposed to a StateDefinition's own nested substates (e.g. Idle/Next),
+    # which live in StateDef.substates instead and never have a type of
+    # their own by modeling convention. This will be treated as state machines that must be executed
+    lookup_table_executable_state_usages = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
 
 def _resolve_definition(tables, type_node):
     """Looks up the ElementDefinition registered under `type_node`'s qualified

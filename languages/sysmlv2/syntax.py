@@ -45,6 +45,15 @@ def _bound_value(feature):
     return None
 
 
+def _nearest_ancestor(element, kind):
+    """Walks up `element`'s containment chain and returns the nearest
+    ancestor of type `kind`, or None if there isn't one before the root."""
+    container = element.eContainer()
+    while container is not None and not isinstance(container, kind):
+        container = container.eContainer()
+    return container
+
+
 def _formal_parameters(behavior):
     """Returns the owned features of `behavior` that declare a direction
     (in/inout/out) — i.e. its formal parameters.
@@ -635,10 +644,12 @@ endif
         sysml_state.lookup_table_action_defs = rt.LookupTable()
         sysml_state.lookup_table_item_defs = rt.LookupTable()
         sysml_state.lookup_table_state_defs = rt.LookupTable()
+        sysml_state.lookup_table_executable_state_usages = rt.LookupTable()
 
         action_defs = sysml_state.lookup_table_action_defs
         item_defs = sysml_state.lookup_table_item_defs
         state_defs = sysml_state.lookup_table_state_defs
+        state_usages = sysml_state.lookup_table_executable_state_usages
 
         # Register every ActionDefinition/ItemDefinition/StateDefinition into
         # its LookupTable and wire up its own parameters/substates in the
@@ -683,6 +694,17 @@ endif
                 record = rt.ItemDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
                 item_defs.set_reference(record.qualified_name, record)
+            elif isinstance(element, StateUsage) and _nearest_ancestor(element, StateDefinition) is None:
+                # A StateUsage declared outside any StateDefinition (e.g.
+                # `main : MySimulationDefinition`) is an actual instance of a
+                # state machine, unlike a StateDefinition's own nested
+                # substates (Idle/Next above), which never carry a type of
+                # their own by modeling convention — so only this branch
+                # attempts to resolve `type`.
+                record = rt.StateUsage(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                record.type = rt._resolve_definition((state_defs,), _feature_type(element))
+                state_usages.set_reference(record.qualified_name, record)
 
         runtime.elements.append(sysml_state)
 

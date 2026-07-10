@@ -62,6 +62,32 @@ def test_program_simple_machine():
     # _populate_parameters() should leave this empty rather than error out.
     assert simulation_def.parameters == []
 
+    # Idle/Next are MySimulationDefinition's own nested substates. By
+    # modeling convention a substate never carries a type of its own — only
+    # a StateUsage declared outside any StateDefinition can — so both
+    # should resolve to type=None here.
+    assert [substate.declared_name for substate in simulation_def.substates] == ["Idle", "Next"]
+    assert [substate.qualified_name for substate in simulation_def.substates] == [
+        "SimpleSimulationPackage::MySimulationDefinition::Idle",
+        "SimpleSimulationPackage::MySimulationDefinition::Next",
+    ]
+    assert all(substate.type is None for substate in simulation_def.substates)
+
+    state_usages_table = sysml_state.lookup_table_executable_state_usages
+
+    # `main` is a StateUsage declared directly under the package (not nested
+    # in any StateDefinition), explicitly typed by MySimulationDefinition —
+    # the actual instance of the state machine, as opposed to Idle/Next above.
+    assert [reference.qualified_name for reference in state_usages_table.references] == [
+        "SimpleSimulationPackage::main"
+    ]
+
+    main_usage = state_usages_table.get_reference("SimpleSimulationPackage::main").element_type
+    assert isinstance(main_usage, rt.StateUsage)
+    assert main_usage.declared_name == "main"
+    assert main_usage.qualified_name == "SimpleSimulationPackage::main"
+    assert main_usage.type is simulation_def
+
     item_defs_table = sysml_state.lookup_table_item_defs
 
     # Test if the items exist
