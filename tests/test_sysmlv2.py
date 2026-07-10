@@ -1,4 +1,5 @@
 from core.vm import *
+from languages.sysmlv2.runtime import Parameter
 
 from languages.sysmlv2.syntax import *
 from languages.sysmlv2 import runtime as rt
@@ -36,6 +37,12 @@ def test_program_simple_machine():
     assert print_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [parameter.declared_name for parameter in print_def.parameters] == ["msg"]
     assert [parameter.qualified_name for parameter in print_def.parameters] == ["SimpleSimulationPackage::Print::msg"]
+    assert print_def.parameters[0].direction == rt.ParamDirection.IN
+
+    # Print's formal `msg` parameter isn't bound to a default in the model
+    # (only call sites like pIdle/pNext bind an actual value) — confirms
+    # default_value stays None rather than picking up something spurious.
+    assert print_def.parameters[0].default_value is None
 
     # Test 2: If a Parameter inside an action is discovered
     # msg is typed by the KerML library's ScalarValues::String, an

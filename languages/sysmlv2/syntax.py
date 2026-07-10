@@ -70,6 +70,25 @@ def _formal_parameters(behavior):
     ]
 
 
+_PARAM_DIRECTION_BY_AST_NAME = {
+    # FeatureDirectionKind declares the literal 'in_' (Python-safe, 'in'
+    # being a keyword), but str() on the EEnumLiteral instance renders the
+    # original unescaped name ('in'), not the Python attribute name.
+    'in': rt.ParamDirection.IN,
+    'out': rt.ParamDirection.OUT,
+    'inout': rt.ParamDirection.INOUT,
+}
+
+
+def _param_direction(feature):
+    """Maps `feature`'s AST FeatureDirectionKind ('in_'/'out'/'inout') to the
+    runtime's ParamDirection (IN/OUT/INOUT). Only called on features
+    _formal_parameters has already confirmed have an explicitly-declared
+    direction (eIsSet('direction')), so the lookup can't miss.
+    """
+    return _PARAM_DIRECTION_BY_AST_NAME[str(feature.direction)]
+
+
 def _populate_parameters(record, behavior):
     """Appends a runtime Parameter onto `record` for each formal parameter of `behavior`.
 
@@ -81,6 +100,8 @@ def _populate_parameters(record, behavior):
             declared_name=feature.declaredName,
             qualified_name=qualified_name(feature),
             type=_build_type_ref(_feature_type(feature)),
+            direction=_param_direction(feature),
+            default_value=_bound_value(feature),
         ))
 
 
