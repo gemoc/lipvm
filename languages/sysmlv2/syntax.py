@@ -7,6 +7,63 @@ from core.language import AbstractSyntaxElement, RuntimeState
 
 from core.operation import operation
 
+# Aliased (not `from ... import *`) because the metamodel already declares
+# its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
+# registry's StateUsage unambiguous from the AST's.
+from languages.sysmlv2 import runtime as rt
+
+
+# --- Hand-written interpreter helpers -------------------------------------
+#
+# Small AST-navigation helpers shared by evaluate() methods below (e.g.
+# Namespace, PerformActionUsage). They read pyecoregen's plain, non-derived
+# containment features (ownedRelationship / ownedRelatedElement) directly
+# instead of the many derived convenience properties this generated module
+# leaves as `raise NotImplementedError(...)`.
+
+def _feature_type(feature):
+    """Returns the AST type node from `feature`'s FeatureTyping relationship, if any."""
+    for relationship in feature.ownedRelationship:
+        if isinstance(relationship, FeatureTyping):
+            return relationship.type
+    return None
+
+
+def _owned_by_kind(element, kind):
+    """Yields the ownedRelatedElement(s) of each of `element`'s ownedRelationship of type `kind`."""
+    for relationship in element.ownedRelationship:
+        if isinstance(relationship, kind):
+            yield from relationship.ownedRelatedElement
+
+
+def _bound_value(feature):
+    """Returns the AST literal/expression node bound to `feature` via a FeatureValue, if any."""
+    for value in _owned_by_kind(feature, FeatureValue):
+        return value
+    return None
+
+
+def _formal_parameters(behavior):
+    """Returns the owned features of `behavior` that declare a direction
+    (in/inout/out) — i.e. its formal parameters."""
+    return [
+        feature for feature in _owned_by_kind(behavior, FeatureMembership)
+        if getattr(feature, 'direction', None) is not None
+    ]
+
+
+def _subaction(state_definition, kind):
+    """Returns the entry/do/exit PerformActionUsage AST node of a StateDefinition, if any.
+
+    `kind` is a plain string ('entry'/'do'/'exit'); relationship.kind is an
+    EEnumLiteral, which pyecore doesn't compare equal to a string, hence str().
+    """
+    for relationship in state_definition.ownedRelationship:
+        if isinstance(relationship, StateSubactionMembership) and str(relationship.kind) == kind:
+            for element in relationship.ownedRelatedElement:
+                return element
+    return None
+
 
 name = 'sysml'
 nsURI = 'https://www.omg.org/spec/SysML/20250201'
@@ -507,12 +564,51 @@ endif
         raise NotImplementedError('operation visibleMemberships(...) not yet implemented')
 
     @operation
-    def evaluate(self, runtime):
+    def evaluate(self, runtime: RuntimeState):
 
-        #TODO Implement
-        # 1. Build all the necessary Element Definition
-        # 2. Once ready, then execute it
-        pass
+        # 1. Build all the necessary Element Definitions: register every
+        # ActionDefinition/ItemDefinition/StateDefinition first, then a
+        # second pass to wire up cross-references (parameter types, entry/
+        # do/exit, substates) now that every Definition has a registry
+        # entry to resolve against.
+        registry = {}
+
+        for element in self.eAllContents():
+            # StateDefinition extends1 ActionDefinition in the metamodel, so
+            # it's checked first — otherwise it would be misclassified as a
+            # plain ActionDef and never reach the StateDef branch below.
+            if isinstance(element, StateDefinition):
+                registry[element] = rt.StateDef(qualified_name=element.declaredName, definition=element)
+            elif isinstance(element, ActionDefinition):
+                registry[element] = rt.ActionDef(qualified_name=element.declaredName, definition=element)
+            elif isinstance(element, ItemDefinition):
+                registry[element] = rt.ItemDef(qualified_name=element.declaredName, definition=element)
+
+        for element, record in registry.items():
+            if isinstance(record, (rt.ActionDef, rt.StateDef)):
+                for feature in _formal_parameters(element):
+                    record.parameters.append(rt.Parameter(
+                        qualified_name=feature.declaredName,
+                        type=registry.get(_feature_type(feature)),
+                    ))
+
+            if isinstance(record, rt.StateDef):
+                record.entry = _subaction(element, 'entry')
+                record.do = _subaction(element, 'do')
+                record.exit = _subaction(element, 'exit')
+
+                for feature in _owned_by_kind(element, FeatureMembership):
+                    if isinstance(feature, StateUsage):
+                        record.substates.append(rt.StateUsage(
+                            qualified_name=feature.declaredName,
+                            definition=feature,
+                        ))
+
+        runtime.elements.extend(registry.values())
+
+        # 2. Once ready, then execute it — deferred until dispatch (how a
+        # running StateUsage advances through entry/transitions) is designed.
+
 
 class DerivedRelatedelement(EDerivedCollection):
     pass
@@ -6682,6 +6778,42 @@ owningType <> null and
 
         if performedAction is not None:
             self.performedAction = performedAction
+
+    @operation
+    def evaluate(self, runtime: RuntimeState):
+
+        # Resolve which ActionDef this call performs (e.g. pEntry -> Print),
+        # via the registry Namespace.evaluate() already built.
+        target = _feature_type(self)
+        action_def = next(
+            (element for element in runtime.elements
+             if isinstance(element, rt.ActionDef) and element.definition is target),
+            None,
+        )
+
+        # Bind each argument (e.g. msg="Entry") to the formal parameter it
+        # fulfills, if the target ActionDef and a matching formal are known.
+        # No side effect: what "performing" an action does isn't defined by
+        # the model for a bodyless leaf action like Print, so this only
+        # resolves and returns the bound parameters.
+        bound = []
+        for feature in _owned_by_kind(self, FeatureMembership):
+            name = feature.declaredName
+            if name is None:
+                continue
+            formal = None
+            if action_def is not None:
+                formal = next(
+                    (parameter for parameter in action_def.parameters if parameter.qualified_name == name),
+                    None,
+                )
+            bound.append(rt.Parameter(
+                qualified_name=name,
+                type=formal,
+                value=_bound_value(feature),
+            ))
+
+        return bound
 
 
 class SelectExpression(OperatorExpression):
