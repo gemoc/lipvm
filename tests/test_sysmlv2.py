@@ -27,7 +27,7 @@ def test_program_simple_machine():
 
     action_defs_table = sysml_state.lookup_table_action_defs
 
-    #Test if an action exist
+    #Test 1: If an action definition exist
     assert [reference.qualified_name for reference in action_defs_table.references] == ["SimpleSimulationPackage::Print"]
 
     print_def = action_defs_table.get_reference("SimpleSimulationPackage::Print").element_type
@@ -37,6 +37,7 @@ def test_program_simple_machine():
     assert [parameter.declared_name for parameter in print_def.parameters] == ["msg"]
     assert [parameter.qualified_name for parameter in print_def.parameters] == ["SimpleSimulationPackage::Print::msg"]
 
+    # Test 2: If a Parameter inside an action is discovered
     # msg is typed by the KerML library's ScalarValues::String, an
     # unresolved proxy in the loaded model, resolved via the local
     # kerml_libraries index rather than dereferencing the external resource.
@@ -47,7 +48,7 @@ def test_program_simple_machine():
 
     state_defs_table = sysml_state.lookup_table_state_defs
 
-    # Test if a state exists
+    # Test 3: if a state definition exists
     assert [reference.qualified_name for reference in state_defs_table.references] == [
         "SimpleSimulationPackage::MySimulationDefinition"
     ]
@@ -62,6 +63,28 @@ def test_program_simple_machine():
     # _populate_parameters() should leave this empty rather than error out.
     assert simulation_def.parameters == []
 
+    # Test 4: If an entry action is discovered
+    # entry_action is pEntry performing Print(msg="Entry"). action_def is a
+    # bare Reference (qualified name only, like Parameter.type) — resolving
+    # it against lookup_table_action_defs is left to whoever executes it.
+    entry_action = simulation_def.entry_action
+    assert isinstance(entry_action, rt.ActualAction)
+    assert entry_action.action_def.qualified_name == "SimpleSimulationPackage::Print"
+    assert entry_action.action_def.element_type is None
+    assert [argument.declared_name for argument in entry_action.arguments] == ["msg"]
+    assert entry_action.arguments[0].value.value == "Entry"
+
+    # Test if a default transition is discovered
+    # default_transition is the unconditional transition fired right after
+    # entry finishes, straight into Idle — no source substate (it fires out
+    # of the entry action, not a state) and no trigger/effect of its own.
+    default_transition = simulation_def.default_transition
+    assert isinstance(default_transition, rt.Transition)
+    assert default_transition.source is None
+    assert default_transition.trigger is None
+    assert default_transition.effect is None
+    assert default_transition.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+
     # Idle/Next are MySimulationDefinition's own nested substates: purely
     # structural placeholders (rt.StateUsage), unlike the independently
     # running rt.ExecutableStateUsage checked below.
@@ -71,6 +94,27 @@ def test_program_simple_machine():
         "SimpleSimulationPackage::MySimulationDefinition::Next",
     ]
     assert all(isinstance(substate, rt.StateUsage) for substate in simulation_def.substates)
+
+    # Each substate's contained_transitions holds the transition(s) firing
+    # out of it (matched via the TransitionUsage's plain
+    # Membership.memberElement) — Idle -[NextTrans]-> Next do pNext, and
+    # Next -[IdleTrans]-> Idle do pIdle.
+    idle, next_ = simulation_def.substates
+    assert len(idle.contained_transitions) == 1
+    idle_to_next = idle.contained_transitions[0]
+    assert isinstance(idle_to_next, rt.Transition)
+    assert idle_to_next.source.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+    assert idle_to_next.trigger is None
+    assert idle_to_next.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Next"
+    assert idle_to_next.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
+    assert [argument.value.value for argument in idle_to_next.effect.arguments] == ["Hello World"]
+
+    assert len(next_.contained_transitions) == 1
+    next_to_idle = next_.contained_transitions[0]
+    assert isinstance(next_to_idle, rt.Transition)
+    assert next_to_idle.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+    assert next_to_idle.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
+    assert [argument.value.value for argument in next_to_idle.effect.arguments] == ["Next Please"]
 
     state_usages_table = sysml_state.lookup_table_executable_state_usages
 

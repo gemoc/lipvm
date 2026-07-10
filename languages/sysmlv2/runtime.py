@@ -142,19 +142,19 @@ class StateUsage(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDef's own nested substate (e.g.
     `Idle`, `Next`) — part of the StateDef's static structure, not a running
     instance. Per the SysML metamodel a StateUsage, like a StateDefinition,
-    may itself declare entry/do/exit subactions and transitions between its
-    own nested substates (if it is itself composite); those live here. It
-    carries no `type` and no dynamic "currently active" state of its own —
-    that only exists on the ExecutableStateUsage instantiating the owning
-    StateDef.
+    may itself declare entry/do/exit subactions; those live here. It carries
+    no `type` and no dynamic "currently active" state of its own — that only
+    exists on the ExecutableStateUsage instantiating the owning StateDef.
     """
     entry = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
     do = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
     exit = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
 
-    # Transition(s) owned directly by this StateUsage, relevant when it is
-    # itself composite (has nested substates/transitions of its own) —
-    # mirrors StateDef.substates/transitions one level down.
+    # Transitions that fire out of this substate (e.g. Idle's transition to
+    # Next) — a TransitionUsage is matched to its source substate via its
+    # plain Membership.memberElement (see syntax._transition_source), since
+    # it's declared as a sibling FeatureMembership of the StateDefinition
+    # rather than nested inside the substate itself.
     contained_transitions = EReference(eType=Transition, lower=0, upper=-1, containment=False)
 
 class StateDef(ElementDefinition, metaclass=MetaEClass):

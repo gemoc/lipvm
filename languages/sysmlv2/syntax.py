@@ -97,6 +97,117 @@ def _subaction(state_definition, kind):
     return None
 
 
+def _transition_source(transition_usage):
+    """Returns the AST node `transition_usage` fires out of — a StateUsage
+    substate (e.g. Idle), or a StateDef's own entry PerformActionUsage for
+    the unconditional transition fired right after entry completes.
+
+    Read off the plain Membership every TransitionUsage carries alongside
+    its SuccessionAsUsage (not a FeatureMembership/EndFeatureMembership/etc,
+    which all subclass OwningMembership instead).
+    """
+    for relationship in transition_usage.ownedRelationship:
+        if isinstance(relationship, Membership) and not isinstance(relationship, OwningMembership):
+            return relationship.memberElement
+    return None
+
+
+def _transition_target(transition_usage):
+    """Returns the StateUsage AST node `transition_usage` fires into: the
+    SuccessionAsUsage end identified by a ReferenceSubsetting. (The source
+    end is left unlabeled in the XMI — _transition_source covers that case
+    instead.)
+    """
+    for succession in _owned_by_kind(transition_usage, OwningMembership):
+        if not isinstance(succession, SuccessionAsUsage):
+            continue
+        for end_feature in _owned_by_kind(succession, EndFeatureMembership):
+            for relationship in end_feature.ownedRelationship:
+                if isinstance(relationship, ReferenceSubsetting):
+                    return relationship.referencedFeature
+    return None
+
+
+def _transition_trigger_action(transition_usage):
+    """Returns the AcceptActionUsage AST node that's `transition_usage`'s
+    trigger, if any.
+
+    Identified structurally (child type) rather than via the sibling
+    TransitionFeatureMembership's `kind`: the exporter doesn't reliably set
+    kind='effect' on the other membership (same defaulted-EEnum landmine
+    _formal_parameters works around for `direction`), so `kind` alone can't
+    be trusted to tell trigger from effect.
+    """
+    for feature in _owned_by_kind(transition_usage, TransitionFeatureMembership):
+        if isinstance(feature, AcceptActionUsage):
+            return feature
+    return None
+
+
+def _transition_effect_action(transition_usage):
+    """Returns the PerformActionUsage AST node performed when
+    `transition_usage` fires, if any — identified structurally, for the
+    same reason as _transition_trigger_action.
+    """
+    for feature in _owned_by_kind(transition_usage, TransitionFeatureMembership):
+        if isinstance(feature, PerformActionUsage):
+            return feature
+    return None
+
+
+def _default_transition(state_definition):
+    """Returns the TransitionUsage AST node for the unconditional/completion
+    transition fired right after `state_definition`'s own entry action, if
+    any — the one TransitionUsage directly owned by it with no trigger.
+    """
+    for feature in _owned_by_kind(state_definition, FeatureMembership):
+        if isinstance(feature, TransitionUsage) and _transition_trigger_action(feature) is None:
+            return feature
+    return None
+
+
+def _build_actual_action(perform_action_usage):
+    """Builds an ActualAction runtime record from a PerformActionUsage AST
+    node (e.g. pEntry performing Print): the ActionDef it performs (a bare
+    Reference, deferred the same way as _build_reference) and its bound
+    call-site arguments.
+    """
+    if perform_action_usage is None:
+        return None
+    arguments = [
+        rt.Argument(
+            declared_name=feature.declaredName,
+            qualified_name=qualified_name(feature),
+            value=_bound_value(feature),
+        )
+        for feature in _owned_by_kind(perform_action_usage, FeatureMembership)
+        if _bound_value(feature) is not None
+    ]
+    return rt.ActualAction(
+        action_def=_build_reference(_feature_type(perform_action_usage)),
+        arguments=arguments,
+    )
+
+
+def _build_transition(transition_usage):
+    """Builds a Transition runtime record from a TransitionUsage AST node.
+
+    `source`/`target` are bare References (see _build_reference); `source`
+    stays None when the transition's owning context isn't itself a
+    StateUsage (e.g. a StateDef's own entry-completion transition, whose
+    source is the entry action rather than a substate).
+    """
+    if transition_usage is None:
+        return None
+    source = _transition_source(transition_usage)
+    return rt.Transition(
+        definition=transition_usage,
+        source=_build_reference(source) if isinstance(source, StateUsage) else None,
+        effect=_build_actual_action(_transition_effect_action(transition_usage)),
+        target=_build_reference(_transition_target(transition_usage)),
+    )
+
+
 def _build_type_ref(type_node):
     """Builds the TypeRef describing a Parameter's type from `type_node` (the
     AST node/proxy found via a feature's FeatureTyping relationship).
@@ -683,23 +794,28 @@ endif
                 state_defs.set_reference(record.qualified_name, record)
                 _populate_parameters(record, element)
 
-                # TODO: rt.StateDef.entry is declared eType=ActualAction (a
-                # runtime call record) but _subaction() returns a raw
-                # PerformActionUsage AST node, so this assignment still
-                # raises BadValueError. Commented out to unblock ActionDef
-                # work; revisit once building an ActualAction from a
-                # PerformActionUsage is wired up. do/exit no longer exist on
-                # StateDef — only entry does; per-substate do/exit instead
-                # live on each nested StateUsage (see runtime.StateUsage).
-                # record.entry = _subaction(element, 'entry')
+                record.entry_action = _build_actual_action(_subaction(element, 'entry'))
+                record.default_transition = _build_transition(_default_transition(element))
 
+                # Two passes: substates must all exist before matching
+                # transitions against them, since a transition's source can
+                # appear before or after it among element's own features.
+                substates_by_definition = {}
                 for feature in _owned_by_kind(element, FeatureMembership):
                     if isinstance(feature, StateUsage):
-                        record.substates.append(rt.StateUsage(
+                        substate = rt.StateUsage(
                             declared_name=feature.declaredName,
                             qualified_name=qualified_name(feature),
                             definition=feature,
-                        ))
+                        )
+                        record.substates.append(substate)
+                        substates_by_definition[feature] = substate
+
+                for feature in _owned_by_kind(element, FeatureMembership):
+                    if isinstance(feature, TransitionUsage):
+                        substate = substates_by_definition.get(_transition_source(feature))
+                        if substate is not None:
+                            substate.contained_transitions.append(_build_transition(feature))
             elif isinstance(element, ActionDefinition):
                 record = rt.ActionDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
