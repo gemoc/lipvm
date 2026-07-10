@@ -62,16 +62,15 @@ def test_program_simple_machine():
     # _populate_parameters() should leave this empty rather than error out.
     assert simulation_def.parameters == []
 
-    # Idle/Next are MySimulationDefinition's own nested substates. By
-    # modeling convention a substate never carries a type of its own — only
-    # a StateUsage declared outside any StateDefinition can — so both
-    # should resolve to type=None here.
+    # Idle/Next are MySimulationDefinition's own nested substates: purely
+    # structural placeholders (rt.StateUsage), unlike the independently
+    # running rt.ExecutableStateUsage checked below.
     assert [substate.declared_name for substate in simulation_def.substates] == ["Idle", "Next"]
     assert [substate.qualified_name for substate in simulation_def.substates] == [
         "SimpleSimulationPackage::MySimulationDefinition::Idle",
         "SimpleSimulationPackage::MySimulationDefinition::Next",
     ]
-    assert all(substate.type is None for substate in simulation_def.substates)
+    assert all(isinstance(substate, rt.StateUsage) for substate in simulation_def.substates)
 
     state_usages_table = sysml_state.lookup_table_executable_state_usages
 
@@ -83,10 +82,17 @@ def test_program_simple_machine():
     ]
 
     main_usage = state_usages_table.get_reference("SimpleSimulationPackage::main").element_type
-    assert isinstance(main_usage, rt.StateUsage)
+    assert isinstance(main_usage, rt.ExecutableStateUsage)
     assert main_usage.declared_name == "main"
     assert main_usage.qualified_name == "SimpleSimulationPackage::main"
-    assert main_usage.type is simulation_def
+
+    # state_def_origin is a bare Reference carrying just the qualified name
+    # (like Parameter.type/_build_type_ref) — it's never looked up against
+    # lookup_table_state_defs at build time, so element_type stays
+    # unresolved until whoever executes this usage dereferences it later.
+    assert isinstance(main_usage.state_def_origin, rt.Reference)
+    assert main_usage.state_def_origin.qualified_name == "SimpleSimulationPackage::MySimulationDefinition"
+    assert main_usage.state_def_origin.element_type is None
 
     item_defs_table = sysml_state.lookup_table_item_defs
 

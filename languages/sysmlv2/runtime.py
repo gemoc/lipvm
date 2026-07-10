@@ -82,12 +82,12 @@ class ActionDef(ElementDefinition, metaclass=MetaEClass):
 
 class ActualAction(ElementDefinition, metaclass=MetaEClass):
     """A single performance/call occurrence of an ActionDef (e.g. `pEntry`
-    performing `Print`), analogous to how StateUsage is the running
-    occurrence of a StateDef.
+    performing `Print`), analogous to how ExecutableStateUsage is the
+    running occurrence of a StateDef.
     """
 
     # Which ActionDef this call performs. None if it doesn't resolve.
-    action_def = EReference(eType=ActionDef, lower=0, upper=1, containment=False)
+    action_def = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
     # The bound call-site arguments (e.g. msg="Entry"), each a Parameter
     # whose `type` points back at the formal Parameter it fulfills.
@@ -100,80 +100,98 @@ class ItemDef(ElementDefinition, metaclass=MetaEClass):
     # TODO: attributes, once AttributeDefinition/AttributeUsage support lands.
     pass
 
-class StateUsage(ElementDefinition, metaclass=MetaEClass):
-    """Runtime registry entry for a StateUsage: a running occurrence of a
-    state — either a nested substate declared by a StateDef (e.g. `Idle`) or
-    a top-level usage explicitly typed by one (e.g. `main` : MySimulationDefinition).
-
-    `current`/`pending` (the dynamic "which substate is active" pointer and
-    this instance's own mailbox) live here rather than on StateDef, since a
-    single StateDef can be instantiated by more than one StateUsage, each
-    running independently and needing its own state.
+class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
+    """Placeholder for a Transition's trigger condition — what an incoming
+    item must match for the Transition to fire. No fields yet; kept as its
+    own marker type (rather than reusing ItemDef directly) so richer trigger
+    matching (item kind, guard, etc.) can grow independently of the item
+    type registry later.
     """
 
-    # The StateDef this usage is typed by. None for an anonymous nested
-    # substate (e.g. Idle/Next), which belongs to its owning StateDef
-    # without being typed by a StateDefinition of its own.
-    type = EReference(eType=None, lower=0, upper=1, containment=False)
-
-    # `StateUsage` isn't bound yet while its own class body executes, so this
-    # self-referencing feature is declared untyped here and patched below.
-    current = EReference(eType=None, lower=0, upper=1, containment=False)
-
-    # FIFO mailbox: items received while this instance was in some state,
-    # not yet matched against a transition and consumed.
-    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False)
-
-
-# Patched in place (not replaced) so the name binding `_promote` assigned to
-# each feature at class-creation time is preserved. Mirrors how
-# tools/load_xmi_with_syntax.py repairs pyecoregen's untyped references by
-# mutating `feature.eType` rather than reassigning the descriptor.
-StateUsage.current.eType = StateUsage
-
+    pass
 
 class Transition(RuntimeStateElement, metaclass=MetaEClass):
     """A single transition declared by a StateDef, from one of its
     StateUsage substates to another.
 
     Built once from a TransitionUsage's source/trigger/target/effect. Firing
-    it (matching an incoming item against `trigger`, running `effect`, moving
-    the running StateUsage's `current` to `target`) is a dispatch concern
-    left for later; this only holds the structure needed to find and fire one.
+    it (matching an incoming item against `trigger`, running `effect`,
+    moving the owning ExecutableStateUsage's `current` to `target`) is a
+    dispatch concern left for later; this only holds the structure needed to
+    find and fire one.
     """
-
     definition = EReference(eType=AbstractSyntaxElement, lower=0, upper=1, containment=False)
 
-    # The StateUsage substate this transition fires out of (e.g. Idle).
-    source = EReference(eType=StateUsage, lower=0, upper=1, containment=False)
+    # Reference to the StateUsage substate this transition fires out of
+    # (e.g. Idle).
+    source = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
     # None means an unconditional/completion transition (e.g. the one fired
     # right after MySimulationDefinition's entry action finishes).
-    trigger = EReference(eType=ItemDef, lower=0, upper=1, containment=False)
+    trigger = EReference(eType=TransitionTrigger, lower=0, upper=1, containment=False)
 
-    # The effect PerformActionUsage AST node, if any, evaluated when this
-    # transition fires. None means no effect.
-    effect = EReference(eType=Reference, lower=0, upper=1, containment=False)
+    # The effect action performed when this transition fires, if any. None
+    # means no effect.
+    effect = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
 
-    target = EReference(eType=StateUsage, lower=1, upper=1, containment=False)
+    # Reference to the StateUsage substate this transition fires into.
+    target = EReference(eType=Reference, lower=1, upper=1, containment=False)
+
+
+class StateUsage(ElementDefinition, metaclass=MetaEClass):
+    """Runtime registry entry for a StateDef's own nested substate (e.g.
+    `Idle`, `Next`) — part of the StateDef's static structure, not a running
+    instance. Per the SysML metamodel a StateUsage, like a StateDefinition,
+    may itself declare entry/do/exit subactions and transitions between its
+    own nested substates (if it is itself composite); those live here. It
+    carries no `type` and no dynamic "currently active" state of its own —
+    that only exists on the ExecutableStateUsage instantiating the owning
+    StateDef.
+    """
+    entry = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
+    do = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
+    exit = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
+
+    # Transition(s) owned directly by this StateUsage, relevant when it is
+    # itself composite (has nested substates/transitions of its own) —
+    # mirrors StateDef.substates/transitions one level down.
+    contained_transitions = EReference(eType=Transition, lower=0, upper=-1, containment=False)
 
 class StateDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDefinition: the reusable blueprint
-    (entry/do/exit behavior, nested substates, transitions between them).
-    Instantiated — possibly more than once — by a StateUsage.
+    (top-level entry behavior plus nested substates, each with their own
+    entry/do/exit and transitions — see StateUsage). Instantiated —
+    possibly more than once — by an ExecutableStateUsage.
     """
 
-    entry = EReference(eType=Reference, lower=0, upper=1, containment=False)
-    do = EReference(eType=Reference, lower=0, upper=1, containment=False)
-    exit = EReference(eType=Reference, lower=0, upper=1, containment=False)
+    entry_action = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
+    default_transition = EReference(eType=Transition, lower=0, upper=1, containment=False)
 
     parameters = EReference(eType=Parameter, lower=0, upper=-1, containment=True)
 
     substates = EReference(eType=StateUsage, lower=0, upper=-1, containment=True)
 
 
-# StateDef didn't exist yet while StateUsage's class body executed.
-StateUsage.type.eType = StateDef
+class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
+    """Runtime registry entry for a StateUsage declared outside any
+    StateDefinition (e.g. `main : MySimulationDefinition`) — an actual,
+    independently running instance of a state machine.
+
+    `current`/`pending` (the dynamic "which substate is active" pointer and
+    this instance's own mailbox) live here rather than on StateDef, since a
+    single StateDef can be instantiated by more than one ExecutableStateUsage,
+    each running independently and needing its own state.
+    """
+
+    # Reference to the StateDef this usage is typed by.
+    state_def_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+    # Which of `type.substates` is presently active.
+    current = EReference(eType=StateUsage, lower=0, upper=1, containment=False)
+
+    # FIFO mailbox: items received while this instance was in some state,
+    # not yet matched against a transition and consumed.
+    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False)
 
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):

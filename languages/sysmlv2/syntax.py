@@ -136,6 +136,21 @@ def _build_type_ref(type_node):
     return rt.TypeRef(kind=kind, reference_type=rt.Reference(qualified_name=qualified_name(type_node)))
 
 
+def _build_reference(type_node):
+    """Builds a bare Reference carrying just `type_node`'s qualified name —
+    like _build_type_ref's reference_type, this never resolves the actual
+    runtime Definition, so it needs no LookupTable and doesn't care whether
+    the target has been registered yet. Looking it up against the right
+    LookupTable to get the actual Definition is left to whoever
+    dereferences it later.
+    """
+    if type_node is None:
+        return None
+    if isinstance(type_node, EProxy) and not type_node.resolved:
+        return None
+    return rt.Reference(qualified_name=qualified_name(type_node))
+
+
 name = 'sysml'
 nsURI = 'https://www.omg.org/spec/SysML/20250201'
 nsPrefix = 'sysml'
@@ -668,15 +683,15 @@ endif
                 state_defs.set_reference(record.qualified_name, record)
                 _populate_parameters(record, element)
 
-                # TODO: rt.StateDef.entry/do/exit are declared eType=Reference
-                # (the lookup-table wrapper) but _subaction() returns a raw
-                # PerformActionUsage AST node, so this assignment raises
-                # BadValueError. Commented out to unblock ActionDef work;
-                # revisit once StateDef's entry/do/exit typing is fixed
-                # (should be eType=AbstractSyntaxElement, like Transition.effect).
+                # TODO: rt.StateDef.entry is declared eType=ActualAction (a
+                # runtime call record) but _subaction() returns a raw
+                # PerformActionUsage AST node, so this assignment still
+                # raises BadValueError. Commented out to unblock ActionDef
+                # work; revisit once building an ActualAction from a
+                # PerformActionUsage is wired up. do/exit no longer exist on
+                # StateDef — only entry does; per-substate do/exit instead
+                # live on each nested StateUsage (see runtime.StateUsage).
                 # record.entry = _subaction(element, 'entry')
-                # record.do = _subaction(element, 'do')
-                # record.exit = _subaction(element, 'exit')
 
                 for feature in _owned_by_kind(element, FeatureMembership):
                     if isinstance(feature, StateUsage):
@@ -696,14 +711,20 @@ endif
                 item_defs.set_reference(record.qualified_name, record)
             elif isinstance(element, StateUsage) and _nearest_ancestor(element, StateDefinition) is None:
                 # A StateUsage declared outside any StateDefinition (e.g.
-                # `main : MySimulationDefinition`) is an actual instance of a
-                # state machine, unlike a StateDefinition's own nested
-                # substates (Idle/Next above), which never carry a type of
-                # their own by modeling convention — so only this branch
-                # attempts to resolve `type`.
-                record = rt.StateUsage(
+                # `main : MySimulationDefinition`) is an actual, independently
+                # running instance of a state machine — unlike a
+                # StateDefinition's own nested substates (Idle/Next above),
+                # which are purely structural and never carry a type of their
+                # own by modeling convention. Hence the distinct runtime
+                # element (rt.ExecutableStateUsage vs. rt.StateUsage).
+                record = rt.ExecutableStateUsage(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                record.type = rt._resolve_definition((state_defs,), _feature_type(element))
+                # A bare Reference (qualified name only), not the resolved
+                # StateDef — like Parameter.type/_build_type_ref, this never
+                # touches state_defs, so it doesn't care whether the target
+                # has been registered yet; dereferencing it against the
+                # right LookupTable is left to whoever executes it later.
+                record.state_def_origin = _build_reference(_feature_type(element))
                 state_usages.set_reference(record.qualified_name, record)
 
         runtime.elements.append(sysml_state)
