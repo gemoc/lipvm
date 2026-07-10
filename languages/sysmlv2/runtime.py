@@ -12,6 +12,7 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     interpretation of that node stays in its own evaluate(), not here.
     """
 
+    declared_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
     qualified_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
     definition = EReference(eType=AbstractSyntaxElement, lower=0, upper=1, containment=False)
 

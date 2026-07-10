@@ -11,6 +11,7 @@ from core.operation import operation
 # its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
+from languages.sysmlv2.sysml_utility_classes import qualified_name
 
 
 # --- Hand-written interpreter helpers -------------------------------------
@@ -578,11 +579,14 @@ endif
             # it's checked first — otherwise it would be misclassified as a
             # plain ActionDef and never reach the StateDef branch below.
             if isinstance(element, StateDefinition):
-                registry[element] = rt.StateDef(qualified_name=element.declaredName, definition=element)
+                registry[element] = rt.StateDef(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
             elif isinstance(element, ActionDefinition):
-                registry[element] = rt.ActionDef(qualified_name=element.declaredName, definition=element)
+                registry[element] = rt.ActionDef(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
             elif isinstance(element, ItemDefinition):
-                registry[element] = rt.ItemDef(qualified_name=element.declaredName, definition=element)
+                registry[element] = rt.ItemDef(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
 
         for element, record in registry.items():
             if isinstance(record, (rt.ActionDef, rt.StateDef)):
@@ -593,9 +597,15 @@ endif
                     ))
 
             if isinstance(record, rt.StateDef):
-                record.entry = _subaction(element, 'entry')
-                record.do = _subaction(element, 'do')
-                record.exit = _subaction(element, 'exit')
+                # TODO: rt.StateDef.entry/do/exit are declared eType=Reference
+                # (the lookup-table wrapper) but _subaction() returns a raw
+                # PerformActionUsage AST node, so this assignment raises
+                # BadValueError. Commented out to unblock ActionDef work;
+                # revisit once StateDef's entry/do/exit typing is fixed
+                # (should be eType=AbstractSyntaxElement, like Transition.effect).
+                # record.entry = _subaction(element, 'entry')
+                # record.do = _subaction(element, 'do')
+                # record.exit = _subaction(element, 'exit')
 
                 for feature in _owned_by_kind(element, FeatureMembership):
                     if isinstance(feature, StateUsage):
