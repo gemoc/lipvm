@@ -25,14 +25,17 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     qualified_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
     definition = EReference(eType=AbstractSyntaxElement, lower=0, upper=1, containment=False)
 
-class Reference(ElementDefinition, metaclass=MetaEClass):
+class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=0, upper=1, containment=False)
 
+class Reference(ElementDefinition, metaclass=MetaEClass):
+    reference_type = EAttribute(eType=EString)
+
 class LookupTable(EObject, metaclass=MetaEClass):
-    references = EReference(eType=Reference, lower=0, upper=-1, containment=True)
+    records = EReference(eType=Record, lower=0, upper=-1, containment=True)
 
     def get_reference(self, qualified_name):
-        for b in self.references:
+        for b in self.records:
             if b.qualified_name == qualified_name:
                 return b
         return None
@@ -45,7 +48,7 @@ class LookupTable(EObject, metaclass=MetaEClass):
         if reference is not None:
             reference.element_type = value
         else:
-            self.references.append(Reference(qualified_name=qualified_name, element_type=value))
+            self.records.append(Record(qualified_name=qualified_name, element_type=value))
 
 class TypeRef(RuntimeStateElement, metaclass=MetaEClass):
 

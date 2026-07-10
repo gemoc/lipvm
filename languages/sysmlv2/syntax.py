@@ -184,7 +184,7 @@ def _build_actual_action(perform_action_usage):
         if _bound_value(feature) is not None
     ]
     return rt.ActualAction(
-        action_def=_build_reference(_feature_type(perform_action_usage)),
+        action_def=_build_reference(_feature_type(perform_action_usage), rt.ActionDef.__name__),
         arguments=arguments,
     )
 
@@ -202,9 +202,9 @@ def _build_transition(transition_usage):
     source = _transition_source(transition_usage)
     return rt.Transition(
         definition=transition_usage,
-        source=_build_reference(source) if isinstance(source, StateUsage) else None,
+        source=_build_reference(source, rt.StateUsage.__name__) if isinstance(source, StateUsage) else None,
         effect=_build_actual_action(_transition_effect_action(transition_usage)),
-        target=_build_reference(_transition_target(transition_usage)),
+        target=_build_reference(_transition_target(transition_usage), rt.StateUsage.__name__),
     )
 
 
@@ -221,6 +221,7 @@ def _build_type_ref(type_node):
     LookupTable to get the actual ActionDef/ItemDef/StateDef is left to
     whoever dereferences it later.
     """
+    custom_type = None
     if type_node is None:
         return None
 
@@ -235,19 +236,23 @@ def _build_type_ref(type_node):
         kind = rt.TypeKind.CUSTOM
     elif isinstance(type_node, ActionDefinition):
         kind = rt.TypeKind.ACTION
+        custom_type = rt.ActionDef.__name__
     elif isinstance(type_node, PartDefinition):
         kind = rt.TypeKind.PART
     elif isinstance(type_node, ItemDefinition):
         kind = rt.TypeKind.ITEM
+        custom_type = rt.ItemDef.__name__
     elif isinstance(type_node, EnumerationDefinition):
         kind = rt.TypeKind.ENUM
+
     else:
         kind = rt.TypeKind.UNKNOWN
 
-    return rt.TypeRef(kind=kind, reference_type=rt.Reference(qualified_name=qualified_name(type_node)))
+    return rt.TypeRef(kind=kind, reference_type=rt.Reference(qualified_name=qualified_name(type_node),
+                                                             reference_type=custom_type))
 
 
-def _build_reference(type_node):
+def _build_reference(type_node, type_name_for_reference):
     """Builds a bare Reference carrying just `type_node`'s qualified name —
     like _build_type_ref's reference_type, this never resolves the actual
     runtime Definition, so it needs no LookupTable and doesn't care whether
@@ -259,7 +264,7 @@ def _build_reference(type_node):
         return None
     if isinstance(type_node, EProxy) and not type_node.resolved:
         return None
-    return rt.Reference(qualified_name=qualified_name(type_node))
+    return rt.Reference(qualified_name=qualified_name(type_node), reference_type=type_name_for_reference)
 
 
 name = 'sysml'
@@ -840,7 +845,7 @@ endif
                 # touches state_defs, so it doesn't care whether the target
                 # has been registered yet; dereferencing it against the
                 # right LookupTable is left to whoever executes it later.
-                record.state_def_origin = _build_reference(_feature_type(element))
+                record.state_def_origin = _build_reference(_feature_type(element), rt.StateDef.__name__)
                 state_usages.set_reference(record.qualified_name, record)
 
         runtime.elements.append(sysml_state)

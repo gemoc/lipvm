@@ -28,7 +28,7 @@ def test_program_simple_machine():
     action_defs_table = sysml_state.lookup_table_action_defs
 
     #Test 1: If an action definition exist
-    assert [reference.qualified_name for reference in action_defs_table.references] == ["SimpleSimulationPackage::Print"]
+    assert [reference.qualified_name for reference in action_defs_table.records] == ["SimpleSimulationPackage::Print"]
 
     print_def = action_defs_table.get_reference("SimpleSimulationPackage::Print").element_type
     assert isinstance(print_def, rt.ActionDef)
@@ -49,7 +49,7 @@ def test_program_simple_machine():
     state_defs_table = sysml_state.lookup_table_state_defs
 
     # Test 3: if a state definition exists
-    assert [reference.qualified_name for reference in state_defs_table.references] == [
+    assert [reference.qualified_name for reference in state_defs_table.records] == [
         "SimpleSimulationPackage::MySimulationDefinition"
     ]
 
@@ -70,7 +70,7 @@ def test_program_simple_machine():
     entry_action = simulation_def.entry_action
     assert isinstance(entry_action, rt.ActualAction)
     assert entry_action.action_def.qualified_name == "SimpleSimulationPackage::Print"
-    assert entry_action.action_def.element_type is None
+    assert entry_action.action_def.reference_type == rt.ActionDef.__name__
     assert [argument.declared_name for argument in entry_action.arguments] == ["msg"]
     assert entry_action.arguments[0].value.value == "Entry"
 
@@ -121,7 +121,7 @@ def test_program_simple_machine():
     # `main` is a StateUsage declared directly under the package (not nested
     # in any StateDefinition), explicitly typed by MySimulationDefinition —
     # the actual instance of the state machine, as opposed to Idle/Next above.
-    assert [reference.qualified_name for reference in state_usages_table.references] == [
+    assert [reference.qualified_name for reference in state_usages_table.records] == [
         "SimpleSimulationPackage::main"
     ]
 
@@ -136,12 +136,12 @@ def test_program_simple_machine():
     # unresolved until whoever executes this usage dereferences it later.
     assert isinstance(main_usage.state_def_origin, rt.Reference)
     assert main_usage.state_def_origin.qualified_name == "SimpleSimulationPackage::MySimulationDefinition"
-    assert main_usage.state_def_origin.element_type is None
+    assert main_usage.state_def_origin.reference_type == rt.StateDef.__name__
 
     item_defs_table = sysml_state.lookup_table_item_defs
 
     # Test if the items exist
-    assert [reference.qualified_name for reference in item_defs_table.references] == [
+    assert [reference.qualified_name for reference in item_defs_table.records] == [
         "SimpleSimulationPackage::IdleTrans",
         "SimpleSimulationPackage::NextTrans",
     ]
