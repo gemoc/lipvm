@@ -17,8 +17,10 @@ from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_
 
 # --- Hand-written interpreter helpers -------------------------------------
 #
-# Small AST-navigation helpers shared by evaluate() methods below (e.g.
-# Namespace, PerformActionUsage). They read pyecoregen's plain, non-derived
+# Small AST-navigation helpers shared by the visit() methods below (the
+# build-time walk that assembles a SysmlRuntimeState — see Element.visit())
+# and by a couple of evaluate() methods (Namespace, PerformActionUsage, the
+# VM's own run-time dispatch). They read pyecoregen's plain, non-derived
 # containment features (ownedRelationship / ownedRelatedElement) directly
 # instead of the many derived convenience properties this generated module
 # leaves as `raise NotImplementedError(...)`.
@@ -43,15 +45,6 @@ def _bound_value(feature):
     for value in _owned_by_kind(feature, FeatureValue):
         return value
     return None
-
-
-def _nearest_ancestor(element, kind):
-    """Walks up `element`'s containment chain and returns the nearest
-    ancestor of type `kind`, or None if there isn't one before the root."""
-    container = element.eContainer()
-    while container is not None and not isinstance(container, kind):
-        container = container.eContainer()
-    return container
 
 
 def _formal_parameters(behavior):
@@ -92,167 +85,20 @@ def _param_direction(feature):
 def _populate_parameters(record, behavior):
     """Appends a runtime Parameter onto `record` for each formal parameter of `behavior`.
 
-    Shared by the ActionDef and StateDef branches of evaluate() below, since
-    StateDefinition extends ActionDefinition and both carry formal parameters.
+    Shared by ActionDefinition.visit()/StateDefinition.visit(), since
+    StateDefinition extends ActionDefinition and both carry formal
+    parameters. Not part of the visit()/add_*() dispatch machinery: a
+    formal parameter isn't a distinctly-typed AST child needing its own
+    routing decision, just a ReferenceUsage filtered by direction.
     """
     for feature in _formal_parameters(behavior):
-        record.parameters.append(rt.Parameter(
+        record.add_parameter(rt.Parameter(
             declared_name=feature.declaredName,
             qualified_name=qualified_name(feature),
             type=_build_type_ref(_feature_type(feature)),
             direction=_param_direction(feature),
             default_value=_bound_value(feature),
         ))
-
-
-def _subaction(state_definition, kind):
-    """Returns the entry/do/exit PerformActionUsage AST node of a StateDefinition, if any.
-
-    `kind` is a plain string ('entry'/'do'/'exit'); relationship.kind is an
-    EEnumLiteral, which pyecore doesn't compare equal to a string, hence str().
-    """
-    for relationship in state_definition.ownedRelationship:
-        if isinstance(relationship, StateSubactionMembership) and str(relationship.kind) == kind:
-            for element in relationship.ownedRelatedElement:
-                return element
-    return None
-
-
-def _transition_source(transition_usage):
-    """Returns the AST node `transition_usage` fires out of — a StateUsage
-    substate (e.g. Idle), or a StateDef's own entry PerformActionUsage for
-    the unconditional transition fired right after entry completes.
-
-    Read off the plain Membership every TransitionUsage carries alongside
-    its SuccessionAsUsage (not a FeatureMembership/EndFeatureMembership/etc,
-    which all subclass OwningMembership instead).
-    """
-    for relationship in transition_usage.ownedRelationship:
-        if isinstance(relationship, Membership) and not isinstance(relationship, OwningMembership):
-            return relationship.memberElement
-    return None
-
-
-def _transition_target(transition_usage):
-    """Returns the StateUsage AST node `transition_usage` fires into: the
-    SuccessionAsUsage end identified by a ReferenceSubsetting. (The source
-    end is left unlabeled in the XMI — _transition_source covers that case
-    instead.)
-    """
-    for succession in _owned_by_kind(transition_usage, OwningMembership):
-        if not isinstance(succession, SuccessionAsUsage):
-            continue
-        for end_feature in _owned_by_kind(succession, EndFeatureMembership):
-            for relationship in end_feature.ownedRelationship:
-                if isinstance(relationship, ReferenceSubsetting):
-                    return relationship.referencedFeature
-    return None
-
-
-def _transition_trigger_action(transition_usage):
-    """Returns the AcceptActionUsage AST node that's `transition_usage`'s
-    trigger, if any.
-
-    Identified structurally (child type) rather than via the sibling
-    TransitionFeatureMembership's `kind`: the exporter doesn't reliably set
-    kind='effect' on the other membership (same defaulted-EEnum landmine
-    _formal_parameters works around for `direction`), so `kind` alone can't
-    be trusted to tell trigger from effect.
-    """
-    for feature in _owned_by_kind(transition_usage, TransitionFeatureMembership):
-        if isinstance(feature, AcceptActionUsage):
-            return feature
-    return None
-
-
-def _transition_effect_action(transition_usage):
-    """Returns the PerformActionUsage AST node performed when
-    `transition_usage` fires, if any — identified structurally, for the
-    same reason as _transition_trigger_action.
-    """
-    for feature in _owned_by_kind(transition_usage, TransitionFeatureMembership):
-        if isinstance(feature, PerformActionUsage):
-            return feature
-    return None
-
-
-def _trigger_signal_type(accept_action_usage):
-    """Returns the ItemDefinition AST node that types an AcceptActionUsage's
-    trigger parameter (e.g. IdleTrans for `accept IdleTrans`), if any.
-    """
-    for parameter in _owned_by_kind(accept_action_usage, ParameterMembership):
-        signal_type = _feature_type(parameter)
-        if signal_type is not None:
-            return signal_type
-    return None
-
-
-def _default_transition(state_definition):
-    """Returns the TransitionUsage AST node for the unconditional/completion
-    transition fired right after `state_definition`'s own entry action, if
-    any — the one TransitionUsage directly owned by it with no trigger.
-    """
-    for feature in _owned_by_kind(state_definition, FeatureMembership):
-        if isinstance(feature, TransitionUsage) and _transition_trigger_action(feature) is None:
-            return feature
-    return None
-
-
-def _build_actual_action(perform_action_usage):
-    """Builds an ActualAction runtime record from a PerformActionUsage AST
-    node (e.g. pEntry performing Print): the ActionDef it performs (a bare
-    Reference, deferred the same way as _build_reference) and its bound
-    call-site arguments.
-    """
-    if perform_action_usage is None:
-        return None
-    arguments = [
-        rt.Argument(
-            declared_name=feature.declaredName,
-            qualified_name=qualified_name(feature),
-            value=_bound_value(feature),
-        )
-        for feature in _owned_by_kind(perform_action_usage, FeatureMembership)
-        if _bound_value(feature) is not None
-    ]
-    return rt.ActualAction(
-        action_def=_build_reference(_feature_type(perform_action_usage), rt.ActionDef.__name__),
-        arguments=arguments,
-    )
-
-
-def _build_trigger(transition_usage):
-    """Builds a TransitionTriggerBySignal from `transition_usage`'s trigger
-    AcceptActionUsage, if any — `signal_origin` is a bare Reference to the
-    ItemDefinition the trigger accepts (see _build_reference), deferred the
-    same way as everything else built from Namespace.evaluate(). None means
-    an unconditional/completion transition (see Transition.trigger).
-    """
-    trigger_action = _transition_trigger_action(transition_usage)
-    if trigger_action is None:
-        return None
-    signal_type = _trigger_signal_type(trigger_action)
-    return rt.TransitionTriggerBySignal(signal_origin=_build_reference(signal_type, rt.ItemDef.__name__))
-
-
-def _build_transition(transition_usage):
-    """Builds a Transition runtime record from a TransitionUsage AST node.
-
-    `source`/`target` are bare References (see _build_reference); `source`
-    stays None when the transition's owning context isn't itself a
-    StateUsage (e.g. a StateDef's own entry-completion transition, whose
-    source is the entry action rather than a substate).
-    """
-    if transition_usage is None:
-        return None
-    source = _transition_source(transition_usage)
-    return rt.Transition(
-        definition=transition_usage,
-        source=_build_reference(source, rt.StateUsage.__name__) if isinstance(source, StateUsage) else None,
-        trigger=_build_trigger(transition_usage),
-        effect=_build_actual_action(_transition_effect_action(transition_usage)),
-        target=_build_reference(_transition_target(transition_usage), rt.StateUsage.__name__),
-    )
 
 
 def _build_type_ref(type_node):
@@ -567,6 +413,25 @@ else ''
 endif endif"""
         raise NotImplementedError('operation path(...) not yet implemented')
 
+    def visit(self, parent):
+        """Eager, synchronous build-time tree walk — distinct from evaluate()
+        (deferred/lazy, stepped by the VM via @operation). Default: forward
+        `parent` unchanged through every owned relationship, since a plain
+        Element has nothing of its own to contribute. Overridden by the
+        handful of classes that build a runtime record (StateDefinition,
+        ActionDefinition, ItemDefinition, StateUsage, TransitionUsage,
+        StateSubactionMembership, TransitionFeatureMembership) and by
+        Relationship (which descends into ownedRelatedElement instead).
+
+        Walks the plain, non-derived `ownedRelationship` rather than
+        get_children() — get_children() also touches derived/transient
+        EReferences (e.g. importedMembership), which raise on access; see
+        the "Hand-written interpreter helpers" note above on the same
+        landmine.
+        """
+        for relationship in self.ownedRelationship:
+            relationship.visit(parent)
+
 class DerivedAnnotatedelement(EDerivedCollection):
     pass
 
@@ -815,86 +680,14 @@ endif
     @operation
     def evaluate(self, runtime: RuntimeState):
 
-        # A single SysmlRuntimeState, one LookupTable per Definition kind,
-        # keyed by qualified name, doubles as both the registry built up
-        # below and the structure the rest of the AST resolves against.
+        # A single SysmlRuntimeState, one LookupTable per Definition kind
+        # (initialized in its own __init__), doubles as both the registry
+        # built up by the visit() walk below and the structure the rest of
+        # the AST resolves against. visit() is plain/eager (unlike evaluate()
+        # itself, deferred and stepped by the VM via @operation) — see
+        # Element.visit()'s docstring for why the two stay separate.
         sysml_state = rt.SysmlRuntimeState(name="sysml")
-        sysml_state.lookup_table_action_defs = rt.LookupTable()
-        sysml_state.lookup_table_item_defs = rt.LookupTable()
-        sysml_state.lookup_table_state_defs = rt.LookupTable()
-        sysml_state.lookup_table_executable_state_usages = rt.LookupTable()
-
-        action_defs = sysml_state.lookup_table_action_defs
-        item_defs = sysml_state.lookup_table_item_defs
-        state_defs = sysml_state.lookup_table_state_defs
-        state_usages = sysml_state.lookup_table_executable_state_usages
-
-        # Register every ActionDefinition/ItemDefinition/StateDefinition into
-        # its LookupTable and wire up its own parameters/substates in the
-        # same pass: Parameter.type no longer needs every other Definition
-        # to already be registered (it only classifies `kind` from the AST
-        # node itself and defers resolving the actual Definition to later),
-        # so there's no forward reference left to wait out with a second
-        # pass over self.eAllContents().
-        for element in self.eAllContents():
-            # StateDefinition extends1 ActionDefinition in the metamodel, so
-            # it's checked first — otherwise it would be misclassified as a
-            # plain ActionDef and never reach the StateDef branch below.
-            if isinstance(element, StateDefinition):
-                record = rt.StateDef(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                state_defs.set_reference(record.qualified_name, record)
-                _populate_parameters(record, element)
-
-                record.entry_action = _build_actual_action(_subaction(element, 'entry'))
-                record.default_transition = _build_transition(_default_transition(element))
-
-                # Two passes: substates must all exist before matching
-                # transitions against them, since a transition's source can
-                # appear before or after it among element's own features.
-                substates_by_definition = {}
-                for feature in _owned_by_kind(element, FeatureMembership):
-                    if isinstance(feature, StateUsage):
-                        substate = rt.StateUsage(
-                            declared_name=feature.declaredName,
-                            qualified_name=qualified_name(feature),
-                            definition=feature,
-                        )
-                        record.substates.append(substate)
-                        substates_by_definition[feature] = substate
-
-                for feature in _owned_by_kind(element, FeatureMembership):
-                    if isinstance(feature, TransitionUsage):
-                        substate = substates_by_definition.get(_transition_source(feature))
-                        if substate is not None:
-                            substate.contained_transitions.append(_build_transition(feature))
-            elif isinstance(element, ActionDefinition):
-                record = rt.ActionDef(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                action_defs.set_reference(record.qualified_name, record)
-                _populate_parameters(record, element)
-            elif isinstance(element, ItemDefinition):
-                record = rt.ItemDef(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                item_defs.set_reference(record.qualified_name, record)
-            elif isinstance(element, StateUsage) and _nearest_ancestor(element, StateDefinition) is None:
-                # A StateUsage declared outside any StateDefinition (e.g.
-                # `main : MySimulationDefinition`) is an actual, independently
-                # running instance of a state machine — unlike a
-                # StateDefinition's own nested substates (Idle/Next above),
-                # which are purely structural and never carry a type of their
-                # own by modeling convention. Hence the distinct runtime
-                # element (rt.ExecutableStateUsage vs. rt.StateUsage).
-                record = rt.ExecutableStateUsage(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                # A bare Reference (qualified name only), not the resolved
-                # StateDef — like Parameter.type/_build_type_ref, this never
-                # touches state_defs, so it doesn't care whether the target
-                # has been registered yet; dereferencing it against the
-                # right LookupTable is left to whoever executes it later.
-                record.state_def_origin = _build_reference(_feature_type(element), rt.StateDef.__name__)
-                state_usages.set_reference(record.qualified_name, record)
-
+        self.visit(sysml_state)
         runtime.elements.append(sysml_state)
 
 
@@ -942,6 +735,15 @@ relatedElement = source->union(target)"""
 
         if target:
             self.target.extend(target)
+
+    def visit(self, parent):
+        """Overrides Element.visit(): a relationship's own children live in
+        `ownedRelatedElement` (what it relates), not `ownedRelationship`
+        (which a plain Membership, e.g., typically leaves empty since it
+        only carries `memberElement` as a non-containment reference).
+        """
+        for element in self.ownedRelatedElement:
+            element.visit(parent)
 
 
 class Annotation(Relationship):
@@ -4754,6 +4556,19 @@ owningType.oclIsKindOf(StateUsage)"""
         if action is not None:
             self.action = action
 
+    def visit(self, parent):
+        """Routes this membership's PerformActionUsage (entry/do/exit) to
+        the matching set_*_action() on `parent` (a StateDef or StateUsage —
+        the two runtime records with those methods). No-op if `parent`
+        doesn't have that setter, e.g. StateDef currently only implements
+        set_entry_action (do/exit aren't wired up for StateDefinition yet).
+        """
+        setter = getattr(parent, f'set_{self.kind}_action', None)
+        if setter is None:
+            return
+        for action in self.ownedRelatedElement:
+            setter(action.to_actual_action())
+
 
 class Structure(Class):
     """<p>A <code>Structure</code> is a <code>Class</code> of objects in the modeled universe that are primarily structural in nature. While such an object is not itself behavioral, it may be involved in and acted on by <code>Behaviors</code>, and it may be the performer of some of them.</p>
@@ -4800,6 +4615,20 @@ kind = TransitionFeatureKind::effect implies
 
         if transitionFeature is not None:
             self.transitionFeature = transitionFeature
+
+    def visit(self, parent):
+        """Routes this membership's trigger or effect action to `parent` (a
+        Transition under construction). Identified structurally (child
+        type) rather than via `kind`: the exporter doesn't reliably set
+        kind='effect' (same defaulted-EEnum landmine _formal_parameters
+        works around for `direction`), so `kind` alone can't be trusted to
+        tell trigger from effect.
+        """
+        for feature in self.ownedRelatedElement:
+            if isinstance(feature, AcceptActionUsage):
+                parent.set_trigger(feature.to_trigger())
+            elif isinstance(feature, PerformActionUsage):
+                parent.set_effect(feature.to_actual_action())
 
 
 class ViewRenderingMembership(FeatureMembership):
@@ -5882,6 +5711,25 @@ owningType.oclIsKindOf(TransitionUsage) and
 owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
         raise NotImplementedError('operation isTriggerAction(...) not yet implemented')
 
+    def _signal_type(self):
+        """Returns the ItemDefinition AST node that types this
+        AcceptActionUsage's trigger parameter (e.g. IdleTrans for `accept
+        IdleTrans`), if any.
+        """
+        for parameter in _owned_by_kind(self, ParameterMembership):
+            signal_type = _feature_type(parameter)
+            if signal_type is not None:
+                return signal_type
+        return None
+
+    def to_trigger(self):
+        """Builds a TransitionTriggerBySignal from this AcceptActionUsage's
+        trigger parameter (e.g. `accept IdleTrans`) — signal_origin is a
+        bare Reference (see _build_reference), deferred the same way as
+        everything else built from Namespace.evaluate()'s visit() walk.
+        """
+        return rt.TransitionTriggerBySignal(signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__))
+
 
 class DerivedAction(EDerivedCollection):
     pass
@@ -5900,6 +5748,18 @@ action = usage->selectByKind(ActionUsage)"""
 
         if action:
             self.action.extend(action)
+
+    def visit(self, parent):
+        """Overrides Element.visit(): builds an ActionDef and registers it
+        on `parent` (a SysmlRuntimeState), instead of recursing into
+        children — StateDefinition overrides this separately, since a plain
+        ActionDef and a StateDef are different runtime shapes despite
+        StateDefinition extending ActionDefinition in the metamodel.
+        """
+        action_def = rt.ActionDef(
+            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+        _populate_parameters(action_def, self)
+        parent.add_action_def(action_def)
 
 
 class AssignmentActionUsage(ActionUsage):
@@ -6123,6 +5983,14 @@ specializesFromLibrary('Items::Item')"""
     def __init__(self, **kwargs):
 
         super().__init__(**kwargs)
+
+    def visit(self, parent):
+        """Overrides Element.visit(): registers an ItemDef on `parent` (a
+        SysmlRuntimeState) instead of recursing into children.
+        """
+        item_def = rt.ItemDef(
+            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+        parent.add_item_def(item_def)
 
 
 @abstract
@@ -6406,6 +6274,34 @@ isComposite and owningType <> null and
 not owningFeatureMembership.oclIsKindOf(StateSubactionMembership)"""
         raise NotImplementedError('operation isSubstateUsage(...) not yet implemented')
 
+    def visit(self, parent):
+        """Overrides Element.visit(): builds one of two different runtime
+        shapes depending on who's calling, distinguished by `parent`'s type
+        rather than by walking ancestors (StateDefinition.visit() is the
+        only caller that ever passes a StateDef, when visiting its own
+        substates — every other caller reaches a StateUsage by the plain
+        Element.visit() default forwarding whatever top-level parent it
+        started with, e.g. a SysmlRuntimeState for `main : MySimulationDefinition`,
+        declared outside any StateDefinition).
+        """
+        if isinstance(parent, rt.StateDef):
+            substate = rt.StateUsage(
+                declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+            for relationship in self.ownedRelationship:
+                if isinstance(relationship, StateSubactionMembership):
+                    relationship.visit(substate)
+            parent.add_state(substate)
+        else:
+            usage = rt.ExecutableStateUsage(
+                declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+            # A bare Reference (qualified name only), not the resolved
+            # StateDef — like Parameter.type/_build_type_ref, this never
+            # touches any LookupTable, so it doesn't care whether the
+            # target has been registered yet; dereferencing it against the
+            # right LookupTable is left to whoever executes it later.
+            usage.state_def_origin = _build_reference(_feature_type(self), rt.StateDef.__name__)
+            parent.add_executable_state_usage(usage)
+
 
 class TerminateActionUsage(ActionUsage):
     """<p>A <code>TerminateActionUsage</code> is an <code>ActionUsage</code> that directly or indirectly specializes the <code>ActionDefinition</code> <em><code>TerminateAction</code></em> from the Systems Model Library, which causes a given <em><code>terminatedOccurrence</code></em> to end during its performance. By default, the <code>terminatedOccurrence</code> is the featuring instance (<em><code>that</code></em>) of the performance of the <code>TerminateActionUsage</code>, generally the performance of its immediately containing <code>ActionDefinition</code> or <code>ActionUsage</code>.</p>
@@ -6591,6 +6487,58 @@ if triggerAction->isEmpty() then null
 else triggerAction->first().payloadParameter
 endif"""
         raise NotImplementedError('operation triggerPayloadParameter(...) not yet implemented')
+
+    def _source(self):
+        """Returns the AST node this transition fires out of — a StateUsage
+        substate (e.g. Idle), or a StateDef's own entry PerformActionUsage
+        for the unconditional transition fired right after entry completes.
+
+        Read off the plain Membership every TransitionUsage carries
+        alongside its SuccessionAsUsage (not a
+        FeatureMembership/EndFeatureMembership/etc, which all subclass
+        OwningMembership instead).
+        """
+        for relationship in self.ownedRelationship:
+            if isinstance(relationship, Membership) and not isinstance(relationship, OwningMembership):
+                return relationship.memberElement
+        return None
+
+    def _target(self):
+        """Returns the StateUsage AST node this transition fires into: the
+        SuccessionAsUsage end identified by a ReferenceSubsetting. (The
+        source end is left unlabeled in the XMI — _source() covers that
+        case instead.)
+        """
+        for succession in _owned_by_kind(self, OwningMembership):
+            if not isinstance(succession, SuccessionAsUsage):
+                continue
+            for end_feature in _owned_by_kind(succession, EndFeatureMembership):
+                for relationship in end_feature.ownedRelationship:
+                    if isinstance(relationship, ReferenceSubsetting):
+                        return relationship.referencedFeature
+        return None
+
+    def visit(self, parent):
+        """Overrides Element.visit(): builds a Transition and hands it to
+        `parent` (a StateDef under construction) via add_transition(),
+        which sorts out whether it's the default (unconditional) transition
+        or belongs to a specific substate — see StateDef.add_transition().
+
+        source/target come from sibling relationships of this TransitionUsage
+        itself (a plain Membership + a SuccessionAsUsage), not from visiting
+        a distinctly-typed child, so they're read directly here rather than
+        delegated. trigger/effect do come from a distinctly-typed child
+        (TransitionFeatureMembership) and are delegated to it.
+        """
+        transition = rt.Transition(definition=self)
+        source = self._source()
+        if isinstance(source, StateUsage):
+            transition.source = _build_reference(source, rt.StateUsage.__name__)
+        transition.target = _build_reference(self._target(), rt.StateUsage.__name__)
+        for relationship in self.ownedRelationship:
+            if isinstance(relationship, TransitionFeatureMembership):
+                relationship.visit(transition)
+        parent.add_transition(transition)
 
 
 class TriggerInvocationExpression(InvocationExpression):
@@ -7103,6 +7051,27 @@ owningType <> null and
 
         return bound
 
+    def to_actual_action(self):
+        """Builds an ActualAction runtime record from this PerformActionUsage
+        (e.g. pEntry performing Print): the ActionDef it performs (a bare
+        Reference, deferred the same way as _build_reference) and its bound
+        call-site arguments. Used by the build-time visit() walk; unrelated
+        to evaluate() above, which is the VM's own run-time dispatch.
+        """
+        arguments = [
+            rt.Argument(
+                declared_name=feature.declaredName,
+                qualified_name=qualified_name(feature),
+                value=_bound_value(feature),
+            )
+            for feature in _owned_by_kind(self, FeatureMembership)
+            if _bound_value(feature) is not None
+        ]
+        return rt.ActualAction(
+            action_def=_build_reference(_feature_type(self), rt.ActionDef.__name__),
+            arguments=arguments,
+        )
+
 
 class SelectExpression(OperatorExpression):
     """<p>A <code>SelectExpression</code> is an <code>OperatorExpression</code> whose operator is <code>"select"</code>, which resolves to the <code>Function</code> <em><code>ControlFunctions::select</code></em> from the Kernel Functions Library.</p>
@@ -7208,6 +7177,34 @@ exitAction =
 
         if state:
             self.state.extend(state)
+
+    def visit(self, parent):
+        """Overrides ActionDefinition.visit() entirely (no super() call):
+        a StateDefinition is a different runtime shape (StateDef) from a
+        plain ActionDefinition (ActionDef), despite extending it in the
+        metamodel — Python's own method resolution already picks this
+        override over ActionDefinition.visit() for StateDefinition
+        instances, so no isinstance ordering trick is needed here (unlike
+        the old flat eAllContents() loop this replaces).
+        """
+        state_def = rt.StateDef(
+            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+        _populate_parameters(state_def, self)
+
+        for relationship in self.ownedRelationship:
+            if isinstance(relationship, StateSubactionMembership):
+                relationship.visit(state_def)
+
+        # Two passes: substates must all exist before add_transition() can
+        # match a triggered transition's source against them.
+        for feature in _owned_by_kind(self, FeatureMembership):
+            if isinstance(feature, StateUsage):
+                feature.visit(state_def)
+        for feature in _owned_by_kind(self, FeatureMembership):
+            if isinstance(feature, TransitionUsage):
+                feature.visit(state_def)
+
+        parent.add_state_def(state_def)
 
 
 class SuccessionAsUsage(ConnectorAsUsage, Succession):

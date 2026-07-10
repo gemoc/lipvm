@@ -82,6 +82,9 @@ class ActionDef(ElementDefinition, metaclass=MetaEClass):
 
     parameters = EReference(eType=Parameter, lower=0, upper=-1, containment=True)
 
+    def add_parameter(self, parameter):
+        self.parameters.append(parameter)
+
 
 class ActualAction(ElementDefinition, metaclass=MetaEClass):
     """A single performance/call occurrence of an ActionDef (e.g. `pEntry`
@@ -149,6 +152,12 @@ class Transition(RuntimeStateElement, metaclass=MetaEClass):
     # Reference to the StateUsage substate this transition fires into.
     target = EReference(eType=Reference, lower=1, upper=1, containment=False)
 
+    def set_trigger(self, trigger):
+        self.trigger = trigger
+
+    def set_effect(self, actual_action):
+        self.effect = actual_action
+
 
 class StateUsage(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDef's own nested substate (e.g.
@@ -163,11 +172,21 @@ class StateUsage(ElementDefinition, metaclass=MetaEClass):
     exit = EReference(eType=ActualAction, lower=0, upper=1, containment=False)
 
     # Transitions that fire out of this substate (e.g. Idle's transition to
-    # Next) — a TransitionUsage is matched to its source substate via its
-    # plain Membership.memberElement (see syntax._transition_source), since
-    # it's declared as a sibling FeatureMembership of the StateDefinition
-    # rather than nested inside the substate itself.
+    # Next) — routed here by the owning StateDef's add_transition(), which
+    # matches a built Transition's already-resolved `source` reference
+    # against its substates (a TransitionUsage is a sibling FeatureMembership
+    # of the StateDefinition, not nested inside the substate itself, so the
+    # match can't be structural).
     contained_transitions = EReference(eType=Transition, lower=0, upper=-1, containment=False)
+
+    def set_entry_action(self, actual_action):
+        self.entry = actual_action
+
+    def set_do_action(self, actual_action):
+        self.do = actual_action
+
+    def set_exit_action(self, actual_action):
+        self.exit = actual_action
 
 class StateDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDefinition: the reusable blueprint
@@ -182,6 +201,34 @@ class StateDef(ElementDefinition, metaclass=MetaEClass):
     parameters = EReference(eType=Parameter, lower=0, upper=-1, containment=True)
 
     substates = EReference(eType=StateUsage, lower=0, upper=-1, containment=True)
+
+    def add_parameter(self, parameter):
+        self.parameters.append(parameter)
+
+    def set_entry_action(self, actual_action):
+        self.entry_action = actual_action
+
+    def add_state(self, state_usage):
+        self.substates.append(state_usage)
+
+    def add_transition(self, transition):
+        """Routes a built Transition to where it belongs.
+
+        No trigger means the single unconditional transition fired right
+        after entry completes. Otherwise, it belongs to whichever substate's
+        contained_transitions its already-resolved `source` reference names
+        — silently dropped if that doesn't match any known substate (e.g. a
+        malformed model), same as an unresolved Reference elsewhere.
+        """
+        if transition.trigger is None:
+            self.default_transition = transition
+            return
+        if transition.source is None:
+            return
+        for substate in self.substates:
+            if substate.qualified_name == transition.source.qualified_name:
+                substate.contained_transitions.append(transition)
+                return
 
 
 class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
@@ -221,6 +268,25 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
     # which live in StateDef.substates instead and never have a type of
     # their own by modeling convention. This will be treated as state machines that must be executed
     lookup_table_executable_state_usages = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.lookup_table_action_defs = LookupTable()
+        self.lookup_table_item_defs = LookupTable()
+        self.lookup_table_state_defs = LookupTable()
+        self.lookup_table_executable_state_usages = LookupTable()
+
+    def add_action_def(self, action_def):
+        self.lookup_table_action_defs.set_reference(action_def.qualified_name, action_def)
+
+    def add_item_def(self, item_def):
+        self.lookup_table_item_defs.set_reference(item_def.qualified_name, item_def)
+
+    def add_state_def(self, state_def):
+        self.lookup_table_state_defs.set_reference(state_def.qualified_name, state_def)
+
+    def add_executable_state_usage(self, usage):
+        self.lookup_table_executable_state_usages.set_reference(usage.qualified_name, usage)
 
 def _resolve_definition(tables, type_node):
     """Looks up the ElementDefinition registered under `type_node`'s qualified
