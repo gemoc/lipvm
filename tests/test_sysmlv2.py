@@ -45,6 +45,23 @@ def test_program_simple_machine():
     assert msg_type.scalar_type == rt.ScalarType.STRING
     assert msg_type.reference_type is None
 
+    state_defs_table = sysml_state.lookup_table_state_defs
+
+    # Test if a state exists
+    assert [reference.qualified_name for reference in state_defs_table.references] == [
+        "SimpleSimulationPackage::MySimulationDefinition"
+    ]
+
+    simulation_def = state_defs_table.get_reference("SimpleSimulationPackage::MySimulationDefinition").element_type
+    assert isinstance(simulation_def, rt.StateDef)
+    assert simulation_def.declared_name == "MySimulationDefinition"
+    assert simulation_def.qualified_name == "SimpleSimulationPackage::MySimulationDefinition"
+
+    # MySimulationDefinition declares no formal (in/inout/out) parameters of
+    # its own in the test model — only entry/transitions/substates — so
+    # _populate_parameters() should leave this empty rather than error out.
+    assert simulation_def.parameters == []
+
     item_defs_table = sysml_state.lookup_table_item_defs
 
     # Test if the items exist

@@ -47,11 +47,32 @@ def _bound_value(feature):
 
 def _formal_parameters(behavior):
     """Returns the owned features of `behavior` that declare a direction
-    (in/inout/out) — i.e. its formal parameters."""
+    (in/inout/out) — i.e. its formal parameters.
+
+    Checked via eIsSet() rather than `feature.direction is not None`: pyecore's
+    generated `direction` EAttribute (unlike e.g. isComposite/isConstant) has
+    no default_value=None, so an instance that never sets it reads back as
+    FeatureDirectionKind's first literal ('in') instead of None — eIsSet() is
+    the only way to tell "explicitly declared in" apart from "never set".
+    """
     return [
         feature for feature in _owned_by_kind(behavior, FeatureMembership)
-        if getattr(feature, 'direction', None) is not None
+        if feature.eIsSet('direction')
     ]
+
+
+def _populate_parameters(record, behavior):
+    """Appends a runtime Parameter onto `record` for each formal parameter of `behavior`.
+
+    Shared by the ActionDef and StateDef branches of evaluate() below, since
+    StateDefinition extends ActionDefinition and both carry formal parameters.
+    """
+    for feature in _formal_parameters(behavior):
+        record.parameters.append(rt.Parameter(
+            declared_name=feature.declaredName,
+            qualified_name=qualified_name(feature),
+            type=_build_type_ref(_feature_type(feature)),
+        ))
 
 
 def _subaction(state_definition, kind):
@@ -634,26 +655,8 @@ endif
                 record = rt.StateDef(
                     declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
                 state_defs.set_reference(record.qualified_name, record)
-            elif isinstance(element, ActionDefinition):
-                record = rt.ActionDef(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                action_defs.set_reference(record.qualified_name, record)
-            elif isinstance(element, ItemDefinition):
-                record = rt.ItemDef(
-                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
-                item_defs.set_reference(record.qualified_name, record)
-                continue
-            else:
-                continue
+                _populate_parameters(record, element)
 
-            for feature in _formal_parameters(element):
-                record.parameters.append(rt.Parameter(
-                    declared_name=feature.declaredName,
-                    qualified_name=qualified_name(feature),
-                    type=_build_type_ref(_feature_type(feature)),
-                ))
-
-            if isinstance(record, rt.StateDef):
                 # TODO: rt.StateDef.entry/do/exit are declared eType=Reference
                 # (the lookup-table wrapper) but _subaction() returns a raw
                 # PerformActionUsage AST node, so this assignment raises
@@ -671,11 +674,17 @@ endif
                             qualified_name=qualified_name(feature),
                             definition=feature,
                         ))
+            elif isinstance(element, ActionDefinition):
+                record = rt.ActionDef(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                action_defs.set_reference(record.qualified_name, record)
+                _populate_parameters(record, element)
+            elif isinstance(element, ItemDefinition):
+                record = rt.ItemDef(
+                    declared_name=element.declaredName, qualified_name=qualified_name(element), definition=element)
+                item_defs.set_reference(record.qualified_name, record)
 
         runtime.elements.append(sysml_state)
-
-        # Once ready, then execute it — deferred until dispatch (how a
-        # running StateUsage advances through entry/transitions) is designed.
 
 
 class DerivedRelatedelement(EDerivedCollection):
