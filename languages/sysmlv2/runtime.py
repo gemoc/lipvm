@@ -40,10 +40,10 @@ class Value(RuntimeStateElement, metaclass=MetaEClass):
     pass
 
 class LiteralValue(Value):
-    val = EAttribute(eType=EString, lower=1, upper=1)
+    value = EAttribute(eType=EString, lower=1, upper=1)
 
 class ReferenceValue(Value):
-    val = EReference(eType=EObject, lower=1, upper=1, containment=False)
+    value = EReference(eType=EObject, lower=1, upper=1, containment=False)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)

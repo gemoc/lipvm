@@ -47,6 +47,26 @@ def _bound_value(feature):
     return None
 
 
+def _to_runtime_value(node):
+    """Wraps an AST node bound via `_bound_value` into the runtime rt.Value
+    hierarchy required by Argument.value/Parameter.default_value: a
+    LiteralValue for AST literal expressions (LiteralBoolean/LiteralInteger/
+    LiteralRational/LiteralString, each of which carries a `.value`),
+    otherwise a ReferenceValue (non-containment) pointing at the AST node
+    itself, e.g. a reference to another feature. LiteralInfinity is
+    deliberately excluded from the literal case: it's a LiteralExpression but
+    has no `.value` payload, so it falls through to the ReferenceValue case.
+
+    Referenced at call time (not module load time) since the literal
+    expression classes are defined later in this module.
+    """
+    if node is None:
+        return None
+    if isinstance(node, (LiteralBoolean, LiteralInteger, LiteralRational, LiteralString)):
+        return rt.LiteralValue(value=str(node.value))
+    return rt.ReferenceValue(value=node)
+
+
 def _formal_parameters(behavior):
     """Returns the owned features of `behavior` that declare a direction
     (in/inout/out) — i.e. its formal parameters.
@@ -97,7 +117,7 @@ def _populate_parameters(record, behavior):
             qualified_name=qualified_name(feature),
             type=_build_type_ref(_feature_type(feature)),
             direction=_param_direction(feature),
-            default_value=_bound_value(feature),
+            default_value=_to_runtime_value(_bound_value(feature)),
         ))
 
 
@@ -5263,6 +5283,15 @@ owningFeatureMembership.oclIsKindOf(StateSubactionMembership) implies
         if actionDefinition:
             self.actionDefinition.extend(actionDefinition)
 
+    def to_actual_action(self):
+        """Base case for a plain ActionUsage that isn't a call/invocation
+        (e.g. an anonymous entry/do/exit action with no FeatureTyping) —
+        builds an empty ActualAction: no target ActionDef, no bound
+        arguments. PerformActionUsage overrides this with actual
+        invocation-resolution logic.
+        """
+        return rt.ActualAction()
+
     def argument(self, i=None):
         """<p>Return the <code>i</code>-th argument <code>Expression</code> of an <code>ActionUsage</code>, defined as the <code>value</code> <code>Expression</code> of the <code>FeatureValue</code> of the <code>i</code>-th owned input <code>parameter</code> of the <code>ActionUsage</code>. Return null if the <code>ActionUsage</code> has less than <code>i</code> owned input <code>parameters</code> or the <code>i</code>-th owned input <code>parameter</code> has no <code>FeatureValue</code>.</p>
 if inputParameter(i) = null then null
@@ -7062,7 +7091,7 @@ owningType <> null and
             rt.Argument(
                 declared_name=feature.declaredName,
                 qualified_name=qualified_name(feature),
-                value=_bound_value(feature),
+                value=_to_runtime_value(_bound_value(feature)),
             )
             for feature in _owned_by_kind(self, FeatureMembership)
             if _bound_value(feature) is not None

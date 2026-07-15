@@ -166,3 +166,30 @@ def test_program_simple_machine():
     assert isinstance(next_trans_def, rt.ItemDef)
     assert next_trans_def.declared_name == "NextTrans"
     assert next_trans_def.qualified_name == "SimpleSimulationPackage::NextTrans"
+
+def test_simple_conveyor_belt_simulation():
+    # Given
+    resource = load("tests/conveyor-belt-simulation.xmi")
+    root = resource.contents[0]
+
+    scenario = Scenario(
+        program_definition=root
+    )
+
+    # When
+    vm = VirtualMachine()
+    vm.scenario = scenario
+    vm.init()
+    vm.run()
+
+    # Then
+    sysml_state = vm.state.sysml
+    assert isinstance(sysml_state, rt.SysmlRuntimeState)
+
+    action_defs_table = sysml_state.lookup_table_action_defs
+
+    # Test 1: If an action definition exist
+    assert ([reference.qualified_name for reference in action_defs_table.records] ==
+            ["ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor", "ConveyorBeltSystem::ConveyorBeltCommands::MoveOut",
+             "ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps", "ConveyorBeltSystem::ConveyorBeltCommands::Stop",
+             "ConveyorBeltSystem::ConveyorBeltCommands::StatusRequest"])
