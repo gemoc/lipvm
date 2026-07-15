@@ -11,6 +11,16 @@ ParamDirection = EEnum('ParamDirection', literals=['IN', 'OUT', 'INOUT'])
 
 ScalarType = EEnum('ScalarType', literals=['BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
 
+# Only the scalar names ScalarValues.json actually declares are mapped;
+# names outside this set (e.g. Rational, Natural, Complex) still get a
+# SCALAR TypeRef, just with scalar_type left unset.
+_SCALAR_TYPE_BY_NAME = {
+    'Boolean': ScalarType.BOOLEAN,
+    'String': ScalarType.STRING,
+    'Integer': ScalarType.INTEGER,
+    'Real': ScalarType.REAL,
+}
+
 class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     """Runtime registry entry for a named SysML Definition.
 
@@ -21,15 +31,25 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     interpretation of that node stays in its own evaluate(), not here.
     """
 
-    declared_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
-    qualified_name = EAttribute(eType=EString, lower=0, upper=1, containment=False)
-    definition = EReference(eType=AbstractSyntaxElement, lower=0, upper=1, containment=False)
+    declared_name = EAttribute(eType=EString, lower=1, upper=1)
+    qualified_name = EAttribute(eType=EString, lower=1, upper=1)
+    definition = EReference(eType=AbstractSyntaxElement, lower=1, upper=1)
+
+class Value(RuntimeStateElement, metaclass=MetaEClass):
+    # An abstract class to specify a value
+    pass
+
+class LiteralValue(Value):
+    val = EAttribute(eType=EString, lower=1, upper=1)
+
+class ReferenceValue(Value):
+    val = EReference(eType=EObject, lower=1, upper=1, containment=False)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
-    element_type = EReference(eType=ElementDefinition, lower=0, upper=1, containment=False)
+    element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
 
 class Reference(ElementDefinition, metaclass=MetaEClass):
-    reference_type = EAttribute(eType=EString)
+    reference_type = EAttribute(eType=EString, lower=1, upper=1)
 
 class LookupTable(EObject, metaclass=MetaEClass):
     records = EReference(eType=Record, lower=0, upper=-1, containment=True)
@@ -52,9 +72,9 @@ class LookupTable(EObject, metaclass=MetaEClass):
 
 class TypeRef(RuntimeStateElement, metaclass=MetaEClass):
 
-    kind =  EAttribute(eType=TypeKind, lower=0, upper=1, containment=False)
-    scalar_type =  EAttribute(eType=ScalarType, lower=0, upper=1, containment=False)
-    reference_type = EReference(eType=Reference, lower=0, upper=1, containment=False)
+    kind =  EAttribute(eType=TypeKind, lower=1, upper=1, containment=False)
+    scalar_type =  EAttribute(eType=ScalarType, lower=0, upper=1)
+    reference_type = EReference(eType=Reference, lower=0, upper=1)
 
 class Parameter(ElementDefinition, metaclass=MetaEClass):
     """A named parameter slot: either a formal parameter declared on an
@@ -63,9 +83,9 @@ class Parameter(ElementDefinition, metaclass=MetaEClass):
     AST literal/expression node it was bound to, `type` pointing back at the
     formal Parameter it fulfills).
     """
-    type = EReference(eType=TypeRef, lower=0, upper=1, containment=False)
-    direction = EAttribute(eType=ParamDirection, lower=0, upper=1, containment=False)
-    default_value = EReference(eType=EObject, lower=0, upper=1, containment=False)
+    type = EReference(eType=TypeRef, lower=1, upper=1)
+    direction = EAttribute(eType=ParamDirection, lower=1, upper=1)
+    default_value = EReference(eType=Value, lower=0, upper=1, containment=True)
 
 class Argument(ElementDefinition, metaclass=MetaEClass):
     """A named parameter slot: either a formal parameter declared on an
@@ -74,8 +94,7 @@ class Argument(ElementDefinition, metaclass=MetaEClass):
     AST literal/expression node it was bound to, `type` pointing back at the
     formal Parameter it fulfills).
     """
-    value = EReference(eType=EObject, lower=0, upper=1, containment=False)
-
+    value = EReference(eType=Value, lower=0, upper=1, containment=True)
 
 class ActionDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ActionDefinition."""
@@ -84,7 +103,6 @@ class ActionDef(ElementDefinition, metaclass=MetaEClass):
 
     def add_parameter(self, parameter):
         self.parameters.append(parameter)
-
 
 class ActualAction(ElementDefinition, metaclass=MetaEClass):
     """A single performance/call occurrence of an ActionDef (e.g. `pEntry`
@@ -99,7 +117,6 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     # whose `type` points back at the formal Parameter it fulfills.
     arguments = EReference(eType=Argument, lower=0, upper=-1, containment=True)
 
-
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
 
@@ -113,7 +130,6 @@ class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
     matching (item kind, guard, etc.) can grow independently of the item
     type registry later.
     """
-
     pass
 
 class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
@@ -308,14 +324,3 @@ def _resolve_definition(tables, type_node):
         if reference is not None:
             return reference.element_type
     return None
-
-
-# Only the scalar names ScalarValues.json actually declares are mapped;
-# names outside this set (e.g. Rational, Natural, Complex) still get a
-# SCALAR TypeRef, just with scalar_type left unset.
-_SCALAR_TYPE_BY_NAME = {
-    'Boolean': ScalarType.BOOLEAN,
-    'String': ScalarType.STRING,
-    'Integer': ScalarType.INTEGER,
-    'Real': ScalarType.REAL,
-}
