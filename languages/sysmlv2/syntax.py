@@ -4731,6 +4731,29 @@ feature->forAll(not isComposite)"""
 
         super().__init__(**kwargs)
 
+    def visit(self, parent):
+        """Overrides Element.visit(): builds an rt.CustomAttributeDefinition
+        from this definition's owned AttributeUsage fields (e.g. FactoryCoordinate's
+        x/y) and registers it on `parent` (a SysmlRuntimeState).
+        EnumerationDefinition overrides this separately, since an enum's
+        variants aren't typed fields.
+        """
+        attribute_def = rt.CustomAttributeDefinition(
+            declared_name=self.declaredName,
+            qualified_name=qualified_name(self),
+            definition=self,
+            contained_attribute_use=[
+                rt.AttributeUsageElement(
+                    declared_name=feature.declaredName,
+                    qualified_name=qualified_name(feature),
+                    type=_build_type_ref(_feature_type(feature)),
+                    default_value=_to_runtime_value(_bound_value(feature)),
+                )
+                for feature in _owned_by_kind(self, FeatureMembership)
+            ],
+        )
+        parent.add_attribute_def(attribute_def)
+
 
 class BindingConnector(Connector):
     """<p>A <code>BindingConnector</code> is a binary <code>Connector</code> that requires its <code>relatedFeatures</code> to identify the same things (have the same values).</p>

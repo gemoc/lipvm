@@ -211,6 +211,7 @@ def test_simple_conveyor_belt_simulation():
     assert isinstance(stop_def, rt.ActionDef)
     assert list(stop_def.parameters) == []
 
+    #Test 3: Checking enumeration definition
     enumeration_defs_table = sysml_state.lookup_table_enum_defs
 
     assert ([reference.qualified_name for reference in enumeration_defs_table.records] ==
@@ -228,3 +229,21 @@ def test_simple_conveyor_belt_simulation():
         "ConveyorBeltSystem::ConveyorBeltCommands::DirectionKind").element_type
     assert isinstance(direction_kind_def, rt.EnumerationDefinition)
     assert list(direction_kind_def.contained_values) == ["FORWARD", "BACKWARD"]
+
+    # Test 4: Checking custom attribute definition
+
+    custom_attribute_definition = sysml_state.lookup_table_attribute_defs
+    assert [reference.qualified_name for reference in custom_attribute_definition.records] == ["Common::FactoryCoordinate"]
+
+    factory_coordinate_def = custom_attribute_definition.get_reference("Common::FactoryCoordinate").element_type
+    assert isinstance(factory_coordinate_def, rt.CustomAttributeDefinition)
+    assert [attribute.declared_name for attribute in factory_coordinate_def.contained_attribute_use] == ["x", "y"]
+
+    x_attribute, y_attribute = factory_coordinate_def.contained_attribute_use
+    assert x_attribute.type.kind == rt.TypeKind.SCALAR
+    assert x_attribute.type.scalar_type == rt.ScalarType.REAL
+    assert x_attribute.type.reference_type is None
+
+    assert y_attribute.type.kind == rt.TypeKind.SCALAR
+    assert y_attribute.type.scalar_type == rt.ScalarType.REAL
+    assert y_attribute.type.reference_type is None

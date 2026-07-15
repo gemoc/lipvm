@@ -35,10 +35,6 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     qualified_name = EAttribute(eType=EString, lower=1, upper=1)
     definition = EReference(eType=AbstractSyntaxElement, lower=1, upper=1)
 
-class CustomType(ElementDefinition, metaclass=MetaEClass):
-
-    pass
-
 class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
 
     '''
@@ -111,6 +107,15 @@ class Argument(ElementDefinition, metaclass=MetaEClass):
     formal Parameter it fulfills).
     """
     value = EReference(eType=Value, lower=0, upper=1, containment=True)
+
+class AttributeUsageElement(ElementDefinition, metaclass=MetaEClass):
+
+    type = EReference(eType=TypeRef, lower=1, upper=1)
+    default_value = EReference(eType=Value, lower=0, upper=1, containment=True)
+
+class CustomAttributeDefinition(ElementDefinition, metaclass=MetaEClass):
+
+    contained_attribute_use = EReference(eType=AttributeUsageElement, lower=1, upper=-1, containment=True)
 
 class ActionDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ActionDefinition."""
@@ -317,6 +322,7 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
         self.lookup_table_item_defs = LookupTable()
         self.lookup_table_state_defs = LookupTable()
         self.lookup_table_enum_defs = LookupTable()
+        self.lookup_table_attribute_defs = LookupTable()
         self.lookup_table_executable_state_usages = LookupTable()
 
     def add_action_def(self, action_def):
@@ -330,6 +336,9 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     def add_enum_def(self, enum_def):
         self.lookup_table_enum_defs.set_reference(enum_def.qualified_name, enum_def)
+
+    def add_attribute_def(self, attribute_def):
+        self.lookup_table_attribute_defs.set_reference(attribute_def.qualified_name, attribute_def)
 
     def add_executable_state_usage(self, usage):
         self.lookup_table_executable_state_usages.set_reference(usage.qualified_name, usage)
