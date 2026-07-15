@@ -278,12 +278,26 @@ def test_simple_conveyor_belt_simulation():
     assert conveyor_sens_feed_attribute.default_value == None
 
     placement_coordinate_attribute = conveyor_belt_machine_def.attributes[-1]
-    assert placement_coordinate_attribute.type.kind == rt.TypeKind.UNKNOWN
+    assert placement_coordinate_attribute.type.kind == rt.TypeKind.CUSTOM
     assert placement_coordinate_attribute.type.scalar_type == rt.ScalarType.NONE
     assert placement_coordinate_attribute.type.reference_type.qualified_name == "Common::FactoryCoordinate"
+    assert placement_coordinate_attribute.type.reference_type.reference_type == rt.CustomAttributeDefinition.__name__
     assert placement_coordinate_attribute.default_value == None
 
-    # Test 6: Check Item definition as messages/event that can be sent or received
+    # Test 6: Checking performed actions inside part definition
+    assert [perform_action.action_def.qualified_name for perform_action in conveyor_belt_machine_def.contained_perform_actions] == [
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor",
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveOut",
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps",
+        "ConveyorBeltSystem::ConveyorBeltCommands::Stop",
+        "ConveyorBeltSystem::ConveyorBeltCommands::StatusRequest",
+    ]
+    assert all(isinstance(perform_action, rt.ActualAction) for perform_action in conveyor_belt_machine_def.contained_perform_actions)
+    assert all(perform_action.action_def.reference_type == rt.ActionDef.__name__
+               for perform_action in conveyor_belt_machine_def.contained_perform_actions)
+    assert all(list(perform_action.arguments) == [] for perform_action in conveyor_belt_machine_def.contained_perform_actions)
+
+    # Test 7: Check Item definition as messages/event that can be sent or received
     item_definition = sysml_state.lookup_table_item_defs
 
     assert [reference.qualified_name for reference in item_definition.records] == ["Common::Messages::EventMessage",

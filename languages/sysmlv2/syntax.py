@@ -147,16 +147,21 @@ def _build_type_ref(type_node):
     # respectively in the metamodel, so the more specific check comes first.
     if isinstance(type_node, StateDefinition):
         kind = rt.TypeKind.CUSTOM
+        custom_type = rt.StateDef.__name__
     elif isinstance(type_node, ActionDefinition):
         kind = rt.TypeKind.ACTION
         custom_type = rt.ActionDef.__name__
     elif isinstance(type_node, PartDefinition):
         kind = rt.TypeKind.PART
+        custom_type = rt.PartDef.__name__
     elif isinstance(type_node, ItemDefinition):
         kind = rt.TypeKind.ITEM
         custom_type = rt.ItemDef.__name__
     elif isinstance(type_node, EnumerationDefinition):
         kind = rt.TypeKind.ENUM
+    elif isinstance(type_node, AttributeDefinition):
+        kind = rt.TypeKind.CUSTOM
+        custom_type = rt.CustomAttributeDefinition.__name__
 
     else:
         kind = rt.TypeKind.UNKNOWN
@@ -5313,7 +5318,11 @@ owningFeatureMembership.oclIsKindOf(StateSubactionMembership) implies
         arguments. PerformActionUsage overrides this with actual
         invocation-resolution logic.
         """
-        return rt.ActualAction()
+        return rt.ActualAction(
+            name=self.declaredName,
+            qualified_name=qualified_name(self),
+            definition=self,
+        )
 
     def argument(self, i=None):
         """<p>Return the <code>i</code>-th argument <code>Expression</code> of an <code>ActionUsage</code>, defined as the <code>value</code> <code>Expression</code> of the <code>FeatureValue</code> of the <code>i</code>-th owned input <code>parameter</code> of the <code>ActionUsage</code>. Return null if the <code>ActionUsage</code> has less than <code>i</code> owned input <code>parameters</code> or the <code>i</code>-th owned input <code>parameter</code> has no <code>FeatureValue</code>.</p>
@@ -7157,6 +7166,9 @@ owningType <> null and
             if _bound_value(feature) is not None
         ]
         return rt.ActualAction(
+            name=self.declaredName,
+            qualified_name=qualified_name(self),
+            definition=self,
             action_def=_build_reference(_feature_type(self), rt.ActionDef.__name__),
             arguments=arguments,
         )
