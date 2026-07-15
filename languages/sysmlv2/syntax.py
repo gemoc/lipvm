@@ -5381,6 +5381,19 @@ isVariation"""
         if enumeratedValue:
             self.enumeratedValue.extend(enumeratedValue)
 
+    def visit(self, parent):
+        """Overrides Element.visit(): builds an rt.EnumerationDefinition from
+        this enum's VariantMembership-owned literals and registers it on
+        `parent` (a SysmlRuntimeState).
+        """
+        enum_def = rt.EnumerationDefinition(
+            declared_name=self.declaredName,
+            qualified_name=qualified_name(self),
+            definition=self,
+            contained_values=[literal.declaredName for literal in _owned_by_kind(self, VariantMembership)],
+        )
+        parent.add_enum_def(enum_def)
+
 
 class DerivedFlowend(EDerivedCollection):
     pass

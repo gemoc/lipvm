@@ -35,6 +35,22 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     qualified_name = EAttribute(eType=EString, lower=1, upper=1)
     definition = EReference(eType=AbstractSyntaxElement, lower=1, upper=1)
 
+class CustomType(ElementDefinition, metaclass=MetaEClass):
+
+    pass
+
+class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
+
+    '''
+    The enumeration defined in SysML is expected to only containts String literals. Thus this class
+    will only stored those literals as a list of contained values
+    '''
+    contained_values = EAttribute(eType=EString, lower=1, upper=-1)
+
+class PartDef(ElementDefinition, metaclass=MetaEClass):
+
+    pass
+
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
     pass
@@ -300,6 +316,7 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
         self.lookup_table_action_defs = LookupTable()
         self.lookup_table_item_defs = LookupTable()
         self.lookup_table_state_defs = LookupTable()
+        self.lookup_table_enum_defs = LookupTable()
         self.lookup_table_executable_state_usages = LookupTable()
 
     def add_action_def(self, action_def):
@@ -310,6 +327,9 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     def add_state_def(self, state_def):
         self.lookup_table_state_defs.set_reference(state_def.qualified_name, state_def)
+
+    def add_enum_def(self, enum_def):
+        self.lookup_table_enum_defs.set_reference(enum_def.qualified_name, enum_def)
 
     def add_executable_state_usage(self, usage):
         self.lookup_table_executable_state_usages.set_reference(usage.qualified_name, usage)

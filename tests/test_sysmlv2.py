@@ -197,3 +197,34 @@ def test_simple_conveyor_belt_simulation():
             ["ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor", "ConveyorBeltSystem::ConveyorBeltCommands::MoveOut",
              "ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps", "ConveyorBeltSystem::ConveyorBeltCommands::Stop",
              "ConveyorBeltSystem::ConveyorBeltCommands::StatusRequest"])
+
+    #Test 2: Get one action definition with parameter and without parameter.
+    move_nb_steps_def = action_defs_table.get_reference("ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps").element_type
+    assert isinstance(move_nb_steps_def, rt.ActionDef)
+    assert [parameter.declared_name for parameter in move_nb_steps_def.parameters] == ["steps", "direction"]
+    assert move_nb_steps_def.parameters[0].type.kind == rt.TypeKind.SCALAR
+    assert move_nb_steps_def.parameters[0].type.scalar_type == rt.ScalarType.INTEGER
+    assert move_nb_steps_def.parameters[1].type.kind == rt.TypeKind.ENUM
+    assert move_nb_steps_def.parameters[1].type.reference_type.qualified_name == "ConveyorBeltSystem::ConveyorBeltCommands::DirectionKind"
+
+    stop_def = action_defs_table.get_reference("ConveyorBeltSystem::ConveyorBeltCommands::Stop").element_type
+    assert isinstance(stop_def, rt.ActionDef)
+    assert list(stop_def.parameters) == []
+
+    enumeration_defs_table = sysml_state.lookup_table_enum_defs
+
+    assert ([reference.qualified_name for reference in enumeration_defs_table.records] ==
+            ["ConveyorBeltSystem::ConveyorBeltCommands::ConveyorCommandKind",
+             "ConveyorBeltSystem::ConveyorBeltCommands::DirectionKind"])
+
+    conveyor_command_kind_def = enumeration_defs_table.get_reference(
+        "ConveyorBeltSystem::ConveyorBeltCommands::ConveyorCommandKind").element_type
+    assert isinstance(conveyor_command_kind_def, rt.EnumerationDefinition)
+    assert list(conveyor_command_kind_def.contained_values) == [
+        "MOVE_TO_SENSOR", "MOVE_OUT", "MOVE_NB_STEPS", "STOP", "STATUS_REQUEST"
+    ]
+
+    direction_kind_def = enumeration_defs_table.get_reference(
+        "ConveyorBeltSystem::ConveyorBeltCommands::DirectionKind").element_type
+    assert isinstance(direction_kind_def, rt.EnumerationDefinition)
+    assert list(direction_kind_def.contained_values) == ["FORWARD", "BACKWARD"]
