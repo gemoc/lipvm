@@ -33,9 +33,9 @@ def test_program_simple_machine():
 
     print_def = action_defs_table.get_reference("SimpleSimulationPackage::Print").element_type
     assert isinstance(print_def, rt.ActionDef)
-    assert print_def.declared_name == "Print"
+    assert print_def.name == "Print"
     assert print_def.qualified_name == "SimpleSimulationPackage::Print"
-    assert [parameter.declared_name for parameter in print_def.parameters] == ["msg"]
+    assert [parameter.name for parameter in print_def.parameters] == ["msg"]
     assert [parameter.qualified_name for parameter in print_def.parameters] == ["SimpleSimulationPackage::Print::msg"]
     assert print_def.parameters[0].direction == rt.ParamDirection.IN
 
@@ -62,7 +62,7 @@ def test_program_simple_machine():
 
     simulation_def = state_defs_table.get_reference("SimpleSimulationPackage::MySimulationDefinition").element_type
     assert isinstance(simulation_def, rt.StateDef)
-    assert simulation_def.declared_name == "MySimulationDefinition"
+    assert simulation_def.name == "MySimulationDefinition"
     assert simulation_def.qualified_name == "SimpleSimulationPackage::MySimulationDefinition"
 
     # MySimulationDefinition declares no formal (in/inout/out) parameters of
@@ -78,7 +78,7 @@ def test_program_simple_machine():
     assert isinstance(entry_action, rt.ActualAction)
     assert entry_action.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert entry_action.action_def.reference_type == rt.ActionDef.__name__
-    assert [argument.declared_name for argument in entry_action.arguments] == ["msg"]
+    assert [argument.name for argument in entry_action.arguments] == ["msg"]
     assert entry_action.arguments[0].value.value == "Entry"
 
     # Test if a default transition is discovered
@@ -95,7 +95,7 @@ def test_program_simple_machine():
     # Idle/Next are MySimulationDefinition's own nested substates: purely
     # structural placeholders (rt.StateUsage), unlike the independently
     # running rt.ExecutableStateUsage checked below.
-    assert [substate.declared_name for substate in simulation_def.substates] == ["Idle", "Next"]
+    assert [substate.name for substate in simulation_def.substates] == ["Idle", "Next"]
     assert [substate.qualified_name for substate in simulation_def.substates] == [
         "SimpleSimulationPackage::MySimulationDefinition::Idle",
         "SimpleSimulationPackage::MySimulationDefinition::Next",
@@ -142,7 +142,7 @@ def test_program_simple_machine():
 
     main_usage = state_usages_table.get_reference("SimpleSimulationPackage::main").element_type
     assert isinstance(main_usage, rt.ExecutableStateUsage)
-    assert main_usage.declared_name == "main"
+    assert main_usage.name == "main"
     assert main_usage.qualified_name == "SimpleSimulationPackage::main"
 
     # state_def_origin is a bare Reference carrying just the qualified name
@@ -163,12 +163,12 @@ def test_program_simple_machine():
 
     idle_trans_def = item_defs_table.get_reference("SimpleSimulationPackage::IdleTrans").element_type
     assert isinstance(idle_trans_def, rt.ItemDef)
-    assert idle_trans_def.declared_name == "IdleTrans"
+    assert idle_trans_def.name == "IdleTrans"
     assert idle_trans_def.qualified_name == "SimpleSimulationPackage::IdleTrans"
 
     next_trans_def = item_defs_table.get_reference("SimpleSimulationPackage::NextTrans").element_type
     assert isinstance(next_trans_def, rt.ItemDef)
-    assert next_trans_def.declared_name == "NextTrans"
+    assert next_trans_def.name == "NextTrans"
     assert next_trans_def.qualified_name == "SimpleSimulationPackage::NextTrans"
 
 def test_simple_conveyor_belt_simulation():
@@ -201,7 +201,7 @@ def test_simple_conveyor_belt_simulation():
     #Test 2: Get one action definition with parameter and without parameter.
     move_nb_steps_def = action_defs_table.get_reference("ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps").element_type
     assert isinstance(move_nb_steps_def, rt.ActionDef)
-    assert [parameter.declared_name for parameter in move_nb_steps_def.parameters] == ["steps", "direction"]
+    assert [parameter.name for parameter in move_nb_steps_def.parameters] == ["steps", "direction"]
     assert move_nb_steps_def.parameters[0].type.kind == rt.TypeKind.SCALAR
     assert move_nb_steps_def.parameters[0].type.scalar_type == rt.ScalarType.INTEGER
     assert move_nb_steps_def.parameters[1].type.kind == rt.TypeKind.ENUM
@@ -231,13 +231,12 @@ def test_simple_conveyor_belt_simulation():
     assert list(direction_kind_def.contained_values) == ["FORWARD", "BACKWARD"]
 
     # Test 4: Checking custom attribute definition
-
     custom_attribute_definition = sysml_state.lookup_table_attribute_defs
     assert [reference.qualified_name for reference in custom_attribute_definition.records] == ["Common::FactoryCoordinate"]
 
     factory_coordinate_def = custom_attribute_definition.get_reference("Common::FactoryCoordinate").element_type
     assert isinstance(factory_coordinate_def, rt.CustomAttributeDefinition)
-    assert [attribute.declared_name for attribute in factory_coordinate_def.contained_attribute_use] == ["x", "y"]
+    assert [attribute.name for attribute in factory_coordinate_def.contained_attribute_use] == ["x", "y"]
 
     x_attribute, y_attribute = factory_coordinate_def.contained_attribute_use
     assert x_attribute.type.kind == rt.TypeKind.SCALAR
@@ -247,3 +246,47 @@ def test_simple_conveyor_belt_simulation():
     assert y_attribute.type.kind == rt.TypeKind.SCALAR
     assert y_attribute.type.scalar_type == rt.ScalarType.REAL
     assert y_attribute.type.reference_type is None
+
+    # Test 5: Checking part definition
+    part_definition = sysml_state.lookup_table_part_defs
+    assert [reference.qualified_name for reference in part_definition.records] == ["Common::Machine",
+                                               "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"]
+
+    machine_def = part_definition.get_reference("Common::Machine").element_type
+    assert isinstance(machine_def, rt.PartDef)
+    assert list(machine_def.attributes) == []
+
+    conveyor_belt_machine_def = part_definition.get_reference(
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine").element_type
+    assert isinstance(conveyor_belt_machine_def, rt.PartDef)
+    assert [attribute.name for attribute in conveyor_belt_machine_def.attributes] == [
+        "currentCommand", "direction", "currentStepCount", "targetStepCount",
+        "conveyorSensFeed", "conveyorSensSwap", "conveyorSensImpulse", "placementCoordinate",
+    ]
+
+    #Checking the internal structure of the attributes
+    current_command_attribute = conveyor_belt_machine_def.attributes[0]
+    assert current_command_attribute.type.kind == rt.TypeKind.ENUM
+    assert current_command_attribute.type.scalar_type == rt.ScalarType.NONE
+    assert current_command_attribute.type.reference_type.qualified_name == "ConveyorBeltSystem::ConveyorBeltCommands::ConveyorCommandKind"
+    assert current_command_attribute.default_value == None
+
+    conveyor_sens_feed_attribute = conveyor_belt_machine_def.attributes[4]
+    assert conveyor_sens_feed_attribute.type.kind == rt.TypeKind.SCALAR
+    assert conveyor_sens_feed_attribute.type.scalar_type == rt.ScalarType.BOOLEAN
+    assert conveyor_sens_feed_attribute.type.reference_type is None
+    assert conveyor_sens_feed_attribute.default_value == None
+
+    placement_coordinate_attribute = conveyor_belt_machine_def.attributes[-1]
+    assert placement_coordinate_attribute.type.kind == rt.TypeKind.UNKNOWN
+    assert placement_coordinate_attribute.type.scalar_type == rt.ScalarType.NONE
+    assert placement_coordinate_attribute.type.reference_type.qualified_name == "Common::FactoryCoordinate"
+    assert placement_coordinate_attribute.default_value == None
+
+    # Test 6: Check Item definition as messages/event that can be sent or received
+    item_definition = sysml_state.lookup_table_item_defs
+
+    assert [reference.qualified_name for reference in item_definition.records] == ["Common::Messages::EventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::FeedFreeEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::SwapBusyEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::CBCommandSuccessEventMessage"]

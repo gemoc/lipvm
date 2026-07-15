@@ -9,7 +9,7 @@ TypeKind = EEnum('TypeKind', literals=['SCALAR', 'PART', 'ITEM', 'ACTION', 'CUST
 
 ParamDirection = EEnum('ParamDirection', literals=['IN', 'OUT', 'INOUT'])
 
-ScalarType = EEnum('ScalarType', literals=['BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
+ScalarType = EEnum('ScalarType', literals=['NONE', 'BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
 
 # Only the scalar names ScalarValues.json actually declares are mapped;
 # names outside this set (e.g. Rational, Natural, Complex) still get a
@@ -29,9 +29,12 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     re-walking the model. `definition` points back at the syntax.py AST node
     (e.g. an ActionDefinition) this entry was built from; the structural
     interpretation of that node stays in its own evaluate(), not here.
+
+    Declared name is inherited from RuntimeStateElement.name rather than
+    redeclared here; qualified_name stays its own field, since it's derived
+    (package-qualified) rather than a plain re-use of the declared name.
     """
 
-    declared_name = EAttribute(eType=EString, lower=1, upper=1)
     qualified_name = EAttribute(eType=EString, lower=1, upper=1)
     definition = EReference(eType=AbstractSyntaxElement, lower=1, upper=1)
 
@@ -299,6 +302,10 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # not yet matched against a transition and consumed.
     pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False)
 
+class PartDef(ElementDefinition, metaclass=MetaEClass):
+
+    contained_perform_actions = EReference(eType=ActualAction, lower=0, upper=-1, containment=True)
+    attributes = EReference(eType=AttributeUsageElement, lower=0, upper=-1, containment=True)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
@@ -323,6 +330,7 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
         self.lookup_table_state_defs = LookupTable()
         self.lookup_table_enum_defs = LookupTable()
         self.lookup_table_attribute_defs = LookupTable()
+        self.lookup_table_part_defs = LookupTable()
         self.lookup_table_executable_state_usages = LookupTable()
 
     def add_action_def(self, action_def):
@@ -339,6 +347,9 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     def add_attribute_def(self, attribute_def):
         self.lookup_table_attribute_defs.set_reference(attribute_def.qualified_name, attribute_def)
+
+    def add_part_def(self, part_def):
+        self.lookup_table_part_defs.set_reference(part_def.qualified_name, part_def)
 
     def add_executable_state_usage(self, usage):
         self.lookup_table_executable_state_usages.set_reference(usage.qualified_name, usage)

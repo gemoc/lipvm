@@ -113,7 +113,7 @@ def _populate_parameters(record, behavior):
     """
     for feature in _formal_parameters(behavior):
         record.add_parameter(rt.Parameter(
-            declared_name=feature.declaredName,
+            name=feature.declaredName,
             qualified_name=qualified_name(feature),
             type=_build_type_ref(_feature_type(feature)),
             direction=_param_direction(feature),
@@ -140,7 +140,7 @@ def _build_type_ref(type_node):
 
     if isinstance(type_node, EProxy) and not type_node.resolved:
         name = resolve_kerml_library_name(type_node._proxy_path)
-        scalar_type = rt._SCALAR_TYPE_BY_NAME.get(name) if name else None
+        scalar_type = rt._SCALAR_TYPE_BY_NAME.get(name, rt.ScalarType.NONE) if name else rt.ScalarType.NONE
         return rt.TypeRef(kind=rt.TypeKind.SCALAR, scalar_type=scalar_type)
 
     # StateDefinition/PartDefinition extend ActionDefinition/ItemDefinition
@@ -4739,12 +4739,12 @@ feature->forAll(not isComposite)"""
         variants aren't typed fields.
         """
         attribute_def = rt.CustomAttributeDefinition(
-            declared_name=self.declaredName,
+            name=self.declaredName,
             qualified_name=qualified_name(self),
             definition=self,
             contained_attribute_use=[
                 rt.AttributeUsageElement(
-                    declared_name=feature.declaredName,
+                    name=feature.declaredName,
                     qualified_name=qualified_name(feature),
                     type=_build_type_ref(_feature_type(feature)),
                     default_value=_to_runtime_value(_bound_value(feature)),
@@ -5410,7 +5410,7 @@ isVariation"""
         `parent` (a SysmlRuntimeState).
         """
         enum_def = rt.EnumerationDefinition(
-            declared_name=self.declaredName,
+            name=self.declaredName,
             qualified_name=qualified_name(self),
             definition=self,
             contained_values=[literal.declaredName for literal in _owned_by_kind(self, VariantMembership)],
@@ -5822,7 +5822,7 @@ action = usage->selectByKind(ActionUsage)"""
         StateDefinition extending ActionDefinition in the metamodel.
         """
         action_def = rt.ActionDef(
-            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+            name=self.declaredName, qualified_name=qualified_name(self), definition=self)
         _populate_parameters(action_def, self)
         parent.add_action_def(action_def)
 
@@ -6054,7 +6054,7 @@ specializesFromLibrary('Items::Item')"""
         SysmlRuntimeState) instead of recursing into children.
         """
         item_def = rt.ItemDef(
-            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+            name=self.declaredName, qualified_name=qualified_name(self), definition=self)
         parent.add_item_def(item_def)
 
 
@@ -6351,14 +6351,14 @@ not owningFeatureMembership.oclIsKindOf(StateSubactionMembership)"""
         """
         if isinstance(parent, rt.StateDef):
             substate = rt.StateUsage(
-                declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+                name=self.declaredName, qualified_name=qualified_name(self), definition=self)
             for relationship in self.ownedRelationship:
                 if isinstance(relationship, StateSubactionMembership):
                     relationship.visit(substate)
             parent.add_state(substate)
         else:
             usage = rt.ExecutableStateUsage(
-                declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+                name=self.declaredName, qualified_name=qualified_name(self), definition=self)
             # A bare Reference (qualified name only), not the resolved
             # StateDef — like Parameter.type/_build_type_ref, this never
             # touches any LookupTable, so it doesn't care whether the
@@ -7053,6 +7053,30 @@ specializesFromLibrary('Parts::Part')"""
 
         super().__init__(**kwargs)
 
+    def visit(self, parent):
+        """Overrides ItemDefinition.visit(): registers an rt.PartDef instead
+        of an rt.ItemDef, populated with this part's owned AttributeUsage
+        fields (e.g. ConveyorBeltMachine's currentCommand/direction/...).
+        Perform-action features (e.g. moveToSensor) are left for
+        contained_perform_actions to pick up separately, in a later step.
+        """
+        part_def = rt.PartDef(
+            name=self.declaredName,
+            qualified_name=qualified_name(self),
+            definition=self,
+            attributes=[
+                rt.AttributeUsageElement(
+                    name=feature.declaredName,
+                    qualified_name=qualified_name(feature),
+                    type=_build_type_ref(_feature_type(feature)),
+                    default_value=_to_runtime_value(_bound_value(feature)),
+                )
+                for feature in _owned_by_kind(self, FeatureMembership)
+                if isinstance(feature, AttributeUsage)
+            ],
+        )
+        parent.add_part_def(part_def)
+
 
 class PerformActionUsage(ActionUsage, EventOccurrenceUsage):
     """<p>A <code>PerformActionUsage</code> is an <code>ActionUsage</code> that represents the performance of an <code>ActionUsage</code>. Unless it is the <code>PerformActionUsage</code> itself, the <code>ActionUsage</code> to be performed is related to the <code>PerformActionUsage</code> by a <code>ReferenceSubsetting</code> relationship. A <code>PerformActionUsage</code> is also an <code>EventOccurrenceUsage</code>, with its <code>performedAction</code> as the <code>eventOccurrence</code>.</p>
@@ -7125,7 +7149,7 @@ owningType <> null and
         """
         arguments = [
             rt.Argument(
-                declared_name=feature.declaredName,
+                name=feature.declaredName,
                 qualified_name=qualified_name(feature),
                 value=_to_runtime_value(_bound_value(feature)),
             )
@@ -7253,7 +7277,7 @@ exitAction =
         the old flat eAllContents() loop this replaces).
         """
         state_def = rt.StateDef(
-            declared_name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+            name=self.declaredName, qualified_name=qualified_name(self), definition=self)
         _populate_parameters(state_def, self)
 
         for relationship in self.ownedRelationship:
