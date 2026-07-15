@@ -227,6 +227,17 @@ class StateDef(ElementDefinition, metaclass=MetaEClass):
     def add_state(self, state_usage):
         self.substates.append(state_usage)
 
+    def get_substate(self, qualified_name):
+        """Resolves a substate by qualified name (e.g. a Transition's
+        source/target Reference) against this StateDef's own substates.
+        Linear scan, same shape as LookupTable.get_reference — substates
+        are locally owned, not registered in a shared table.
+        """
+        for substate in self.substates:
+            if substate.qualified_name == qualified_name:
+                return substate
+        return None
+
     def add_transition(self, transition):
         """Routes a built Transition to where it belongs.
 
@@ -241,10 +252,9 @@ class StateDef(ElementDefinition, metaclass=MetaEClass):
             return
         if transition.source is None:
             return
-        for substate in self.substates:
-            if substate.qualified_name == transition.source.qualified_name:
-                substate.contained_transitions.append(transition)
-                return
+        substate = self.get_substate(transition.source.qualified_name)
+        if substate is not None:
+            substate.contained_transitions.append(transition)
 
 
 class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):

@@ -124,6 +124,10 @@ def test_program_simple_machine():
     assert isinstance(next_to_idle.trigger, rt.TransitionTriggerBySignal)
     assert next_to_idle.trigger.signal_origin.qualified_name == "SimpleSimulationPackage::NextTrans"
     assert next_to_idle.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+
+    next_to_idle_target_transition = simulation_def.get_substate(next_to_idle.target.qualified_name)
+    assert next_to_idle_target_transition is not None
+    assert simulation_def.get_substate(next_to_idle.target.qualified_name).qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
     assert next_to_idle.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [argument.value.value for argument in next_to_idle.effect.arguments] == ["Next Please"]
 
