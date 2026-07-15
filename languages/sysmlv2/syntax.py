@@ -7065,9 +7065,11 @@ specializesFromLibrary('Parts::Part')"""
     def visit(self, parent):
         """Overrides ItemDefinition.visit(): registers an rt.PartDef instead
         of an rt.ItemDef, populated with this part's owned AttributeUsage
-        fields (e.g. ConveyorBeltMachine's currentCommand/direction/...).
-        Perform-action features (e.g. moveToSensor) are left for
-        contained_perform_actions to pick up separately, in a later step.
+        fields (e.g. ConveyorBeltMachine's currentCommand/direction/...) and
+        its performed actions (e.g. moveToSensor). Filtered by ActionUsage
+        rather than PerformActionUsage specifically, so a plain (anonymous,
+        non-invoking) ActionUsage still resolves via its own
+        to_actual_action() override instead of being skipped.
         """
         part_def = rt.PartDef(
             name=self.declaredName,
@@ -7082,6 +7084,11 @@ specializesFromLibrary('Parts::Part')"""
                 )
                 for feature in _owned_by_kind(self, FeatureMembership)
                 if isinstance(feature, AttributeUsage)
+            ],
+            contained_perform_actions=[
+                feature.to_actual_action()
+                for feature in _owned_by_kind(self, FeatureMembership)
+                if isinstance(feature, ActionUsage)
             ],
         )
         parent.add_part_def(part_def)

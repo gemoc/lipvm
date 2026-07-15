@@ -285,6 +285,16 @@ def test_simple_conveyor_belt_simulation():
     assert placement_coordinate_attribute.default_value == None
 
     # Test 6: Checking performed actions inside part definition
+    assert [perform_action.name for perform_action in conveyor_belt_machine_def.contained_perform_actions] == [
+        "moveToSensor", "moveOut", "moveNbSteps", "stop", "statusRequest",
+    ]
+    assert [perform_action.qualified_name for perform_action in conveyor_belt_machine_def.contained_perform_actions] == [
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::moveToSensor",
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::moveOut",
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::moveNbSteps",
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::stop",
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::statusRequest",
+    ]
     assert [perform_action.action_def.qualified_name for perform_action in conveyor_belt_machine_def.contained_perform_actions] == [
         "ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor",
         "ConveyorBeltSystem::ConveyorBeltCommands::MoveOut",
