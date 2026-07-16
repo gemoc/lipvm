@@ -127,6 +127,7 @@ def test_program_simple_machine():
     assert len(next_.contained_transitions) == 1
     next_to_idle = next_.contained_transitions[0]
     assert isinstance(next_to_idle, rt.Transition)
+    assert next_to_idle.source.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Next"
     assert isinstance(next_to_idle.trigger, rt.TransitionTriggerBySignal)
     assert next_to_idle.trigger.signal_origin.qualified_name == "SimpleSimulationPackage::NextTrans"
     assert next_to_idle.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
@@ -478,6 +479,29 @@ def test_simple_conveyor_belt_simulation():
     assert stop_effect.target.reference_type == rt.Parameter.__name__
     assert stop_effect.action_def.qualified_name == "ConveyorBeltSystem::ConveyorBeltCommands::Stop"
     assert stop_effect.action_def.reference_type == rt.ActionDef.__name__
+
+    # Test 15: Check the transitions' own source/target substates — distinct
+    # from ActualAction.target above (which parameter an effect is invoked
+    # through), this is which substate a Transition fires from/into, same
+    # shape as MySimulationDefinition's Idle/Next transitions in
+    # test_program_simple_machine.
+    assert idle_to_moving.source.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::Idle"
+    assert idle_to_moving.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::MovingToSensor"
+
+    assert moving_to_idle.source.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::MovingToSensor"
+    assert moving_to_idle.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::Idle"
+
+    # Test 16: Check ConveyorBeltNominalMission's own default_transition —
+    # the unconditional transition fired right after entry finishes, same
+    # shape as MySimulationDefinition's in test_program_simple_machine: no
+    # source (it fires out of the entry action, not a state) and no
+    # trigger/effect of its own, straight into Idle.
+    mission_default_transition = mission_def.default_transition
+    assert isinstance(mission_default_transition, rt.Transition)
+    assert mission_default_transition.source is None
+    assert mission_default_transition.trigger is None
+    assert mission_default_transition.effect is None
+    assert mission_default_transition.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::Idle"
 
 
 
