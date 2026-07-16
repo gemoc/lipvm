@@ -141,6 +141,14 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     # whose `type` points back at the formal Parameter it fulfills.
     arguments = EReference(eType=Argument, lower=0, upper=-1, containment=True)
 
+    # Which formal parameter this action is performed through, if any (e.g.
+    # conveyorBelt for `do conveyorBelt.moveToSensor`) — None for a direct
+    # action (e.g. pEntry performing Print). Resolving this to a concrete
+    # PartInstantiation depends on which ExecutableStateUsage is actually
+    # running (see its own `arguments`), so — same deferred convention as
+    # action_def — it's left as a bare Reference, not resolved here.
+    target = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
 

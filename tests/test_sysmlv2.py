@@ -118,6 +118,12 @@ def test_program_simple_machine():
     assert idle_to_next.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [argument.value.el for argument in idle_to_next.effect.arguments] == ["Hello World"]
 
+    # pIdle is a direct reference (FeatureTyping straight to Print), not a
+    # parameter-rooted feature chain (see ConveyorBeltNominalMission's
+    # `do conveyorBelt.moveToSensor` in test_simple_conveyor_belt_simulation
+    # for that shape) — target stays unset here.
+    assert idle_to_next.effect.target is None
+
     assert len(next_.contained_transitions) == 1
     next_to_idle = next_.contained_transitions[0]
     assert isinstance(next_to_idle, rt.Transition)
@@ -420,6 +426,58 @@ def test_simple_conveyor_belt_simulation():
         "ConveyorBeltStates::ConveyorBeltNominalMission::MovingToSensor",
     ]
     assert all(isinstance(substate, rt.StateUsage) for substate in mission_def.substates)
+
+    # Test 14: Check the chained transition effects (`do conveyorBelt.
+    # moveToSensor` / `do conveyorBelt.stop`) — unlike a direct effect (e.g.
+    # pIdle performing Print in test_program_simple_machine), the
+    # PerformActionUsage here has no FeatureTyping of its own; it's reached
+    # via a parameter-rooted feature chain (ReferenceSubsetting +
+    # FeatureChaining), so name/qualified_name/action_def come from the
+    # chain's last hop (the PartDef-contained action actually being
+    # invoked) rather than the anonymous PerformActionUsage itself, and
+    # target records the chain's first hop (the formal parameter it's
+    # invoked through) — both as bare, unresolved References.
+    idle_substate, moving_substate = mission_def.substates
+    assert len(idle_substate.contained_transitions) == 1
+    idle_to_moving = idle_substate.contained_transitions[0]
+    assert isinstance(idle_to_moving, rt.Transition)
+
+    move_to_sensor_effect = idle_to_moving.effect
+    assert isinstance(move_to_sensor_effect, rt.ActualAction)
+    assert move_to_sensor_effect.name == "moveToSensor"
+    assert move_to_sensor_effect.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::moveToSensor"
+    assert move_to_sensor_effect.target.qualified_name == \
+        "ConveyorBeltStates::ConveyorBeltNominalMission::conveyorBelt"
+    assert move_to_sensor_effect.target.reference_type == rt.Parameter.__name__
+    assert move_to_sensor_effect.action_def.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor"
+    assert move_to_sensor_effect.action_def.reference_type == rt.ActionDef.__name__
+
+    # `do conveyorBelt.moveToSensor { in direction = DirectionKind::FORWARD; }`
+    # binds an argument directly at the transition-effect call site — the
+    # same _bound_arguments(self) already used for the direct-reference
+    # case (e.g. pIdle's msg="Entry") picks this up with no extra code,
+    # since self (the chained PerformActionUsage) is still where a
+    # call-site binding like this actually lives.
+    assert [argument.name for argument in move_to_sensor_effect.arguments] == ["direction"]
+    direction_argument = move_to_sensor_effect.arguments[0]
+    assert isinstance(direction_argument.value, rt.ReferenceValue)
+    assert direction_argument.value.el.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBeltCommands::DirectionKind::FORWARD"
+
+    assert len(moving_substate.contained_transitions) == 1
+    moving_to_idle = moving_substate.contained_transitions[0]
+    assert isinstance(moving_to_idle, rt.Transition)
+
+    stop_effect = moving_to_idle.effect
+    assert isinstance(stop_effect, rt.ActualAction)
+    assert stop_effect.name == "stop"
+    assert stop_effect.qualified_name == "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::stop"
+    assert stop_effect.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::conveyorBelt"
+    assert stop_effect.target.reference_type == rt.Parameter.__name__
+    assert stop_effect.action_def.qualified_name == "ConveyorBeltSystem::ConveyorBeltCommands::Stop"
+    assert stop_effect.action_def.reference_type == rt.ActionDef.__name__
 
 
 

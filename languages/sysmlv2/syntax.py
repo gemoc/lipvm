@@ -59,6 +59,24 @@ def _redefined_feature(feature):
     return None
 
 
+def _feature_chain(feature):
+    """Returns the ordered list of AST features chained together via a
+    ReferenceSubsetting + FeatureChaining structure (e.g. `do conveyorBelt.
+    moveToSensor`, where conveyorBelt is a formal parameter and
+    moveToSensor is a PerformActionUsage declared inside conveyorBelt's own
+    PartDefinition), or None if `feature` isn't chained this way.
+    """
+    for relationship in feature.ownedRelationship:
+        if isinstance(relationship, ReferenceSubsetting):
+            chained = relationship.referencedFeature
+            return [
+                rel.chainingFeature
+                for rel in chained.ownedRelationship
+                if isinstance(rel, FeatureChaining)
+            ]
+    return None
+
+
 def _resolve_feature_reference(node):
     """Resolves a FeatureReferenceExpression — SysML's own construct for "this
     value is another Feature" (e.g. conveyorBelt=cb1) — to a bare Reference
@@ -7298,17 +7316,46 @@ owningType <> null and
         return bound
 
     def to_actual_action(self):
-        """Builds an ActualAction runtime record from this PerformActionUsage
-        (e.g. pEntry performing Print): the ActionDef it performs (a bare
-        Reference, deferred the same way as _build_reference) and its bound
-        call-site arguments. Used by the build-time visit() walk; unrelated
-        to evaluate() above, which is the VM's own run-time dispatch.
+        """Builds an ActualAction runtime record from this PerformActionUsage.
+        Used by the build-time visit() walk; unrelated to evaluate() above,
+        which is the VM's own run-time dispatch.
+
+        Two shapes: (1) directly typed by FeatureTyping (e.g. pEntry
+        performing Print) — action_def resolves straight from that, target
+        stays None; (2) reached via a parameter-rooted feature chain (e.g.
+        `do conveyorBelt.moveToSensor`, encoded as a ReferenceSubsetting +
+        ordered FeatureChaining, no FeatureTyping of its own) — name/
+        qualified_name/action_def are taken from the chain's last hop
+        (moveToSensor, the PartDef-contained action actually being
+        invoked) rather than self, since self is anonymous in this shape;
+        target is the chain's first hop (conveyorBelt, the formal parameter
+        this is invoked through).
+
+        Both action_def and target are bare, unresolved References, same
+        deferred convention as _build_reference — resolving target to a
+        concrete PartInstantiation, and from there to whatever
+        default/origin arguments apply, is left to whoever executes this
+        later, not attempted here.
         """
+        chain = _feature_chain(self)
+        if chain is not None:
+            target_feature, action_feature = chain[0], chain[-1]
+            name = action_feature.declaredName
+            qualified = qualified_name(action_feature)
+            target = _build_reference(target_feature, rt.Parameter.__name__)
+            action_definition = _feature_type(action_feature)
+        else:
+            name = self.declaredName
+            qualified = qualified_name(self)
+            target = None
+            action_definition = _feature_type(self)
+
         return rt.ActualAction(
-            name=self.declaredName,
-            qualified_name=qualified_name(self),
+            name=name,
+            qualified_name=qualified,
             definition=self,
-            action_def=_build_reference(_feature_type(self), rt.ActionDef.__name__),
+            target=target,
+            action_def=_build_reference(action_definition, rt.ActionDef.__name__),
             arguments=_bound_arguments(self),
         )
 
