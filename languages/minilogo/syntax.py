@@ -73,7 +73,7 @@ class Variable(Terminal, metaclass=MetaEClass):
     def evaluate(self, runtime: RuntimeState) -> int:
         for binding in runtime.scope.bindings:
             if binding.name == self.name:
-                return binding.value
+                return binding.el
         raise Exception("Undefined variable:" + self.name)
 
 
@@ -94,7 +94,7 @@ class Assignment(Command, metaclass=MetaEClass):
         defined = False
         for binding in runtime.scope.bindings:
             if binding.name == self.variable_name:
-                binding.value = value
+                binding.el = value
                 defined = True
         if not defined:
             runtime.scope.bindings.append(VariableBinding(

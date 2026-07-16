@@ -79,7 +79,7 @@ def test_program_simple_machine():
     assert entry_action.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert entry_action.action_def.reference_type == rt.ActionDef.__name__
     assert [argument.name for argument in entry_action.arguments] == ["msg"]
-    assert entry_action.arguments[0].value.value == "Entry"
+    assert entry_action.arguments[0].value.el == "Entry"
 
     # Test if a default transition is discovered
     # default_transition is the unconditional transition fired right after
@@ -116,7 +116,7 @@ def test_program_simple_machine():
     assert idle_to_next.trigger.signal_origin.reference_type == rt.ItemDef.__name__
     assert idle_to_next.target.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Next"
     assert idle_to_next.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
-    assert [argument.value.value for argument in idle_to_next.effect.arguments] == ["Hello World"]
+    assert [argument.value.el for argument in idle_to_next.effect.arguments] == ["Hello World"]
 
     assert len(next_.contained_transitions) == 1
     next_to_idle = next_.contained_transitions[0]
@@ -129,7 +129,7 @@ def test_program_simple_machine():
     assert next_to_idle_target_transition is not None
     assert simulation_def.get_substate(next_to_idle.target.qualified_name).qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
     assert next_to_idle.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
-    assert [argument.value.value for argument in next_to_idle.effect.arguments] == ["Next Please"]
+    assert [argument.value.el for argument in next_to_idle.effect.arguments] == ["Next Please"]
 
     state_usages_table = sysml_state.lookup_table_executable_state_usages
 
@@ -325,22 +325,32 @@ def test_simple_conveyor_belt_simulation():
     assert cb_simulation.state_def_origin.reference_type == rt.StateDef.__name__
 
     # Test 9: Check the executable state's bound in-parameters (conveyorBelt=cb1) —
-    # captured but deliberately left unresolved (a ReferenceValue wrapping the
-    # FeatureReferenceExpression AST node), same as state_def_origin above.
+    # captured as a ReferenceValue wrapping a bare Reference to the bound
+    # feature (cb1), resolved through the FeatureReferenceExpression at
+    # build time rather than left pointing at the raw AST node.
     assert [argument.name for argument in cb_simulation.arguments] == ["conveyorBelt"]
     assert [argument.qualified_name for argument in cb_simulation.arguments] == ["Main::cbSimulation::conveyorBelt"]
 
     conveyor_belt_argument = cb_simulation.arguments[0]
     assert isinstance(conveyor_belt_argument.value, rt.ReferenceValue)
 
-    bound_expression = conveyor_belt_argument.value.value
-    assert isinstance(bound_expression, FeatureReferenceExpression)
+    bound_reference = conveyor_belt_argument.value.el
+    assert isinstance(bound_reference, rt.Reference)
+    assert bound_reference.qualified_name == "Main::cb1"
+    assert bound_reference.reference_type == "PartInstantiation"
 
-    referenced_part = next(
-        relationship.memberElement
-        for relationship in bound_expression.ownedRelationship
-        if isinstance(relationship, Membership)
-    )
-    assert referenced_part.declaredName == "cb1"
+    # Test 10: Check cb1 itself is registered as a PartInstantiation — the
+    # actual part instance a PartUsage declared directly under a package
+    # (not nested in any PartDefinition) becomes, as opposed to PartDef
+    # (ConveyorBeltMachine, the shared blueprint it's typed by).
+    part_instantiations = sysml_state.lookup_table_part_instantiations
+    assert [reference.qualified_name for reference in part_instantiations.records] == ["Main::cb1"]
+
+    cb1 = part_instantiations.records[0].element_type
+    assert isinstance(cb1, rt.PartInstantiation)
+    assert cb1.name == "cb1"
+    assert cb1.qualified_name == "Main::cb1"
+    assert cb1.part_def_origin.qualified_name == "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"
+    assert cb1.part_def_origin.reference_type == rt.PartDef.__name__
 
 

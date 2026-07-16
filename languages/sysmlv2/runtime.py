@@ -50,21 +50,21 @@ class PartDef(ElementDefinition, metaclass=MetaEClass):
 
     pass
 
+class Reference(ElementDefinition, metaclass=MetaEClass):
+    reference_type = EAttribute(eType=EString, lower=1, upper=1)
+
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
     pass
 
 class LiteralValue(Value):
-    value = EAttribute(eType=EString, lower=1, upper=1)
+    el = EAttribute(eType=EString, lower=1, upper=1)
 
 class ReferenceValue(Value):
-    value = EReference(eType=EObject, lower=1, upper=1, containment=False)
+    el = EReference(eType=Reference, lower=1, upper=1, containment=False)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
-
-class Reference(ElementDefinition, metaclass=MetaEClass):
-    reference_type = EAttribute(eType=EString, lower=1, upper=1)
 
 class LookupTable(EObject, metaclass=MetaEClass):
     records = EReference(eType=Record, lower=0, upper=-1, containment=True)
@@ -312,6 +312,11 @@ class PartDef(ElementDefinition, metaclass=MetaEClass):
     contained_perform_actions = EReference(eType=ActualAction, lower=0, upper=-1, containment=True)
     attributes = EReference(eType=AttributeUsageElement, lower=0, upper=-1, containment=True)
 
+class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
+
+    # Reference to the PartDef this usage is typed by
+    part_def_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     lookup_table_item_defs = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
@@ -328,6 +333,12 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
     # their own by modeling convention. This will be treated as state machines that must be executed
     lookup_table_executable_state_usages = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
 
+    # PartUsages declared directly under a package/namespace (e.g. `cb1 :
+    # ConveyorBeltMachine` in Main) — actual instances of a part, as opposed
+    # to PartDef (the shared blueprint each PartInstantiation points back at
+    # via part_def_origin).
+    lookup_table_part_instantiations = EReference(eType=LookupTable, lower=0, upper=1, containment=True)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.lookup_table_action_defs = LookupTable()
@@ -337,6 +348,7 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
         self.lookup_table_attribute_defs = LookupTable()
         self.lookup_table_part_defs = LookupTable()
         self.lookup_table_executable_state_usages = LookupTable()
+        self.lookup_table_part_instantiations = LookupTable()
 
     def add_action_def(self, action_def):
         self.lookup_table_action_defs.set_reference(action_def.qualified_name, action_def)
@@ -358,6 +370,9 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     def add_executable_state_usage(self, usage):
         self.lookup_table_executable_state_usages.set_reference(usage.qualified_name, usage)
+
+    def add_part_instantiation(self, instantiation):
+        self.lookup_table_part_instantiations.set_reference(instantiation.qualified_name, instantiation)
 
 def _resolve_definition(tables, type_node):
     """Looks up the ElementDefinition registered under `type_node`'s qualified

@@ -47,15 +47,49 @@ def _bound_value(feature):
     return None
 
 
+def _resolve_feature_reference(node):
+    """Resolves a FeatureReferenceExpression — SysML's own construct for "this
+    value is another Feature" (e.g. conveyorBelt=cb1) — to a bare Reference
+    naming the referenced feature, the same deferred-lookup shape used
+    everywhere else in this module (see _build_reference): just a
+    qualified_name and a reference_type tag, not yet resolved against any
+    LookupTable.
+
+    reference_type names the runtime registry class the referenced feature
+    is (or will be) registered under — rt.PartInstantiation.__name__ for a
+    PartUsage referent (see PartUsage.visit()), same convention as every
+    other _build_reference call site. Falls back to the referent's own AST
+    class name for any usage kind not yet wired to a runtime registry.
+
+    Returns None for any other non-literal expression shape bound to a
+    feature — none observed in the current models, so left unhandled rather
+    than guessed at.
+    """
+    if not isinstance(node, FeatureReferenceExpression):
+        return None
+    for relationship in node.ownedRelationship:
+        if isinstance(relationship, Membership):
+            referent = relationship.memberElement
+            reference_type = (
+                rt.PartInstantiation.__name__ if isinstance(referent, PartUsage)
+                else type(referent).__name__
+            )
+            return rt.Reference(
+                qualified_name=qualified_name(referent),
+                reference_type=reference_type,
+            )
+    return None
+
+
 def _to_runtime_value(node):
     """Wraps an AST node bound via `_bound_value` into the runtime rt.Value
     hierarchy required by Argument.value/Parameter.default_value: a
     LiteralValue for AST literal expressions (LiteralBoolean/LiteralInteger/
     LiteralRational/LiteralString, each of which carries a `.value`),
-    otherwise a ReferenceValue (non-containment) pointing at the AST node
-    itself, e.g. a reference to another feature. LiteralInfinity is
-    deliberately excluded from the literal case: it's a LiteralExpression but
-    has no `.value` payload, so it falls through to the ReferenceValue case.
+    otherwise a ReferenceValue wrapping a resolved Reference to whatever
+    feature the node refers to (see _resolve_feature_reference). LiteralInfinity
+    is deliberately excluded from the literal case: it's a LiteralExpression
+    but has no `.value` payload, so it falls through to the ReferenceValue case.
 
     Referenced at call time (not module load time) since the literal
     expression classes are defined later in this module.
@@ -63,8 +97,8 @@ def _to_runtime_value(node):
     if node is None:
         return None
     if isinstance(node, (LiteralBoolean, LiteralInteger, LiteralRational, LiteralString)):
-        return rt.LiteralValue(value=str(node.value))
-    return rt.ReferenceValue(value=node)
+        return rt.LiteralValue(el=str(node.value))
+    return rt.ReferenceValue(el=_resolve_feature_reference(node))
 
 
 def _formal_parameters(behavior):
@@ -5715,6 +5749,20 @@ owningFeatureMembership.oclIsKindOf(StakeholderMembership) implies
 
         if partDefinition:
             self.partDefinition.extend(partDefinition)
+
+    def visit(self, parent):
+        """Overrides Element.visit(): builds a PartInstantiation runtime
+        record for a PartUsage declared directly under a package/namespace
+        (e.g. `cb1 : ConveyorBeltMachine` in Main) — the actual instance of
+        a part, as opposed to its PartDefinition (the shared blueprint).
+        """
+        instantiation = rt.PartInstantiation(
+            name=self.declaredName, qualified_name=qualified_name(self), definition=self)
+        # A bare Reference (qualified name only), not the resolved PartDef —
+        # like StateUsage.state_def_origin, dereferencing it against the
+        # right LookupTable is left to whoever needs it later.
+        instantiation.part_def_origin = _build_reference(_feature_type(self), rt.PartDef.__name__)
+        parent.add_part_instantiation(instantiation)
 
 
 class Predicate(Function):
