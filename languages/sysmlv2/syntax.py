@@ -87,9 +87,20 @@ def _resolve_feature_reference(node):
 
     reference_type names the runtime registry class the referenced feature
     is (or will be) registered under — rt.PartInstantiation.__name__ for a
-    PartUsage referent (see PartUsage.visit()), same convention as every
-    other _build_reference call site. Falls back to the referent's own AST
-    class name for any usage kind not yet wired to a runtime registry.
+    PartUsage referent (see PartUsage.visit()), rt.Parameter.__name__ for a
+    formal parameter referent (e.g. conveyorBelt — same tag ActualAction.target
+    already uses for the identical underlying thing, see to_actual_action()),
+    same convention as every other _build_reference call site. Falls back to
+    the referent's own AST class name for any usage kind not yet wired to a
+    runtime registry.
+
+    Matched by exact type, not isinstance: FeatureMembership/ParameterMembership
+    are themselves Membership subclasses (composite ownership, not a named
+    reference elsewhere), used for a FeatureReferenceExpression that instead
+    owns a nested expression of its own (e.g. an `accept when` condition's
+    OperatorExpression tree — see _owned_expression) — isinstance would wrongly
+    match those too, since relationship.memberElement is unset (None) for them
+    rather than raising, producing a silently-wrong empty Reference.
 
     Returns None for any other non-literal expression shape bound to a
     feature — none observed in the current models, so left unhandled rather
@@ -98,16 +109,123 @@ def _resolve_feature_reference(node):
     if not isinstance(node, FeatureReferenceExpression):
         return None
     for relationship in node.ownedRelationship:
-        if isinstance(relationship, Membership):
+        if type(relationship) is Membership:
             referent = relationship.memberElement
-            reference_type = (
-                rt.PartInstantiation.__name__ if isinstance(referent, PartUsage)
-                else type(referent).__name__
-            )
+            if isinstance(referent, PartUsage):
+                reference_type = rt.PartInstantiation.__name__
+            elif referent.eIsSet('direction'):
+                reference_type = rt.Parameter.__name__
+            else:
+                reference_type = type(referent).__name__
             return rt.Reference(
                 qualified_name=qualified_name(referent),
                 reference_type=reference_type,
             )
+    return None
+
+
+def _owned_expression(node):
+    """Returns the expression a FeatureReferenceExpression owns directly via
+    a FeatureMembership (e.g. the OperatorExpression tree inside an `accept
+    when` condition) — as opposed to a plain named reference elsewhere (see
+    _resolve_feature_reference). None if this FeatureReferenceExpression
+    doesn't own anything.
+    """
+    for owned in _owned_by_kind(node, FeatureMembership):
+        return owned
+    return None
+
+
+def _expression_operands(node):
+    """Returns the ordered operand expression nodes of an OperatorExpression
+    (e.g. the two sides of `==`/`and`) or a TriggerInvocationExpression (its
+    single `when` argument) — each is wrapped as a ParameterMembership's
+    anonymous Feature, whose own bound FeatureValue is the actual operand.
+    """
+    return [
+        _bound_value(feature)
+        for feature in _owned_by_kind(node, ParameterMembership)
+    ]
+
+
+def _build_attribute_reference(node):
+    """Builds an AttributeReference from a FeatureChainExpression (e.g.
+    conveyorBelt.conveyorSensSwap in an `accept when` condition) — a third,
+    distinct chain encoding from both _resolve_feature_reference's single
+    Membership and _feature_chain's ReferenceSubsetting + FeatureChaining
+    (used at a PerformActionUsage call site instead): the first operand
+    (wrapped the same way as _expression_operands) is the base — typically a
+    FeatureReferenceExpression naming the root parameter — and each
+    subsequent hop is a plain Membership owned directly by the
+    FeatureChainExpression itself, giving that hop's target feature.
+
+    Only the chain's first (target) and last (attribute) hops are kept,
+    matching AttributeReference's two fields — a chain deeper than
+    target.attribute isn't observed in the current models, so left
+    unhandled rather than guessed at.
+    """
+    base_node = _expression_operands(node)[0]
+    hops = [
+        relationship.memberElement
+        for relationship in node.ownedRelationship
+        if type(relationship) is Membership
+    ]
+    return rt.AttributeReference(
+        target=_resolve_feature_reference(base_node),
+        attribute=_build_reference(hops[-1], rt.AttributeUsageElement.__name__) if hops else None,
+    )
+
+
+def _literal_value(node):
+    """Builds a LiteralValue from an AST literal node (LiteralBoolean/
+    LiteralInteger/LiteralRational/LiteralString), tagging scalar_type by
+    which of those classes it is — otherwise a LiteralValue only carries
+    el's string form, with nothing recording whether "10" was originally a
+    number, a boolean, or a plain string.
+    """
+    if isinstance(node, LiteralBoolean):
+        scalar_type = rt.ScalarType.BOOLEAN
+    elif isinstance(node, LiteralInteger):
+        scalar_type = rt.ScalarType.INTEGER
+    elif isinstance(node, LiteralRational):
+        scalar_type = rt.ScalarType.REAL
+    else:
+        scalar_type = rt.ScalarType.STRING
+    return rt.LiteralValue(el=str(node.value), scalar_type=scalar_type)
+
+
+def _build_expression(node):
+    """Recursively builds a runtime Value/expression tree from a general
+    boolean expression AST node (e.g. an `accept when` condition) —
+    literals become LiteralValue, a FeatureChainExpression becomes an
+    AttributeReference (see _build_attribute_reference), any other
+    OperatorExpression becomes a BinaryExpression by recursing into its two
+    operands, and a FeatureReferenceExpression either recurses into an
+    expression it owns directly (see _owned_expression) or, failing that,
+    resolves to a plain named reference (see _resolve_feature_reference).
+
+    FeatureChainExpression is checked before the generic OperatorExpression
+    case since it's itself an OperatorExpression subclass structurally, but
+    needs its own reader rather than the generic two-operand handling.
+    """
+    if node is None:
+        return None
+    if isinstance(node, (LiteralBoolean, LiteralInteger, LiteralRational, LiteralString)):
+        return _literal_value(node)
+    if isinstance(node, FeatureChainExpression):
+        return _build_attribute_reference(node)
+    if isinstance(node, OperatorExpression):
+        left_node, right_node = _expression_operands(node)
+        return rt.BinaryExpression(
+            operator=node.operator,
+            left=_build_expression(left_node),
+            right=_build_expression(right_node),
+        )
+    if isinstance(node, FeatureReferenceExpression):
+        nested = _owned_expression(node)
+        if nested is not None:
+            return _build_expression(nested)
+        return rt.ReferenceValue(el=_resolve_feature_reference(node))
     return None
 
 
@@ -127,7 +245,7 @@ def _to_runtime_value(node):
     if node is None:
         return None
     if isinstance(node, (LiteralBoolean, LiteralInteger, LiteralRational, LiteralString)):
-        return rt.LiteralValue(el=str(node.value))
+        return _literal_value(node)
     return rt.ReferenceValue(el=_resolve_feature_reference(node))
 
 
@@ -5954,12 +6072,33 @@ owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
                 return signal_type
         return None
 
-    def to_trigger(self):
-        """Builds a TransitionTriggerBySignal from this AcceptActionUsage's
-        trigger parameter (e.g. `accept IdleTrans`) — signal_origin is a
-        bare Reference (see _build_reference), deferred the same way as
-        everything else built from Namespace.evaluate()'s visit() walk.
+    def _when_condition(self):
+        """Returns the TriggerInvocationExpression(kind="when") AST node
+        bound to this AcceptActionUsage's trigger parameter (e.g. `accept
+        when conveyorBelt.conveyorSensSwap == true`), or None if this is a
+        plain signal-typed trigger (e.g. `accept IdleTrans`) instead — that
+        case has a FeatureTyping instead of a bound FeatureValue, so
+        _signal_type() finds it and this returns None.
         """
+        for parameter in _owned_by_kind(self, ParameterMembership):
+            bound = _bound_value(parameter)
+            if isinstance(bound, TriggerInvocationExpression) and str(bound.kind) == 'when':
+                return bound
+        return None
+
+    def to_trigger(self):
+        """Builds a TransitionTrigger from this AcceptActionUsage's trigger
+        parameter: TransitionTriggerBySignal for a plain signal-typed
+        trigger (e.g. `accept IdleTrans` — signal_origin a bare Reference,
+        see _build_reference), or TransitionTriggerByWhenCondition for a
+        boolean-expression trigger (e.g. `accept when conveyorBelt.
+        conveyorSensSwap == true`), built by recursively walking the
+        condition expression tree (see _build_expression).
+        """
+        when_condition = self._when_condition()
+        if when_condition is not None:
+            condition_node = _expression_operands(when_condition)[0]
+            return rt.TransitionTriggerByWhenCondition(condition=_build_expression(condition_node))
         return rt.TransitionTriggerBySignal(signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__))
 
 

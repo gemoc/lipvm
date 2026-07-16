@@ -1,6 +1,7 @@
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
-from core.language import AbstractSyntaxElement, RuntimeStateElement
+from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
+from core.operation import operation
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 
 # Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
@@ -55,13 +56,62 @@ class Reference(ElementDefinition, metaclass=MetaEClass):
 
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
-    pass
+
+    @operation
+    def execute(self, runtime: RuntimeState):
+        """Resolves this Value to its actual runtime result — e.g. a
+        literal's own payload, a dereferenced Reference, or (for
+        AttributeReference/BinaryExpression once they override this) a
+        looked-up/computed result. Deferred like
+        AbstractSyntaxElement.evaluate() — decorated with @operation, so
+        calling this captures the call as an Operation rather than running
+        the body immediately; the VM steps through it later.
+
+        Placeholder only. Left unimplemented — including on every
+        subclass — until the broader execution/resolution pipeline is
+        built (see memory: todo-actualaction-resolution-pipeline, which
+        this is now part of).
+        """
+        raise NotImplementedError('Value.execute() not yet implemented')
 
 class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
+    scalar_type = EAttribute(eType=ScalarType, lower=0, upper=1)
 
 class ReferenceValue(Value):
     el = EReference(eType=Reference, lower=1, upper=1, containment=False)
+
+class AttributeReference(Value):
+    """Reads an attribute's current value off whatever's bound to a formal
+    parameter (e.g. conveyorBelt.conveyorSensSwap in an `accept when`
+    guard) — distinct from ActualAction's target, which identifies a
+    behavior to invoke rather than a value to read/compare.
+
+    Both target and attribute are bare, unresolved References, same
+    deferred convention as everywhere else: resolving target to a concrete
+    PartInstantiation, and attribute to the matching entry in that
+    instantiation's PartDef.attributes, is left to whoever evaluates this
+    later.
+    """
+    target = EReference(eType=Reference, lower=0, upper=1, containment=False)
+    attribute = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+class BinaryExpression(Value):
+    """A binary operation over two sub-values (e.g. `conveyorBelt.
+    conveyorSensFeed == true`, or `<left> and <right>` combining two such
+    comparisons) — covers both `==`-style comparisons and boolean
+    combinators (`and`/`or`/...) with the same shape, since both are just
+    an operator plus two operands.
+
+    left/right are typed as the generic Value base rather than any one
+    subclass, so an operand may itself be a LiteralValue, an
+    AttributeReference, or another BinaryExpression — this recursion is
+    what lets a compound condition (e.g. an `and` of two `==` comparisons)
+    fall out of the same shape without any extra machinery.
+    """
+    operator = EAttribute(eType=EString, lower=1, upper=1)
+    left = EReference(eType=Value, lower=1, upper=1, containment=True)
+    right = EReference(eType=Value, lower=1, upper=1, containment=True)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
@@ -166,7 +216,11 @@ class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
 
 class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
 
-    signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
+    signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=True)
+
+class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
+
+    condition = EReference(eType=Value, lower=0, upper=1, containment=True)
 
 class TransitionGuard(RuntimeStateElement, metaclass=MetaEClass):
 

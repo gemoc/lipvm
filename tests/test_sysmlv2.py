@@ -80,6 +80,7 @@ def test_program_simple_machine():
     assert entry_action.action_def.reference_type == rt.ActionDef.__name__
     assert [argument.name for argument in entry_action.arguments] == ["msg"]
     assert entry_action.arguments[0].value.el == "Entry"
+    assert entry_action.arguments[0].value.scalar_type == rt.ScalarType.STRING
 
     # Test if a default transition is discovered
     # default_transition is the unconditional transition fired right after
@@ -502,6 +503,41 @@ def test_simple_conveyor_belt_simulation():
     assert mission_default_transition.trigger is None
     assert mission_default_transition.effect is None
     assert mission_default_transition.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::Idle"
+
+    # Test 17: Check the `accept when` triggers — a boolean-expression
+    # trigger (TransitionTriggerByWhenCondition), distinct from the plain
+    # signal-typed trigger (TransitionTriggerBySignal) covered in
+    # test_program_simple_machine. MovingToSensor's own trigger is the
+    # simple case (`conveyorBelt.conveyorSensSwap == true`); Idle's is the
+    # compound case (`conveyorBelt.conveyorSensFeed == true and
+    # conveyorBelt.conveyorSensSwap == false`), which falls out of the same
+    # recursive BinaryExpression shape with no extra machinery.
+    idle_trigger = idle_to_moving.trigger
+    assert isinstance(idle_trigger, rt.TransitionTriggerByWhenCondition)
+
+    idle_condition = idle_trigger.condition
+    assert isinstance(idle_condition, rt.BinaryExpression)
+    assert idle_condition.operator == "and"
+
+    def assert_attribute_comparison(comparison, attribute_name, expected_el, expected_scalar_type):
+        assert isinstance(comparison, rt.BinaryExpression)
+        assert comparison.operator == "=="
+        assert isinstance(comparison.left, rt.AttributeReference)
+        assert comparison.left.target.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission::conveyorBelt"
+        assert comparison.left.target.reference_type == rt.Parameter.__name__
+        assert comparison.left.attribute.qualified_name == \
+            f"ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::{attribute_name}"
+        assert comparison.left.attribute.reference_type == rt.AttributeUsageElement.__name__
+        assert isinstance(comparison.right, rt.LiteralValue)
+        assert comparison.right.el == expected_el
+        assert comparison.right.scalar_type == expected_scalar_type
+
+    assert_attribute_comparison(idle_condition.left, "conveyorSensFeed", "True", rt.ScalarType.BOOLEAN)
+    assert_attribute_comparison(idle_condition.right, "conveyorSensSwap", "False", rt.ScalarType.BOOLEAN)
+
+    moving_trigger = moving_to_idle.trigger
+    assert isinstance(moving_trigger, rt.TransitionTriggerByWhenCondition)
+    assert_attribute_comparison(moving_trigger.condition, "conveyorSensSwap", "True", rt.ScalarType.BOOLEAN)
 
 
 
