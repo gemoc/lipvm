@@ -47,6 +47,18 @@ def _bound_value(feature):
     return None
 
 
+def _redefined_feature(feature):
+    """Returns the AST feature `feature` redefines via an owned Redefinition
+    relationship (SysML's `:>>`), e.g. cb1's placementCoordinate override
+    redefines ConveyorBeltMachine's placementCoordinate. None if `feature`
+    doesn't redefine anything.
+    """
+    for relationship in feature.ownedRelationship:
+        if isinstance(relationship, Redefinition):
+            return relationship.redefinedFeature
+    return None
+
+
 def _resolve_feature_reference(node):
     """Resolves a FeatureReferenceExpression — SysML's own construct for "this
     value is another Feature" (e.g. conveyorBelt=cb1) — to a bare Reference
@@ -169,6 +181,22 @@ def _bound_arguments(element):
         )
         for feature in _owned_by_kind(element, FeatureMembership)
         if _bound_value(feature) is not None
+    ]
+
+
+def _owned_attribute_redefinitions(element, owner_qualified_name):
+    """Builds an AttributeRedefinition for each of `element`'s owned
+    AttributeUsage features that redefines another feature (SysML's `:>>`).
+
+    Used both by AttributeUsage.to_redefinition() — recursing into a
+    composite redefinition's own nested sub-attribute overrides, e.g.
+    placementCoordinate's x/y — and by whoever walks a PartUsage's own
+    top-level redefinitions (e.g. cb1's placementCoordinate).
+    """
+    return [
+        feature.to_redefinition(owner_qualified_name)
+        for feature in _owned_by_kind(element, FeatureMembership)
+        if isinstance(feature, AttributeUsage) and _redefined_feature(feature) is not None
     ]
 
 
@@ -3917,6 +3945,51 @@ specializesFromLibrary('Base::dataValues')"""
         if attributeDefinition:
             self.attributeDefinition.extend(attributeDefinition)
 
+    def to_redefinition(self, owner_qualified_name):
+        """Builds an AttributeRedefinition runtime record from this
+        AttributeUsage (e.g. cb1's `attribute :>> placementCoordinate { ... }`):
+        which feature it redefines (a bare Reference, deferred the same way
+        as _build_reference — attributes aren't registered in any
+        LookupTable, so resolving this is left to whoever consumes it later)
+        and its value — a plain Value for a primitive redefinition (e.g.
+        x's `= 10.0`), or a CompositeCustomValue for a composite one (e.g.
+        placementCoordinate's own nested x/y), built by recursing into this
+        feature's own nested AttributeUsage children.
+
+        owner_qualified_name is threaded in explicitly rather than derived
+        from AST ancestry (qualified_name()): a redefining feature is
+        anonymous by SysML convention (`:>>` lets it reuse the redefined
+        feature's name), so self.declaredName is always unset here and
+        qualified_name(self) can't tell sibling redefinitions apart.
+        """
+        redefined = _redefined_feature(self)
+        name = redefined.declaredName
+        redefinition_qualified_name = f"{owner_qualified_name}::{name}"
+
+        nested_redefinitions = _owned_attribute_redefinitions(self, redefinition_qualified_name)
+        if nested_redefinitions:
+            # self rarely carries its own FeatureTyping — a redefinition's
+            # type is normally inherited from the feature it redefines
+            # (e.g. placementCoordinate's override has no FeatureTyping of
+            # its own, only redefined's does), so fall back to redefined's.
+            value = rt.CompositeCustomValue(
+                type=_build_type_ref(_feature_type(self) or _feature_type(redefined)),
+                elements=[
+                    rt.Argument(name=r.name, qualified_name=r.qualified_name, value=r.value)
+                    for r in nested_redefinitions
+                ],
+            )
+        else:
+            value = _to_runtime_value(_bound_value(self))
+
+        return rt.AttributeRedefinition(
+            name=name,
+            qualified_name=redefinition_qualified_name,
+            definition=self,
+            redefined_feature=_build_reference(redefined, rt.AttributeUsageElement.__name__),
+            value=value,
+        )
+
 
 class DerivedParameter(EDerivedCollection):
     pass
@@ -5762,6 +5835,8 @@ owningFeatureMembership.oclIsKindOf(StakeholderMembership) implies
         # like StateUsage.state_def_origin, dereferencing it against the
         # right LookupTable is left to whoever needs it later.
         instantiation.part_def_origin = _build_reference(_feature_type(self), rt.PartDef.__name__)
+        instantiation.attribute_redefinitions = _owned_attribute_redefinitions(
+            self, instantiation.qualified_name)
         parent.add_part_instantiation(instantiation)
 
 

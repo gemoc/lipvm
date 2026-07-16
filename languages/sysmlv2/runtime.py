@@ -312,10 +312,56 @@ class PartDef(ElementDefinition, metaclass=MetaEClass):
     contained_perform_actions = EReference(eType=ActualAction, lower=0, upper=-1, containment=True)
     attributes = EReference(eType=AttributeUsageElement, lower=0, upper=-1, containment=True)
 
+class CompositeCustomValue(Value):
+    """A structured value made of named sub-values (e.g. placementCoordinate's
+    `{x: 10.0, y: 0.0}`), rather than a single literal or reference. Reusable
+    anywhere a Value is expected (Argument.value, Parameter.default_value,
+    AttributeUsageElement.default_value), not just for attribute redefinition.
+
+    `type` records which custom type this is an instance of (e.g.
+    Common::FactoryCoordinate) using the same TypeRef shape (see
+    _build_type_ref) already used for AttributeUsageElement.type/
+    Parameter.type, rather than leaving it to be inferred from whatever
+    happens to be holding this value.
+    """
+    type = EReference(eType=TypeRef, lower=0, upper=1)
+
+    # Each element is an Argument (name + value) rather than a bare Value, so
+    # sub-fields (x, y) carry their own names — an element's own `value` may
+    # itself be a CompositeCustomValue, for further nesting.
+    elements = EReference(eType=Argument, lower=0, upper=-1, containment=True)
+
+class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
+    """A usage-site attribute override (SysML's `:>>` redefinition), e.g.
+    cb1's `attribute :>> placementCoordinate { attribute :>> x = 10.0; ... }`.
+
+    name/qualified_name (inherited from ElementDefinition) are taken from
+    the *redefined* feature, not this redefinition's own AST node — a
+    redefining feature is anonymous by SysML convention (`:>>` lets it reuse
+    the redefined feature's name), so its own declaredName is always unset.
+    """
+
+    # Bare Reference to the attribute being redefined (e.g.
+    # ConveyorBeltMachine::placementCoordinate, or FactoryCoordinate::x for a
+    # nested sub-attribute). Attributes aren't registered in any LookupTable
+    # (they live inside PartDef.attributes) — same deferred convention as
+    # everywhere else, resolving this by qualified_name against the right
+    # PartDef.attributes is left to whoever consumes it later.
+    redefined_feature = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+    # This redefinition's own value: a LiteralValue/ReferenceValue for a
+    # primitive redefinition (e.g. x's `= 10.0`), or a CompositeCustomValue
+    # for a composite one (e.g. placementCoordinate's own `{x, y}`).
+    value = EReference(eType=Value, lower=0, upper=1, containment=True)
+
 class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
 
     # Reference to the PartDef this usage is typed by
     part_def_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+    # This usage's own attribute redefinitions (e.g. cb1's placementCoordinate
+    # override).
+    attribute_redefinitions = EReference(eType=AttributeRedefinition, lower=0, upper=-1, containment=True)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 

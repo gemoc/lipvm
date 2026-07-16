@@ -353,4 +353,33 @@ def test_simple_conveyor_belt_simulation():
     assert cb1.part_def_origin.qualified_name == "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"
     assert cb1.part_def_origin.reference_type == rt.PartDef.__name__
 
+    # Test 11: Check cb1's attribute redefinition — `attribute :>>
+    # placementCoordinate { attribute :>> x = 10.0; attribute :>> y = 0.0; }`.
+    # placementCoordinate itself redefines ConveyorBeltMachine's attribute of
+    # the same name, and its value is a CompositeCustomValue (rather than a
+    # plain literal) since FactoryCoordinate is a composite/custom type —
+    # x/y live inside it as named elements, not as separate top-level
+    # redefinitions of their own.
+    assert [redefinition.name for redefinition in cb1.attribute_redefinitions] == ["placementCoordinate"]
+
+    placement_redefinition = cb1.attribute_redefinitions[0]
+    assert isinstance(placement_redefinition, rt.AttributeRedefinition)
+    assert placement_redefinition.qualified_name == "Main::cb1::placementCoordinate"
+    assert placement_redefinition.redefined_feature.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine::placementCoordinate"
+    assert placement_redefinition.redefined_feature.reference_type == rt.AttributeUsageElement.__name__
+
+    placement_value = placement_redefinition.value
+    assert isinstance(placement_value, rt.CompositeCustomValue)
+    assert placement_value.type.kind == rt.TypeKind.CUSTOM
+    assert placement_value.type.reference_type.qualified_name == "Common::FactoryCoordinate"
+    assert placement_value.type.reference_type.reference_type == rt.CustomAttributeDefinition.__name__
+
+    assert [element.name for element in placement_value.elements] == ["x", "y"]
+    assert [element.qualified_name for element in placement_value.elements] == [
+        "Main::cb1::placementCoordinate::x", "Main::cb1::placementCoordinate::y",
+    ]
+    assert all(isinstance(element.value, rt.LiteralValue) for element in placement_value.elements)
+    assert [element.value.el for element in placement_value.elements] == ["10.0", "0.0"]
+
 
