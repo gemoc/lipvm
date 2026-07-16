@@ -121,6 +121,23 @@ def _populate_parameters(record, behavior):
         ))
 
 
+def _bound_arguments(element):
+    """Builds an Argument for each of `element`'s owned features that has a
+    bound value (e.g. msg="Entry" on a PerformActionUsage, conveyorBelt=cb1
+    on a StateUsage) — the call-site counterpart to _populate_parameters,
+    which builds the formal Parameter declarations instead.
+    """
+    return [
+        rt.Argument(
+            name=feature.declaredName,
+            qualified_name=qualified_name(feature),
+            value=_to_runtime_value(_bound_value(feature)),
+        )
+        for feature in _owned_by_kind(element, FeatureMembership)
+        if _bound_value(feature) is not None
+    ]
+
+
 def _build_type_ref(type_node):
     """Builds the TypeRef describing a Parameter's type from `type_node` (the
     AST node/proxy found via a feature's FeatureTyping relationship).
@@ -6374,6 +6391,7 @@ not owningFeatureMembership.oclIsKindOf(StateSubactionMembership)"""
             # target has been registered yet; dereferencing it against the
             # right LookupTable is left to whoever executes it later.
             usage.state_def_origin = _build_reference(_feature_type(self), rt.StateDef.__name__)
+            usage.arguments = _bound_arguments(self)
             parent.add_executable_state_usage(usage)
 
 
@@ -7163,21 +7181,12 @@ owningType <> null and
         call-site arguments. Used by the build-time visit() walk; unrelated
         to evaluate() above, which is the VM's own run-time dispatch.
         """
-        arguments = [
-            rt.Argument(
-                name=feature.declaredName,
-                qualified_name=qualified_name(feature),
-                value=_to_runtime_value(_bound_value(feature)),
-            )
-            for feature in _owned_by_kind(self, FeatureMembership)
-            if _bound_value(feature) is not None
-        ]
         return rt.ActualAction(
             name=self.declaredName,
             qualified_name=qualified_name(self),
             definition=self,
             action_def=_build_reference(_feature_type(self), rt.ActionDef.__name__),
-            arguments=arguments,
+            arguments=_bound_arguments(self),
         )
 
 

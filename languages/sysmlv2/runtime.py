@@ -295,6 +295,11 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # Reference to the StateDef this usage is typed by.
     state_def_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
+    # The bound call-site arguments (e.g. conveyorBelt=cb1), each an
+    # Argument holding the bound value. Same shape as ActualAction.arguments,
+    # just binding a StateDef's formal parameters instead of an ActionDef's.
+    arguments = EReference(eType=Argument, lower=0, upper=-1, containment=True)
+
     # Which of `type.substates` is presently active.
     current = EReference(eType=StateUsage, lower=0, upper=1, containment=False)
 

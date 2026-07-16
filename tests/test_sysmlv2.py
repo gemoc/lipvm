@@ -324,4 +324,23 @@ def test_simple_conveyor_belt_simulation():
     assert cb_simulation.state_def_origin.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission"
     assert cb_simulation.state_def_origin.reference_type == rt.StateDef.__name__
 
+    # Test 9: Check the executable state's bound in-parameters (conveyorBelt=cb1) —
+    # captured but deliberately left unresolved (a ReferenceValue wrapping the
+    # FeatureReferenceExpression AST node), same as state_def_origin above.
+    assert [argument.name for argument in cb_simulation.arguments] == ["conveyorBelt"]
+    assert [argument.qualified_name for argument in cb_simulation.arguments] == ["Main::cbSimulation::conveyorBelt"]
+
+    conveyor_belt_argument = cb_simulation.arguments[0]
+    assert isinstance(conveyor_belt_argument.value, rt.ReferenceValue)
+
+    bound_expression = conveyor_belt_argument.value.value
+    assert isinstance(bound_expression, FeatureReferenceExpression)
+
+    referenced_part = next(
+        relationship.memberElement
+        for relationship in bound_expression.ownedRelationship
+        if isinstance(relationship, Membership)
+    )
+    assert referenced_part.declaredName == "cb1"
+
 
