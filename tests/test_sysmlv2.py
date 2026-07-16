@@ -1,5 +1,5 @@
 from core.vm import *
-from languages.sysmlv2.runtime import Parameter
+from languages.sysmlv2.runtime import Parameter, ElementDefinition
 
 from languages.sysmlv2.syntax import *
 from languages.sysmlv2 import runtime as rt
@@ -314,3 +314,14 @@ def test_simple_conveyor_belt_simulation():
         "ConveyorBeltSystem::ConveyorBeltMessages::FeedFreeEventMessage",
         "ConveyorBeltSystem::ConveyorBeltMessages::SwapBusyEventMessage",
         "ConveyorBeltSystem::ConveyorBeltMessages::CBCommandSuccessEventMessage"]
+
+    # Test 8: Check executable states
+    executable_states = sysml_state.lookup_table_executable_state_usages
+
+    assert [reference.qualified_name for reference in executable_states.records] == ["Main::cbSimulation"]
+
+    cb_simulation = executable_states.records[0].element_type
+    assert cb_simulation.state_def_origin.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission"
+    assert cb_simulation.state_def_origin.reference_type == rt.StateDef.__name__
+
+
