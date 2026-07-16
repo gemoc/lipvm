@@ -382,4 +382,44 @@ def test_simple_conveyor_belt_simulation():
     assert all(isinstance(element.value, rt.LiteralValue) for element in placement_value.elements)
     assert [element.value.el for element in placement_value.elements] == ["10.0", "0.0"]
 
+    # Test 12: Check ConveyorBeltNominalMission's formal parameter
+    # (`in conveyorBelt : ConveyorBeltMachine`) — unlike MySimulationDefinition
+    # (test_program_simple_machine), which declares no formal parameters at
+    # all, this exercises _populate_parameters() actually appending one.
+    state_defs_table = sysml_state.lookup_table_state_defs
+    assert [reference.qualified_name for reference in state_defs_table.records] == [
+        "ConveyorBeltStates::ConveyorBeltNominalMission"
+    ]
+
+    mission_def = state_defs_table.get_reference("ConveyorBeltStates::ConveyorBeltNominalMission").element_type
+    assert isinstance(mission_def, rt.StateDef)
+    assert mission_def.name == "ConveyorBeltNominalMission"
+    assert mission_def.qualified_name == "ConveyorBeltStates::ConveyorBeltNominalMission"
+
+    assert [parameter.name for parameter in mission_def.parameters] == ["conveyorBelt"]
+    assert [parameter.qualified_name for parameter in mission_def.parameters] == [
+        "ConveyorBeltStates::ConveyorBeltNominalMission::conveyorBelt"
+    ]
+
+    conveyor_belt_parameter = mission_def.parameters[0]
+    assert conveyor_belt_parameter.direction == rt.ParamDirection.IN
+    assert conveyor_belt_parameter.type.kind == rt.TypeKind.PART
+    assert conveyor_belt_parameter.type.scalar_type == rt.ScalarType.NONE
+    assert conveyor_belt_parameter.type.reference_type.qualified_name == \
+           "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"
+    assert conveyor_belt_parameter.type.reference_type.reference_type == rt.PartDef.__name__
+    assert conveyor_belt_parameter.default_value is None
+
+    # Test 13: Check ConveyorBeltNominalMission's own nested substates
+    # (Idle, MovingToSensor) — purely structural placeholders (rt.StateUsage),
+    # same shape as MySimulationDefinition's Idle/Next in
+    # test_program_simple_machine, just for a different state machine.
+    assert [substate.name for substate in mission_def.substates] == ["Idle", "MovingToSensor"]
+    assert [substate.qualified_name for substate in mission_def.substates] == [
+        "ConveyorBeltStates::ConveyorBeltNominalMission::Idle",
+        "ConveyorBeltStates::ConveyorBeltNominalMission::MovingToSensor",
+    ]
+    assert all(isinstance(substate, rt.StateUsage) for substate in mission_def.substates)
+
+
 
