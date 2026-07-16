@@ -138,6 +138,7 @@ def test_program_simple_machine():
     assert simulation_def.get_substate(next_to_idle.target.qualified_name).qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
     assert next_to_idle.effect.action_def.qualified_name == "SimpleSimulationPackage::Print"
     assert [argument.value.el for argument in next_to_idle.effect.arguments] == ["Next Please"]
+    assert next_to_idle.effect.target is None
 
     state_usages_table = sysml_state.lookup_table_executable_state_usages
 
