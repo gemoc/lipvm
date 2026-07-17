@@ -540,5 +540,65 @@ def test_simple_conveyor_belt_simulation():
     assert isinstance(moving_trigger, rt.TransitionTriggerByWhenCondition)
     assert_attribute_comparison(moving_trigger.condition, "conveyorSensSwap", "True", rt.ScalarType.BOOLEAN)
 
+def test_simple_sysmlv2_example_with_behaviour(capsys):
+    # Given: the same simple simulation model as test_program_simple_machine —
+    # MySimulationDefinition, entry pEntry performing Print(msg="Entry"),
+    # default_transition into Idle, then Idle <-[IdleTrans/NextTrans]-> Next
+    # with pNext/pIdle printing "Hello World"/"Next Please" as their effects.
+    resource = load("tests/test_sysmlv2-simple.xmi")
+    root = resource.contents[0]
 
+    scenario = Scenario(
+        program_definition=root
+    )
+
+    # When: the model is resolved — vm.run() only builds the registry now,
+    # it doesn't hand off to any ExecutableStateUsage on its own.
+    vm = VirtualMachine()
+    vm.scenario = scenario
+    vm.init()
+    vm.run()
+
+    sysml_state = vm.state.sysml
+    main_usage = sysml_state.lookup_table_executable_state_usages.records[0].element_type
+    assert main_usage.current is None
+
+    # When: `main` is run for the first time, manually.
+    main_usage.evaluate(vm.state)
+
+    # Then: the entry action fired once, and the unconditional
+    # default_transition moved `current` straight to Idle.
+    assert main_usage.current is not None
+    assert main_usage.current.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+    assert list(main_usage.pending) == []
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["Print(msg='Entry')"]
+
+    # When: an IdleTrans signal arrives while in Idle.
+    idle_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::IdleTrans").element_type
+    main_usage.pending.append(idle_trans)
+    main_usage.evaluate(vm.state)
+
+    # Then: the Idle -> Next transition fires — runs its effect
+    # (Print(msg="Hello World")), consumes the matched item from `pending`,
+    # and moves `current` to Next.
+    assert main_usage.current.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Next"
+    assert list(main_usage.pending) == []
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["Print(msg='Hello World')"]
+
+    # When: a NextTrans signal arrives while in Next.
+    next_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::NextTrans").element_type
+    main_usage.pending.append(next_trans)
+    main_usage.evaluate(vm.state)
+
+    # Then: the Next -> Idle transition fires (Print(msg="Next Please")),
+    # completing one full Idle -> Next -> Idle cycle.
+    assert main_usage.current.qualified_name == "SimpleSimulationPackage::MySimulationDefinition::Idle"
+    assert list(main_usage.pending) == []
+
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["Print(msg='Next Please')"]
 

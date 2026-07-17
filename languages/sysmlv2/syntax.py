@@ -926,6 +926,7 @@ endif
         # the AST resolves against. visit() is plain/eager (unlike evaluate()
         # itself, deferred and stepped by the VM via @operation) — see
         # Element.visit()'s docstring for why the two stay separate.
+        # Additionally, the actual execution now is delegated to the pre-populated runtime elements
         sysml_state = rt.SysmlRuntimeState(name="sysml")
         self.visit(sysml_state)
         runtime.elements.append(sysml_state)

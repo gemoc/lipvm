@@ -1,7 +1,9 @@
+from typing import List, Optional
+
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
-from core.operation import operation
+from core.operation import operation, Operation
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 
 # Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
@@ -47,10 +49,6 @@ class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
     '''
     contained_values = EAttribute(eType=EString, lower=1, upper=-1)
 
-class PartDef(ElementDefinition, metaclass=MetaEClass):
-
-    pass
-
 class Reference(ElementDefinition, metaclass=MetaEClass):
     reference_type = EAttribute(eType=EString, lower=1, upper=1)
 
@@ -76,6 +74,10 @@ class Value(RuntimeStateElement, metaclass=MetaEClass):
 class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
     scalar_type = EAttribute(eType=ScalarType, lower=0, upper=1)
+
+    @operation
+    def evaluate(self, runtime: RuntimeState):
+        return self.el
 
 class ReferenceValue(Value):
     el = EReference(eType=Reference, lower=1, upper=1, containment=False)
@@ -198,6 +200,30 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     # action_def — it's left as a bare Reference, not resolved here.
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
+    @operation
+    def evaluate(self, runtime: RuntimeState):
+        """Resolves action_def and binds each argument's Value, then
+        performs the call. "Performing" is a placeholder — it prints the
+        resolved name and bound arguments — until the real effect story
+        (memory: todo-actualaction-resolution-pipeline) is built.
+
+        Argument values are resolved eagerly (via .execute()) rather than
+        staying deferred: LiteralValue, the only subclass implemented so
+        far, is pure static data with nothing left to hot-swap, so nothing
+        is lost by not threading it through the Operation chain. This will
+        need revisiting once ReferenceValue/AttributeReference (which read
+        live runtime state) are implemented.
+        """
+        action_def_record = (
+            runtime.sysml.lookup_table_action_defs.get_reference(self.action_def.qualified_name)
+            if self.action_def is not None else None
+        )
+        action_def = action_def_record.element_type if action_def_record is not None else None
+        name = action_def.name if action_def is not None else None
+
+        bound = {argument.name: argument.value.evaluate(runtime).execute() for argument in self.arguments}
+        print(f"{name}({', '.join(f'{k}={v!r}' for k, v in bound.items())})")
+
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
 
@@ -259,6 +285,10 @@ class Transition(RuntimeStateElement, metaclass=MetaEClass):
     def set_effect(self, actual_action):
         self.effect = actual_action
 
+    def evaluate(self, runtime: RuntimeState):
+
+        if self.effect is not None:
+            return self.effect.evaluate(runtime)
 
 class StateUsage(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDef's own nested substate (e.g.
@@ -367,6 +397,116 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # FIFO mailbox: items received while this instance was in some state,
     # not yet matched against a transition and consumed.
     pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False)
+
+    def evaluate(self, runtime: RuntimeState):
+
+        op_to_be_executed: List[Operation] = []
+
+        #Step 1: Only start executing this ExecutableStateUsage if the StateDef is resolved, otherwise just return None
+        record_referenced_state_def: Record = runtime.sysml.lookup_table_state_defs.get_reference(
+            self.state_def_origin.qualified_name)
+        if record_referenced_state_def is None:
+            return None
+
+        original_state_def: StateDef = record_referenced_state_def.element_type
+        if original_state_def is None:
+            return None
+
+        # Step 2: Execute the default entry action and transition
+        # Only if the current state is still none, otherwise go straight for the usual behavior
+        if self.current is None:
+            # This would later be removed once we resolve the confusion about how to
+            # Decompose the FSM into smaller operations
+            entry_behaviour: List[Operation] = self._run_entry_behaviour(runtime, original_state_def)
+            op_to_be_executed.extend(entry_behaviour)
+
+        #Step 3: Execute one transition, if it is possible
+        fire_transition_side_effects: List[Operation] = self._check_and_fire(runtime, original_state_def)
+        op_to_be_executed.extend(fire_transition_side_effects)
+
+        #Since we are not yet relying on the actual operation annotation, we can just execute them now
+        for an_op in op_to_be_executed:
+            if an_op is not None:
+                an_op.execute()
+
+        return None
+
+    def _run_entry_behaviour(self, runtime: RuntimeState, original_state_def: StateDef):
+
+        op_to_be_executed: List[Operation] = []
+
+        #Step 1: Execute the entry action
+        if original_state_def.entry_action is not None:
+            op_to_be_executed.append(original_state_def.entry_action.evaluate(runtime))
+
+        #Step 2, start the transition
+        # The behavior for this transition is encapsulated, just to mimic the Operation pattern
+        transition = original_state_def.default_transition
+        if transition is not None:
+            op_to_be_executed.append(Operation(self.set_new_current,
+                             args=(original_state_def.get_substate(transition.target.qualified_name),)))
+
+        return op_to_be_executed
+
+    def set_new_current(self, new_state_candidate: StateDef):
+
+        self.current = new_state_candidate
+
+    def _match_signal(self, trigger):
+        """Returns the pending item matching `trigger`'s signal, if any.
+        None both when `trigger` isn't a TransitionTriggerBySignal (e.g. a
+        TransitionTriggerByWhenCondition, which doesn't consult `pending` at
+        all) and when no pending item matches it.
+        """
+        if not isinstance(trigger, TransitionTriggerBySignal):
+            return None
+        for item in self.pending:
+            if item.qualified_name == trigger.signal_origin.qualified_name:
+                return item
+        return None
+
+    def _check_and_fire(self, runtime: RuntimeState, original_state_def: StateDef):
+        """One reactive pass: scans current's transitions for one whose
+        trigger matches something in `pending`, and fires it if found.
+        Returns the fired Transition, or None if nothing matched this pass.
+        """
+
+        if self.current is None:
+            return []
+
+        for transition in self.current.contained_transitions:
+            matched_item = self._match_signal(transition.trigger)
+            if matched_item is not None:
+                op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
+                self.pending.remove(matched_item)
+                return op_to_be_executed
+
+        return []
+
+    def _fire_transition(self, runtime: RuntimeState, designated_transition: Transition, original_state_def: StateDef):
+
+        op_to_be_executed: List[Operation] = []
+        current_state_usage: StateUsage = self.current
+
+        #Step 2 execute exit action of the current StateUsage
+        if current_state_usage.exit is not None:
+            exit_action: Operation = current_state_usage.exit.evaluate(runtime)
+            op_to_be_executed.append(exit_action)
+
+        #Step 3 execute the transition effect
+        transition_effect: Operation = designated_transition.evaluate(runtime)
+        op_to_be_executed.append(transition_effect)
+
+        #Step 4 change the current pointer to a new StateUsage
+        target_state: StateUsage = original_state_def.get_substate(designated_transition.target.qualified_name)
+        self.current = target_state
+
+        #Step 5 execute the entry action of the newly appointed StateUsage
+        if target_state.entry is not None:
+            entry_action_of_new_current: Operation = target_state.entry.evaluate(runtime)
+            op_to_be_executed.append(entry_action_of_new_current)
+
+        return op_to_be_executed
 
 class PartDef(ElementDefinition, metaclass=MetaEClass):
 
