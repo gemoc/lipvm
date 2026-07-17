@@ -7418,42 +7418,6 @@ owningType <> null and
         if performedAction is not None:
             self.performedAction = performedAction
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
-
-        # Resolve which ActionDef this call performs (e.g. pEntry -> Print),
-        # via the registry Namespace.evaluate() already built.
-        target = _feature_type(self)
-        action_def = next(
-            (element for element in runtime.elements
-             if isinstance(element, rt.ActionDef) and element.definition is target),
-            None,
-        )
-
-        # Bind each argument (e.g. msg="Entry") to the formal parameter it
-        # fulfills, if the target ActionDef and a matching formal are known.
-        # No side effect: what "performing" an action does isn't defined by
-        # the model for a bodyless leaf action like Print, so this only
-        # resolves and returns the bound parameters.
-        bound = []
-        for feature in _owned_by_kind(self, FeatureMembership):
-            name = feature.declaredName
-            if name is None:
-                continue
-            formal = None
-            if action_def is not None:
-                formal = next(
-                    (parameter for parameter in action_def.parameters if parameter.qualified_name == name),
-                    None,
-                )
-            bound.append(rt.Parameter(
-                qualified_name=name,
-                type=formal,
-                value=_bound_value(feature),
-            ))
-
-        return bound
-
     def to_actual_action(self):
         """Builds an ActualAction runtime record from this PerformActionUsage.
         Used by the build-time visit() walk; unrelated to evaluate() above,

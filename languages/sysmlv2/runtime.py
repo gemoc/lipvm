@@ -58,21 +58,20 @@ class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
 
     @operation
-    def execute(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState):
         """Resolves this Value to its actual runtime result — e.g. a
         literal's own payload, a dereferenced Reference, or (for
         AttributeReference/BinaryExpression once they override this) a
-        looked-up/computed result. Deferred like
-        AbstractSyntaxElement.evaluate() — decorated with @operation, so
-        calling this captures the call as an Operation rather than running
-        the body immediately; the VM steps through it later.
+        looked-up/computed result. Decorated with @operation, so calling
+        this captures the call as an Operation rather than running the
+        body immediately; the VM steps through it later.
 
         Placeholder only. Left unimplemented — including on every
         subclass — until the broader execution/resolution pipeline is
         built (see memory: todo-actualaction-resolution-pipeline, which
         this is now part of).
         """
-        raise NotImplementedError('Value.execute() not yet implemented')
+        raise NotImplementedError('Value.evaluate() not yet implemented')
 
 class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
