@@ -3,7 +3,9 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKi
 
 class ConveyorBeltMachine:
 
-    def __init__(self):
+    def __init__(self, factory):
+
+        self._factory = factory
 
         self._currentCommand: ConveyorCommandKind
         self._direction: DirectionKind
