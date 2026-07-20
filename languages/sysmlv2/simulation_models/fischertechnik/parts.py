@@ -1,7 +1,9 @@
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
+from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
-class ConveyorBeltMachine:
+
+class ConveyorBeltMachine(PartSimulationModel):
 
     def __init__(self, factory):
 

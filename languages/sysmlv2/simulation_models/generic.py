@@ -6,6 +6,9 @@ class ActionSimulationModel(ABC):
     def evaluate(self):
         raise NotImplementedError("Sub-class must implement this method.")
 
+class PartSimulationModel(ABC):
+
+    pass
 
 class Print(ActionSimulationModel):
 
