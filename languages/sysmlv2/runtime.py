@@ -1,3 +1,7 @@
+import functools
+import importlib
+import inspect
+import pkgutil
 from typing import List, Optional
 
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
@@ -5,6 +9,24 @@ from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
 from core.operation import operation, Operation
 from languages.sysmlv2.sysml_utility_classes import qualified_name
+from languages.sysmlv2 import simulation_models
+from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
+
+@functools.lru_cache(maxsize=1)
+def _simulation_model_registry() -> dict:
+    """Maps each concrete ActionSimulationModel subclass's name (e.g. "Print")
+    to the class itself, discovered by scanning every module in the
+    simulation_models package. Computed once per process and cached, since
+    the scan/import work has no reason to repeat across ActualAction.evaluate
+    calls or across RuntimeState instances.
+    """
+    registry = {}
+    for _, module_name, _ in pkgutil.iter_modules(simulation_models.__path__, simulation_models.__name__ + "."):
+        module = importlib.import_module(module_name)
+        for class_name, klass in inspect.getmembers(module, inspect.isclass):
+            if issubclass(klass, ActionSimulationModel) and klass is not ActionSimulationModel:
+                registry[class_name] = klass
+    return registry
 
 # Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
 # requires an EClassifier (EEnum), which a Python Enum class isn't.
@@ -202,10 +224,10 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
 
     @operation
     def evaluate(self, runtime: RuntimeState):
-        """Resolves action_def and binds each argument's Value, then
-        performs the call. "Performing" is a placeholder — it prints the
-        resolved name and bound arguments — until the real effect story
-        (memory: todo-actualaction-resolution-pipeline) is built.
+        """Resolves action_def and binds each argument's Value, then performs
+        the call by dispatching to the ActionSimulationModel subclass (under
+        languages/sysmlv2/simulation_models) whose class name matches the
+        resolved ActionDef's name (e.g. "Print").
 
         Argument values are resolved eagerly (via .execute()) rather than
         staying deferred: LiteralValue, the only subclass implemented so
@@ -222,7 +244,14 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         name = action_def.name if action_def is not None else None
 
         bound = {argument.name: argument.value.evaluate(runtime).execute() for argument in self.arguments}
-        print(f"{name}({', '.join(f'{k}={v!r}' for k, v in bound.items())})")
+
+        registry = _simulation_model_registry()
+        if name not in registry:
+            raise LookupError(
+                f"No ActionSimulationModel subclass named '{name}' found in simulation_models "
+                f"(available: {sorted(registry)})"
+            )
+        registry[name](**bound).evaluate()
 
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""

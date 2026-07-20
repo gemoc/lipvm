@@ -573,7 +573,7 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     assert list(main_usage.pending) == []
 
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["Print(msg='Entry')"]
+    assert captured.out.splitlines() == ["Entry"]
 
     # When: an IdleTrans signal arrives while in Idle.
     idle_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::IdleTrans").element_type
@@ -587,7 +587,7 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     assert list(main_usage.pending) == []
 
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["Print(msg='Hello World')"]
+    assert captured.out.splitlines() == ["Hello World"]
 
     # When: a NextTrans signal arrives while in Next.
     next_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::NextTrans").element_type
@@ -600,5 +600,5 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     assert list(main_usage.pending) == []
 
     captured = capsys.readouterr()
-    assert captured.out.splitlines() == ["Print(msg='Next Please')"]
+    assert captured.out.splitlines() == ["Next Please"]
 
