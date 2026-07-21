@@ -1,7 +1,9 @@
 import functools
 import importlib
 import inspect
+import logging
 import pkgutil
+from collections import deque
 from typing import List, Optional
 
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
@@ -11,6 +13,8 @@ from core.operation import operation, Operation
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2 import simulation_models
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
+
+logger = logging.getLogger(__name__)
 
 @functools.lru_cache(maxsize=1)
 def _simulation_model_registry() -> dict:
@@ -481,34 +485,46 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
         self.current = new_state_candidate
 
-    def _match_signal(self, trigger):
-        """Returns the pending item matching `trigger`'s signal, if any.
-        None both when `trigger` isn't a TransitionTriggerBySignal (e.g. a
-        TransitionTriggerByWhenCondition, which doesn't consult `pending` at
-        all) and when no pending item matches it.
+    def _match_transition(self, item):
+        """Returns the transition out of `current` whose trigger matches
+        `item`'s signal, if any. None both when no contained_transition has
+        a TransitionTriggerBySignal (e.g. a TransitionTriggerByWhenCondition,
+        which doesn't consult `pending` at all) and when none of them match
+        `item`.
         """
-        if not isinstance(trigger, TransitionTriggerBySignal):
-            return None
-        for item in self.pending:
-            if item.qualified_name == trigger.signal_origin.qualified_name:
-                return item
+        for transition in self.current.contained_transitions:
+            trigger = transition.trigger
+            if not isinstance(trigger, TransitionTriggerBySignal):
+                continue
+            if trigger.signal_origin.qualified_name == item.qualified_name:
+                return transition
         return None
 
     def _check_and_fire(self, runtime: RuntimeState, original_state_def: StateDef):
-        """One reactive pass: scans current's transitions for one whose
-        trigger matches something in `pending`, and fires it if found.
-        Returns the fired Transition, or None if nothing matched this pass.
+        """One reactive pass: walks `pending` in FIFO order (oldest first)
+        pop one item from pending, check if it matches any transition guard of the current state, and firing it if it is found.
+
+        Any item scanned along the way that matches nothing is stale for
+        this state: it's logged and dropped from `pending` rather than left
+        to accumulate forever, since nothing will ever consume it once
+        `current` has moved past the state that could have.
         """
 
-        if self.current is None:
+        if self.current is None or len(self.pending) == 0:
             return []
 
-        for transition in self.current.contained_transitions:
-            matched_item = self._match_signal(transition.trigger)
-            if matched_item is not None:
-                op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
-                self.pending.remove(matched_item)
-                return op_to_be_executed
+        # Treat the pending attribute as a queue, take the first element and remove it from the queue
+        processed_item: ItemDef = self.pending[0]
+        self.pending.remove(processed_item)
+
+        transition = self._match_transition(processed_item)
+        if transition is not None:
+            op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
+            return op_to_be_executed
+
+        logger.warning(
+            "%s: dropping pending item %s — no transition out of %s matches it",
+            self.qualified_name, processed_item.qualified_name, self.current.qualified_name)
 
         return []
 
