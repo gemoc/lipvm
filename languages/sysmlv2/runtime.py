@@ -429,7 +429,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
     # FIFO mailbox: items received while this instance was in some state,
     # not yet matched against a transition and consumed.
-    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False)
+    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False, unique=False)
 
     def evaluate(self, runtime: RuntimeState):
 
