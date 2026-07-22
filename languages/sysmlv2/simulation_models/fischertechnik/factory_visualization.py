@@ -20,7 +20,8 @@ BELT_HEIGHT = 30
 BELT_FRAME_COLOR = (60, 60, 60)      # guide rails, visible along the belt's long edges from above
 BELT_SURFACE_COLOR = (35, 35, 35)    # the belt's top surface, inset from the rails
 BELT_TREAD_COLOR = (70, 70, 70)      # tread ridges, running across the belt's direction of travel
-ROLLER_COLOR = (150, 150, 150)       # roller drum's top, visible as a band at each end
+FEED_COLOR = (40, 160, 90)           # left end, in the belt's own unrotated frame: where parts enter
+SWAP_COLOR = (210, 150, 30)          # right end, in the belt's own unrotated frame: where parts exit/swap
 TREAD_SPACING = 10
 ROLLER_BAND_WIDTH = 6
 
@@ -46,32 +47,42 @@ def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
 def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
     """Draws the belt as seen from directly above: guide rails along its
     long edges, a flat surface with tread ridges running across the
-    direction of travel, and a lighter band at each end where the roller
-    drum's curved top is visible — as opposed to a side-on silhouette,
-    which would show the rollers as circular ends. Still a static picture
-    (matches Milestone 1 scope).
+    direction of travel, and a colored band at each end marking the feed
+    end (where parts enter) and the swap end (where parts exit), in the
+    belt's own unrotated left/right frame — as opposed to a side-on
+    silhouette, which would show the rollers as circular ends. Still a
+    static picture (matches Milestone 1 scope).
+
+    Composited on a local, unrotated surface first because pygame's draw
+    primitives have no rotation argument; the finished belt is rotated as
+    one image via pygame.transform.rotate and then blitted onto the screen,
+    recentered on the belt's placement coordinate.
     """
-    px, py = to_screen(machine.placementCoordinate)
-    rect = pygame.Rect(px - BELT_WIDTH // 2, py - BELT_HEIGHT // 2, BELT_WIDTH, BELT_HEIGHT)
-    pygame.draw.rect(screen, BELT_FRAME_COLOR, rect, border_radius=6)
+    belt_surface = pygame.Surface((BELT_WIDTH, BELT_HEIGHT), pygame.SRCALPHA)
+    rect = belt_surface.get_rect()
+    pygame.draw.rect(belt_surface, BELT_FRAME_COLOR, rect, border_radius=6)
 
     # Inset more along the height than the length: the height-inset reveals
     # the frame as rails running along the belt's long edges, while the
     # length-inset just leaves room for the roller bands at each end.
     surface_rect = rect.inflate(-8, -12)
-    pygame.draw.rect(screen, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
+    pygame.draw.rect(belt_surface, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
 
-    previous_clip = screen.get_clip()
-    screen.set_clip(surface_rect)
+    previous_clip = belt_surface.get_clip()
+    belt_surface.set_clip(surface_rect)
     for x in range(surface_rect.left, surface_rect.right, TREAD_SPACING):
-        pygame.draw.line(screen, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
-    screen.set_clip(previous_clip)
+        pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
+    belt_surface.set_clip(previous_clip)
 
-    for roller_rect in (
-        pygame.Rect(surface_rect.left, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height),
-        pygame.Rect(surface_rect.right - ROLLER_BAND_WIDTH, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height),
+    for roller_rect, color in (
+        (pygame.Rect(surface_rect.left, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height), FEED_COLOR),
+        (pygame.Rect(surface_rect.right - ROLLER_BAND_WIDTH, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height), SWAP_COLOR),
     ):
-        pygame.draw.rect(screen, ROLLER_COLOR, roller_rect)
+        pygame.draw.rect(belt_surface, color, roller_rect)
+
+    rotated = pygame.transform.rotate(belt_surface, machine.placementCoordinate.degrees)
+    px, py = to_screen(machine.placementCoordinate)
+    screen.blit(rotated, rotated.get_rect(center=(px, py)))
 
 
 def draw_token(screen: pygame.Surface, token: Token) -> None:

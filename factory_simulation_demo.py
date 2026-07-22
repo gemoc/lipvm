@@ -17,24 +17,24 @@ def build_demo_factory() -> Factory:
     factory = Factory()
 
     belt1 = ConveyorBeltMachine(factory)
-    belt1.placementCoordinate = FactoryCoordinate(0, 0)
+    belt1.placementCoordinate = FactoryCoordinate(0, 0, 0)
     factory.register_machine(belt1)
 
     belt2 = ConveyorBeltMachine(factory)
-    belt2.placementCoordinate = FactoryCoordinate(6, 2)
+    belt2.placementCoordinate = FactoryCoordinate(6, 2, 90)
     factory.register_machine(belt2)
 
     belt3 = ConveyorBeltMachine(factory)
-    belt3.placementCoordinate = FactoryCoordinate(12, 5)
+    belt3.placementCoordinate = FactoryCoordinate(12, 5, 0)
     factory.register_machine(belt3)
 
-    token1 = Token("T1", FactoryCoordinate(0, 0), TokenColorKind.BLUE)
+    token1 = Token("T1", FactoryCoordinate(0, 0, 0), TokenColorKind.BLUE)
     factory.spawn_token(token1, belt1)
 
-    token2 = Token("T2", FactoryCoordinate(6, 2), TokenColorKind.WHITE)
+    token2 = Token("T2", FactoryCoordinate(6, 2, 0), TokenColorKind.WHITE)
     factory.spawn_token(token2, belt2)
 
-    token3 = Token("T3", FactoryCoordinate(12, 5), TokenColorKind.RED)
+    token3 = Token("T3", FactoryCoordinate(12, 5, 0), TokenColorKind.RED)
     factory.spawn_token(token3, belt3)
 
     return factory
