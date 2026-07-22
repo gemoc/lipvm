@@ -14,8 +14,8 @@ from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 WINDOW_SIZE = (800, 600)
 BACKGROUND_COLOR = (255, 255, 255)
 
-BELT_WIDTH = 80
-BELT_HEIGHT = 30
+BELT_WIDTH = 100
+BELT_HEIGHT = 35
 
 BELT_FRAME_COLOR = (60, 60, 60)      # guide rails, visible along the belt's long edges from above
 BELT_SURFACE_COLOR = (35, 35, 35)    # the belt's top surface, inset from the rails
