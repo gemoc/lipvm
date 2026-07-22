@@ -14,6 +14,9 @@ from languages.sysmlv2 import runtime as rt
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # --- Hand-written interpreter helpers -------------------------------------
 #
@@ -931,6 +934,84 @@ endif
         self.visit(sysml_state)
         runtime.elements.append(sysml_state)
 
+        executable_stats = executable_state_usages(sysml_state.lookup_table_executable_state_usages)
+        if not executable_stats:
+            print("No ExecutableStateUsage found in this model; nothing to run.")
+            return
+
+        usages_by_name = {}
+        for usage in executable_stats:
+            usages_by_name.setdefault(usage.name, []).append(usage)
+        item_defs_table = sysml_state.lookup_table_item_defs
+        pending_file = "pending_test_scratch.txt"
+        while True:
+            if pending_file is not None:
+                sync_pending_items(pending_file, item_defs_table, usages_by_name)
+            for a_state_usage in executable_stats:
+                a_state_usage.evaluate(runtime)
+
+def executable_state_usages(lookup_table_executable_state_usages):
+    return [record.element_type
+            for record in lookup_table_executable_state_usages.records]
+
+def sync_pending_items(pending_file: str, item_defs_table, usages_by_name: dict) -> None:
+    """Reads the whole of `pending_file` — one entry per line, formatted
+    `<name-of-the-executable-state-usage>.<qualified-name-of-the-item-def>`
+    (blank lines and lines starting with '#' ignored) — appends each
+    resolved ItemDef to the named ExecutableStateUsage's `pending` mailbox
+    in file order, then truncates the file.
+
+    Meant to be called once per reactive-loop tick rather than once at
+    startup: since every line present gets consumed and the file is emptied
+    afterwards, a later scan only ever sees lines appended since the last
+    one, which is what makes `pending_file` usable as a live interface
+    while the simulation is running rather than a one-shot seed.
+
+    The usage side is its plain declared `name` (e.g. "main"), not its
+    qualified_name — qualified names use "::" as their separator, never ".",
+    so splitting each line on the first "." unambiguously separates the two
+    halves.
+
+    A malformed or unresolvable line is logged and dropped rather than
+    raised: this runs inside the long-lived reactive loop now, so one bad
+    line appended later shouldn't take the whole simulation down.
+    """
+    with open(pending_file, encoding="utf-8") as f:
+        content = f.read()
+
+    if not content.strip():
+        return
+
+    for lineno, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "." not in line:
+            logger.warning(
+                "%s:%d: expected '<usage-name>.<item-def-qualified-name>', got %r — skipping",
+                pending_file, lineno, raw_line)
+            continue
+        usage_name, item_qualified_name = line.split(".", 1)
+
+        matching_usages = usages_by_name.get(usage_name)
+        if not matching_usages:
+            logger.warning(
+                "%s:%d: unknown executable state usage '%s' — skipping",
+                pending_file, lineno, usage_name)
+            continue
+
+        record = item_defs_table.get_reference(item_qualified_name)
+        if record is None:
+            logger.warning(
+                "%s:%d: unknown item def '%s' — skipping",
+                pending_file, lineno, item_qualified_name)
+            continue
+
+        for usage in matching_usages:
+            usage.pending.append(record.element_type)
+
+    with open(pending_file, "w", encoding="utf-8"):
+        pass
 
 class DerivedRelatedelement(EDerivedCollection):
     pass

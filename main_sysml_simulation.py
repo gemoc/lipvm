@@ -49,7 +49,6 @@ def build_vm(xmi_path: str) -> VirtualMachine:
     vm.scenario = scenario
     vm.init()
     vm.run()
-    return vm
 
 
 def executable_state_usages(vm: VirtualMachine):
@@ -143,6 +142,8 @@ def run_reactive_loop(vm: VirtualMachine, tick_delay: float = 0.5, max_ticks: in
 
     tick = 0
     try:
+        pass
+    except KeyboardInterrupt:
         while vm.running:
             if pending_file is not None:
                 sync_pending_items(pending_file, item_defs_table, usages_by_name)
@@ -153,7 +154,6 @@ def run_reactive_loop(vm: VirtualMachine, tick_delay: float = 0.5, max_ticks: in
                 vm.stop()
                 break
             time.sleep(tick_delay)
-    except KeyboardInterrupt:
         vm.stop()
         print("\nStopped.")
 
@@ -175,8 +175,6 @@ def main() -> None:
     args = parser.parse_args()
 
     vm = build_vm(args.xmi)
-    run_reactive_loop(vm, tick_delay=args.tick_delay, max_ticks=args.max_ticks,
-                       pending_file=args.pending_file)
 
 
 if __name__ == "__main__":
