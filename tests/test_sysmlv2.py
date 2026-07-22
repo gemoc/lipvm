@@ -1,3 +1,5 @@
+import pytest
+
 from core.vm import *
 from languages.sysmlv2.runtime import Parameter, ElementDefinition
 
@@ -20,7 +22,7 @@ def test_program_simple_machine():
     vm = VirtualMachine()
     vm.scenario = scenario
     vm.init()
-    vm.run()
+    vm.step()
 
     # Then
     sysml_state = vm.state.sysml
@@ -193,7 +195,7 @@ def test_simple_conveyor_belt_simulation():
     vm = VirtualMachine()
     vm.scenario = scenario
     vm.init()
-    vm.run()
+    vm.step()
 
     # Then
     sysml_state = vm.state.sysml
@@ -557,15 +559,13 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     vm = VirtualMachine()
     vm.scenario = scenario
     vm.init()
-    vm.run()
+    vm.step()
 
     sysml_state = vm.state.sysml
     main_usage = sysml_state.lookup_table_executable_state_usages.records[0].element_type
     assert main_usage.current is None
 
-    # When: `main` is run for the first time, manually.
-    main_usage.evaluate(vm.state)
-
+    vm.step()
     # Then: the entry action fired once, and the unconditional
     # default_transition moved `current` straight to Idle.
     assert main_usage.current is not None
@@ -578,7 +578,9 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     # When: an IdleTrans signal arrives while in Idle.
     idle_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::IdleTrans").element_type
     main_usage.pending.append(idle_trans)
-    main_usage.evaluate(vm.state)
+
+    # Step 3
+    vm.step()
 
     # Then: the Idle -> Next transition fires — runs its effect
     # (Print(msg="Hello World")), consumes the matched item from `pending`,
@@ -592,7 +594,9 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     # When: a NextTrans signal arrives while in Next.
     next_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::NextTrans").element_type
     main_usage.pending.append(next_trans)
-    main_usage.evaluate(vm.state)
+
+    # Step 4
+    vm.step()
 
     # Then: the Next -> Idle transition fires (Print(msg="Next Please")),
     # completing one full Idle -> Next -> Idle cycle.
