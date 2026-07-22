@@ -108,7 +108,7 @@ def operation(_method: Callable = None, **sub_operations_dict: Callable) -> Call
     return decorator
 
 
-def lazy_loop(collection: list, function: Callable, condition: Operation = None, args: tuple = ()) -> Operation:
+def lazy_loop(collection: list, function: Callable, args: tuple = ()) -> Operation:
     """Build a chain of operations from a collection, one item at a time.
 
     Each item's Operation is only created when the VM actually reaches it, not
@@ -134,19 +134,33 @@ def lazy_loop(collection: list, function: Callable, condition: Operation = None,
         element.append(Operation(iterate, args=(index + 1,)))
         return element
 
-    if condition is None:
-        return Operation(iterate)
+    #if condition is None:
+    #    return Operation(iterate)
+
+    #def apply(repeat: bool) -> Operation:
+        # On repeat, yield a new body followed by the condition check returned by the recursive call.
+        # Operation.execute() will splice it in front of the loop's continuation.
+    #    if repeat:
+    #        chain = Operation(iterate)
+    #        chain.append(lazy_loop(collection, function, condition, args))
+    #        return chain
+    #    return None
+
+    #condition.continuation = Operation(apply, receives_result=True)
+    return Operation(iterate)
+
+def lazy_while(function: Callable, condition: Operation, args: tuple = ()) -> Operation:
 
     def apply(repeat: bool) -> Operation:
         # On repeat, yield a new body followed by the condition check returned by the recursive call.
         # Operation.execute() will splice it in front of the loop's continuation.
         if repeat:
-            chain = Operation(iterate)
-            chain.append(lazy_loop(collection, function, condition, args))
+            chain = function(*args)
+            chain.append(lazy_while(function, condition, args))
             return chain
         return None
 
-    condition.continuation = Operation(apply, receives_result=True)
+    condition.continuation = Operation(apply, receives_result=True) 
     return condition
 
 

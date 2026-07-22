@@ -431,6 +431,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # not yet matched against a transition and consumed.
     pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False, unique=False)
 
+    @operation
     def evaluate(self, runtime: RuntimeState):
 
         op_to_be_executed: List[Operation] = []
@@ -461,8 +462,6 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         for an_op in op_to_be_executed:
             if an_op is not None:
                 an_op.execute()
-
-        return None
 
     def _run_entry_behaviour(self, runtime: RuntimeState, original_state_def: StateDef):
 

@@ -2,6 +2,7 @@
 from functools import partial
 import pyecore.ecore as Ecore
 from pyecore.ecore import *
+from core.operation import Operation, lazy_loop, lazy_while
 
 from core.language import AbstractSyntaxElement, RuntimeState
 
@@ -920,6 +921,12 @@ endif
 """
         raise NotImplementedError('operation visibleMemberships(...) not yet implemented')
 
+    def read_events_and_execute(self, runtime, pending_file, item_defs_table, usages_by_name, executable_stats):
+
+        sync_pending_items(pending_file, item_defs_table, usages_by_name)
+
+        return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
+
     @operation
     def evaluate(self, runtime: RuntimeState):
 
@@ -934,7 +941,11 @@ endif
         self.visit(sysml_state)
         runtime.elements.append(sysml_state)
 
-        executable_stats = executable_state_usages(sysml_state.lookup_table_executable_state_usages)
+       
+        item_defs_table = runtime.sysml.lookup_table_item_defs
+        pending_file = "pending_test_scratch.txt"
+
+        executable_stats = executable_state_usages(runtime.sysml.lookup_table_executable_state_usages)
         if not executable_stats:
             print("No ExecutableStateUsage found in this model; nothing to run.")
             return
@@ -942,13 +953,19 @@ endif
         usages_by_name = {}
         for usage in executable_stats:
             usages_by_name.setdefault(usage.name, []).append(usage)
-        item_defs_table = sysml_state.lookup_table_item_defs
-        pending_file = "pending_test_scratch.txt"
-        while True:
-            if pending_file is not None:
-                sync_pending_items(pending_file, item_defs_table, usages_by_name)
-            for a_state_usage in executable_stats:
-                a_state_usage.evaluate(runtime)
+
+        return lazy_while(
+            lambda runtime, event_file, table, usages, stats: self.read_events_and_execute(runtime, event_file, table, usages, stats), 
+            Operation(lambda: True), 
+            args=(runtime, pending_file, item_defs_table, usages_by_name, executable_stats)
+        )
+
+        #return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), Operation(lambda: True), args=(runtime,))
+        # while True:
+        #     if pending_file is not None:
+        #         
+        #     for a_state_usage in executable_stats:
+        #         a_state_usage.evaluate(runtime)
 
 def executable_state_usages(lookup_table_executable_state_usages):
     return [record.element_type
