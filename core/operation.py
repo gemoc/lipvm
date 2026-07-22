@@ -8,7 +8,8 @@ class Operation:
         continuation: Operation = None,
         args: tuple = None,
         kwargs: dict = None,
-        receives_result: bool = False) -> Operation:
+        receives_result: bool = False,
+        is_step: bool = False) -> Operation:
 
         self.function = function
         self.continuation = continuation
@@ -16,6 +17,8 @@ class Operation:
 
         self.args = args if args is not None else ()
         self.kwargs = kwargs if kwargs is not None else {}
+
+        self.is_step = is_step
 
     @property
     def syntax_element(self):
@@ -53,7 +56,7 @@ class Operation:
         return result
 
 
-def operation(_method: Callable = None, **sub_operations_dict: Callable) -> Callable:
+def operation(_method: Callable = None, is_step = False, **sub_operations_dict: Callable) -> Callable:
     """Decorator that turns an `evaluate` method into a deferred Operation.
 
     Used as `@operation`, calling the method captures its arguments and returns
@@ -79,7 +82,7 @@ def operation(_method: Callable = None, **sub_operations_dict: Callable) -> Call
     def decorator(method: Callable) -> Callable:
         @wraps(method)
         def wrapper(*args, **kwargs) -> Operation:
-            operation = Operation(method, args=args, kwargs=dict(kwargs))
+            operation = Operation(method, args=args, kwargs=dict(kwargs), is_step=is_step)
 
             if not sub_operations_dict:
                 return operation
