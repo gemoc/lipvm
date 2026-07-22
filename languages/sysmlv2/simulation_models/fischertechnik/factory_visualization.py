@@ -7,7 +7,9 @@ of whether a display is even available.
 import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
+from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
+from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
 WINDOW_SIZE = (800, 600)
 BACKGROUND_COLOR = (255, 255, 255)
@@ -22,8 +24,17 @@ ROLLER_COLOR = (150, 150, 150)       # roller drum's top, visible as a band at e
 TREAD_SPACING = 10
 ROLLER_BAND_WIDTH = 6
 
+TOKEN_RADIUS = 8
+TOKEN_OUTLINE_COLOR = (60, 60, 60)   # ring around every token; keeps a WHITE token visible against BACKGROUND_COLOR
+TOKEN_COLORS = {
+    TokenColorKind.BLUE: (30, 90, 200),
+    TokenColorKind.WHITE: (255, 255, 255),
+    TokenColorKind.RED: (200, 40, 40),
+}
+
+
 SCALE = 20                       # pixels per model unit
-ORIGIN = (0, WINDOW_SIZE[1])     # bottom-left of the window is model (0, 0)
+ORIGIN = (BELT_WIDTH // 2, WINDOW_SIZE[1] - BELT_HEIGHT // 2)     # bottom-left of the window is model (0, 0)
 
 
 def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
@@ -63,6 +74,15 @@ def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> 
         pygame.draw.rect(screen, ROLLER_COLOR, roller_rect)
 
 
+def draw_token(screen: pygame.Surface, token: Token) -> None:
+    """Draws a Token as a small filled circle at its current position, on
+    top of whatever machine it's sitting on, colored by its TokenColorKind.
+    """
+    px, py = to_screen(token.position)
+    pygame.draw.circle(screen, TOKEN_COLORS[token.color], (px, py), TOKEN_RADIUS)
+    pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
+
+
 def draw_factory(factory, tick_rate: int = 60) -> None:
     """Static-picture render loop: every frame, redraws every registered
     machine at its placementCoordinate. Redrawing from scratch each frame
@@ -83,6 +103,8 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
         screen.fill(BACKGROUND_COLOR)
         for machine in factory.machines:
             draw_conveyor_belt(screen, machine)
+        for token in factory.tokens:
+            draw_token(screen, token)
 
         pygame.display.flip()
         clock.tick(tick_rate)

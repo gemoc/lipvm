@@ -12,3 +12,8 @@ class ConveyorCommandKind(Enum):
     MOVE_NB_STEPS = 'MNS'
     STOP = 'S'
     STATUS_REQUEST = 'RS'
+
+class TokenColorKind(Enum):
+    BLUE = 0
+    WHITE = 1
+    RED = 2

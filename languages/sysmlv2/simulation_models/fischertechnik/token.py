@@ -1,11 +1,13 @@
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
+from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 
 
 class Token:
 
-    def __init__(self, token_id: str, position: FactoryCoordinate):
+    def __init__(self, token_id: str, position: FactoryCoordinate, color: TokenColorKind):
         self._token_id = token_id
         self._position = position
+        self._color = color
 
     @property
     def token_id(self):
@@ -14,6 +16,10 @@ class Token:
     @property
     def position(self):
         return self._position
+
+    @property
+    def color(self):
+        return self._color
 
     def move_to(self, position: FactoryCoordinate):
         """Only place a Token's position is ever mutated. Machine action
@@ -24,4 +30,4 @@ class Token:
         self._position = position
 
     def __repr__(self):
-        return f"Token({self._token_id!r}, x={self._position.x}, y={self._position.y})"
+        return f"Token({self._token_id!r}, x={self._position.x}, y={self._position.y}, color={self._color.name})"
