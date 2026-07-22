@@ -247,9 +247,9 @@ def test_simple_conveyor_belt_simulation():
 
     factory_coordinate_def = custom_attribute_definition.get_reference("Common::FactoryCoordinate").element_type
     assert isinstance(factory_coordinate_def, rt.CustomAttributeDefinition)
-    assert [attribute.name for attribute in factory_coordinate_def.contained_attribute_use] == ["x", "y"]
+    assert [attribute.name for attribute in factory_coordinate_def.contained_attribute_use] == ["x", "y", "degrees"]
 
-    x_attribute, y_attribute = factory_coordinate_def.contained_attribute_use
+    x_attribute, y_attribute, degrees_attribute = factory_coordinate_def.contained_attribute_use
     assert x_attribute.type.kind == rt.TypeKind.SCALAR
     assert x_attribute.type.scalar_type == rt.ScalarType.REAL
     assert x_attribute.type.reference_type is None
@@ -257,6 +257,10 @@ def test_simple_conveyor_belt_simulation():
     assert y_attribute.type.kind == rt.TypeKind.SCALAR
     assert y_attribute.type.scalar_type == rt.ScalarType.REAL
     assert y_attribute.type.reference_type is None
+
+    assert degrees_attribute.type.kind == rt.TypeKind.SCALAR
+    assert degrees_attribute.type.scalar_type == rt.ScalarType.INTEGER
+    assert degrees_attribute.type.reference_type is None
 
     # Test 5: Checking part definition
     part_definition = sysml_state.lookup_table_part_defs
@@ -386,12 +390,12 @@ def test_simple_conveyor_belt_simulation():
     assert placement_value.type.reference_type.qualified_name == "Common::FactoryCoordinate"
     assert placement_value.type.reference_type.reference_type == rt.CustomAttributeDefinition.__name__
 
-    assert [element.name for element in placement_value.elements] == ["x", "y"]
+    assert [element.name for element in placement_value.elements] == ["x", "y", "degrees"]
     assert [element.qualified_name for element in placement_value.elements] == [
-        "Main::cb1::placementCoordinate::x", "Main::cb1::placementCoordinate::y",
+        "Main::cb1::placementCoordinate::x", "Main::cb1::placementCoordinate::y", "Main::cb1::placementCoordinate::degrees"
     ]
     assert all(isinstance(element.value, rt.LiteralValue) for element in placement_value.elements)
-    assert [element.value.el for element in placement_value.elements] == ["10.0", "0.0"]
+    assert [element.value.el for element in placement_value.elements] == ["10.0", "0.0", "0"]
 
     # Test 12: Check ConveyorBeltNominalMission's formal parameter
     # (`in conveyorBelt : ConveyorBeltMachine`) — unlike MySimulationDefinition
