@@ -19,6 +19,7 @@ OVERSHOOT_TOLERANCE = 1
 class ConveyorBeltMachine(PartSimulationModel):
 
     def __init__(self, factory):
+        super().__init__()
 
         self._factory = factory
 

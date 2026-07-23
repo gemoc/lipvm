@@ -17,14 +17,17 @@ def build_demo_factory() -> Factory:
     factory = Factory()
 
     belt1 = ConveyorBeltMachine(factory)
+    belt1.name = "belt1"
     belt1.placementCoordinate = FactoryCoordinate(0, 0, 0)
     factory.register_machine(belt1)
 
     belt2 = ConveyorBeltMachine(factory)
+    belt2.name = "belt2"
     belt2.placementCoordinate = FactoryCoordinate(6, 6, 90)
     factory.register_machine(belt2)
 
     belt3 = ConveyorBeltMachine(factory)
+    belt3.name = "belt3"
     belt3.placementCoordinate = FactoryCoordinate(12, 5, 0)
     factory.register_machine(belt3)
 

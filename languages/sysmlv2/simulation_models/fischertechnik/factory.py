@@ -16,16 +16,21 @@ class Factory:
     """
 
     def __init__(self):
-        self._machines = []
+        self._machines = {}
         self._owners = {}
         self._pacer = StepPacer(TICKS_PER_STEP)
 
     def register_machine(self, machine):
-        self._machines.append(machine)
+        if machine.name is None:
+            raise ValueError("machine.name must be set before registering it -- Factory keys its registry by name")
+        self._machines[machine.name] = machine
+
+    def get_machine(self, name):
+        return self._machines.get(name)
 
     @property
     def machines(self):
-        return list(self._machines)
+        return list(self._machines.values())
 
     def spawn_token(self, token: Token, machine):
         self._owners[token] = machine
@@ -52,7 +57,7 @@ class Factory:
         about what a "command" means for any particular machine kind --
         that's entirely delegated to machine.advance().
         """
-        for machine in self._machines:
+        for machine in self._machines.values():
             if machine.currentCommand is None or not self._pacer.is_due(machine):
                 continue
             machine.advance()

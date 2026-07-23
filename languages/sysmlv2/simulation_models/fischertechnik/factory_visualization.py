@@ -4,6 +4,8 @@ rendering-library object, so they remain usable (and testable) independent
 of whether a display is even available.
 """
 
+import os
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # this file can get imported just for class discovery (see registry.py), not necessarily to actually render -- suppress pygame's own import-time banner so it doesn't pollute stdout for callers who never asked for it
 import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate

@@ -954,22 +954,24 @@ endif
         for usage in executable_stats:
             usages_by_name.setdefault(usage.name, []).append(usage)
 
+        part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
+        for an_instantiation in part_instantiation_elements:
+            an_instantiation.evaluate(runtime)
+
         return lazy_while(
             lambda runtime, event_file, table, usages, stats: self.read_events_and_execute(runtime, event_file, table, usages, stats), 
             Operation(lambda: True), 
             args=(runtime, pending_file, item_defs_table, usages_by_name, executable_stats)
         )
 
-        #return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), Operation(lambda: True), args=(runtime,))
-        # while True:
-        #     if pending_file is not None:
-        #         
-        #     for a_state_usage in executable_stats:
-        #         a_state_usage.evaluate(runtime)
-
 def executable_state_usages(lookup_table_executable_state_usages):
     return [record.element_type
             for record in lookup_table_executable_state_usages.records]
+
+def part_instantiations(lookup_table_part_instantiations):
+    return [record.element_type
+            for record in lookup_table_part_instantiations.records]
+
 
 def sync_pending_items(pending_file: str, item_defs_table, usages_by_name: dict) -> None:
     """Reads the whole of `pending_file` — one entry per line, formatted

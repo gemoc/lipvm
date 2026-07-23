@@ -1,8 +1,4 @@
-import functools
-import importlib
-import inspect
 import logging
-import pkgutil
 from collections import deque
 from typing import List, Optional
 
@@ -11,26 +7,18 @@ from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
 from core.operation import operation, Operation
 from languages.sysmlv2.sysml_utility_classes import qualified_name
-from languages.sysmlv2 import simulation_models
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
+from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 logger = logging.getLogger(__name__)
 
-@functools.lru_cache(maxsize=1)
 def _simulation_model_registry() -> dict:
     """Maps each concrete ActionSimulationModel subclass's name (e.g. "Print")
-    to the class itself, discovered by scanning every module in the
-    simulation_models package. Computed once per process and cached, since
-    the scan/import work has no reason to repeat across ActualAction.evaluate
-    calls or across RuntimeState instances.
+    to the class itself. Thin wrapper around the shared, reusable
+    simulation_models scanner (also used for PartSimulationModel lookups) --
+    see scan_for_subclasses for the caching/scanning details.
     """
-    registry = {}
-    for _, module_name, _ in pkgutil.iter_modules(simulation_models.__path__, simulation_models.__name__ + "."):
-        module = importlib.import_module(module_name)
-        for class_name, klass in inspect.getmembers(module, inspect.isclass):
-            if issubclass(klass, ActionSimulationModel) and klass is not ActionSimulationModel:
-                registry[class_name] = klass
-    return registry
+    return scan_for_subclasses(ActionSimulationModel)
 
 # Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
 # requires an EClassifier (EEnum), which a Python Enum class isn't.
@@ -607,6 +595,33 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
     # This usage's own attribute redefinitions (e.g. cb1's placementCoordinate
     # override).
     attribute_redefinitions = EReference(eType=AttributeRedefinition, lower=0, upper=-1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState):
+        """Ensures this usage's live simulation counterpart exists, via
+        runtime.simulation_bridge -- idempotency is entirely the bridge's
+        concern (backed by Factory's own machine registry, keyed by name),
+        not something PartInstantiation tracks itself; no field is stored
+        on self. Later code (e.g. ActualAction/AttributeReference)
+        resolves its target to a PartInstantiation and calls the bridge
+        directly with self.qualified_name, rather than routing through
+        this method again.
+
+        Only handles the "placementCoordinate" redefinition for now --
+        deliberately narrow, matching what the model actually has today,
+        not a general redefinition-dispatch system. Passes plain values to
+        the bridge (not the raw AttributeRedefinition/CompositeCustomValue
+        AST nodes), so the simulation side never needs to understand
+        SysML's shapes either.
+        """
+        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
+
+        attrs = {}
+        for redefinition in self.attribute_redefinitions:
+            if redefinition.name == "placementCoordinate":
+                values = {element.name: float(element.value.el) for element in redefinition.value.elements}
+                attrs["placementCoordinate"] = (values["x"], values["y"])
+
+        return runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
