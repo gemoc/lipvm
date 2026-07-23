@@ -11,8 +11,19 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorK
 from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
-WINDOW_SIZE = (800, 600)
+VIEWPORT_SIZE = (800, 600)       # factory floor drawing area, excludes the attribute panel
+PANEL_WIDTH = 300
+WINDOW_SIZE = (VIEWPORT_SIZE[0] + PANEL_WIDTH, VIEWPORT_SIZE[1])
 BACKGROUND_COLOR = (255, 255, 255)
+
+PANEL_X = VIEWPORT_SIZE[0]
+PANEL_BACKGROUND_COLOR = (245, 245, 245)
+PANEL_DIVIDER_COLOR = (60, 60, 60)
+PANEL_TEXT_COLOR = (20, 20, 20)
+PANEL_LEFT_PADDING = 16
+PANEL_TOP_PADDING = 16
+PANEL_LINE_HEIGHT = 20
+PANEL_MACHINE_GAP = 14           # extra vertical gap after each machine's block
 
 BELT_WIDTH = 100
 BELT_HEIGHT = 35
@@ -35,7 +46,7 @@ TOKEN_COLORS = {
 
 
 SCALE = 20                       # pixels per model unit
-ORIGIN = (BELT_WIDTH // 2, WINDOW_SIZE[1] - BELT_HEIGHT // 2)     # bottom-left of the window is model (0, 0)
+ORIGIN = (BELT_WIDTH // 2, VIEWPORT_SIZE[1] - BELT_HEIGHT // 2)  # bottom-left of the viewport is model (0, 0)
 
 
 def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
@@ -94,6 +105,36 @@ def draw_token(screen: pygame.Surface, token: Token) -> None:
     pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
 
 
+def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font, label_font: pygame.font.Font) -> None:
+    """Draws a side panel to the right of the viewport listing each
+    machine's live attributes, one stacked block per machine. Machines are
+    labeled by their position in `machines` ("Belt 1", "Belt 2", ...) rather
+    than a real name — `ConveyorBeltMachine` doesn't carry one.
+    placementCoordinate is deliberately omitted: it's already conveyed by
+    the machine's drawn position in the viewport.
+    """
+    panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+    pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
+    pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
+
+    x = PANEL_X + PANEL_LEFT_PADDING
+    y = PANEL_TOP_PADDING
+    for index, machine in enumerate(machines, start=1):
+        screen.blit(label_font.render(f"Belt {index}", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT
+
+        for line in (
+            f"conveyorSensFeed: {machine.conveyorSensFeed}",
+            f"conveyorSensSwap: {machine.conveyorSensSwap}",
+            f"currentCommand: {machine.currentCommand}",
+            f"direction: {machine.direction}",
+        ):
+            screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
+            y += PANEL_LINE_HEIGHT
+
+        y += PANEL_MACHINE_GAP
+
+
 def draw_factory(factory, tick_rate: int = 60) -> None:
     """Static-picture render loop: every frame, redraws every registered
     machine at its placementCoordinate. Redrawing from scratch each frame
@@ -104,6 +145,8 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     pygame.display.set_caption("Fischertechnik Factory")
     clock = pygame.time.Clock()
+    font = pygame.font.SysFont(None, 18)
+    label_font = pygame.font.SysFont(None, 20, bold=True)
 
     running = True
     while running:
@@ -113,9 +156,11 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
 
         screen.fill(BACKGROUND_COLOR)
         for machine in factory.machines:
+            machine.update_sensors()
             draw_conveyor_belt(screen, machine)
         for token in factory.tokens:
             draw_token(screen, token)
+        draw_machine_panel(screen, factory.machines, font, label_font)
 
         pygame.display.flip()
         clock.tick(tick_rate)
