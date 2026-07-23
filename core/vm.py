@@ -53,7 +53,7 @@ class VirtualMachine:
         while self._operation is not None:
             result = self._operation.execute()
             self._operation = self._operation.continuation
-            if self._operation.is_step:
+            if self._operation is not None and self._operation.is_step:
                 break
 
         return result
