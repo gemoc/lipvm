@@ -24,6 +24,7 @@ PANEL_LEFT_PADDING = 16
 PANEL_TOP_PADDING = 16
 PANEL_LINE_HEIGHT = 20
 PANEL_MACHINE_GAP = 14           # extra vertical gap after each machine's block
+PANEL_SUMMARY_GAP = 14           # extra vertical gap after the factory-wide summary line
 
 PANEL_BUTTON_WIDTH = 60
 PANEL_BUTTON_HEIGHT = 22
@@ -112,14 +113,14 @@ def draw_token(screen: pygame.Surface, token: Token) -> None:
     pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
 
 
-def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font, label_font: pygame.font.Font) -> list[tuple[pygame.Rect, object]]:
-    """Draws a side panel to the right of the viewport listing each
-    machine's live attributes and a row of manual control buttons, one
-    stacked block per machine. Machines are labeled by their position in
-    `machines` ("Belt 1", "Belt 2", ...) rather than a real name —
-    `ConveyorBeltMachine` doesn't carry one. placementCoordinate is
-    deliberately omitted: it's already conveyed by the machine's drawn
-    position in the viewport.
+def draw_machine_panel(screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font, label_font: pygame.font.Font) -> list[tuple[pygame.Rect, object]]:
+    """Draws a side panel to the right of the viewport: a factory-wide
+    summary line, then each machine's live attributes and a row of manual
+    control buttons, one stacked block per machine. Machines are labeled
+    by their position in `machines` ("Belt 1", "Belt 2", ...) rather than
+    a real name — `ConveyorBeltMachine` doesn't carry one.
+    placementCoordinate is deliberately omitted: it's already conveyed by
+    the machine's drawn position in the viewport.
 
     Returns the list of (rect, callback) pairs for the buttons just drawn,
     so the caller's event loop can hit-test mouse clicks against them —
@@ -134,6 +135,10 @@ def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font,
     buttons = []
     x = PANEL_X + PANEL_LEFT_PADDING
     y = PANEL_TOP_PADDING
+
+    screen.blit(font.render(f"Unowned tokens: {unowned_token_count}", True, PANEL_TEXT_COLOR), (x, y))
+    y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
+
     for index, machine in enumerate(machines, start=1):
         screen.blit(label_font.render(f"Belt {index}", True, PANEL_TEXT_COLOR), (x, y))
         y += PANEL_LINE_HEIGHT
@@ -199,7 +204,8 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
             draw_conveyor_belt(screen, machine)
         for token in factory.tokens:
             draw_token(screen, token)
-        buttons = draw_machine_panel(screen, factory.machines, font, label_font)
+        unowned_token_count = len(factory.tokens_on(None))
+        buttons = draw_machine_panel(screen, factory.machines, unowned_token_count, font, label_font)
 
         pygame.display.flip()
         clock.tick(tick_rate)

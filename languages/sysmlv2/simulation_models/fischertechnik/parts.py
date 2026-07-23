@@ -96,11 +96,19 @@ class ConveyorBeltMachine(PartSimulationModel):
 
     def moveToSensor(self, direction):
         """Starts the belt moving toward whichever end sensor `direction`
-        points at (FORWARD -> swap end, BACKWARD -> feed end). Only sets
-        the command/direction -- like flipping a switch -- the actual
-        per-tick movement and boundary check happen in
-        Factory.advance()/tick().
+        points at (FORWARD -> swap end, BACKWARD -> feed end) -- unless a
+        token is already there, in which case there's nothing to move and
+        starting the command anyway would push it one step past the end on
+        the first tick (see advance()'s overshoot handling) instead of
+        ever detecting arrival. Only sets the command/direction -- like
+        flipping a switch -- the actual per-tick movement and boundary
+        check happen in ConveyorBeltMachine.advance()/Factory.tick().
         """
+        already_arrived = self.conveyorSensSwap if direction == DirectionKind.FORWARD else self.conveyorSensFeed
+        if already_arrived:
+            self.stop()
+            return
+
         self._currentCommand = ConveyorCommandKind.MOVE_TO_SENSOR
         self._direction = direction
         self._currentStepCount = 0
