@@ -21,7 +21,7 @@ def build_demo_factory() -> Factory:
     factory.register_machine(belt1)
 
     belt2 = ConveyorBeltMachine(factory)
-    belt2.placementCoordinate = FactoryCoordinate(6, 2, 90)
+    belt2.placementCoordinate = FactoryCoordinate(6, 6, 90)
     factory.register_machine(belt2)
 
     belt3 = ConveyorBeltMachine(factory)
@@ -35,7 +35,7 @@ def build_demo_factory() -> Factory:
 
     # belt2: token sits in the middle (belt2 is rotated, so this is the only
     # case that doesn't exercise the feed/swap rotation math).
-    token2 = Token("T2", FactoryCoordinate(6, 2, 0), TokenColorKind.WHITE)
+    token2 = Token("T2", FactoryCoordinate(6, 6, 0), TokenColorKind.WHITE)
     factory.spawn_token(token2, belt2)
 
     # belt3: token sits at the feed end.

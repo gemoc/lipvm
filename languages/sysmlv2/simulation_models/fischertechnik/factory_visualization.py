@@ -8,7 +8,7 @@ import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, TokenColorKind
-from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
+from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine, HALF_LENGTH, OVERSHOOT_TOLERANCE
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
 VIEWPORT_SIZE = (800, 600)       # factory floor drawing area, excludes the attribute panel
@@ -33,7 +33,14 @@ PANEL_BUTTON_COLOR = (210, 210, 210)
 PANEL_BUTTON_HOVER_COLOR = (185, 200, 225)
 PANEL_BUTTON_TEXT_COLOR = (20, 20, 20)
 
-BELT_WIDTH = 100
+SCALE = 20                       # pixels per model unit
+
+# Wide enough that a token at the overshoot-tolerance boundary --
+# HALF_LENGTH + OVERSHOOT_TOLERANCE model units from center, the furthest
+# a token can travel while still owned (see ConveyorBeltMachine.advance())
+# -- still visually sits on the drawn belt, keeping the same 10px-per-side
+# margin the original design had just beyond HALF_LENGTH alone.
+BELT_WIDTH = (HALF_LENGTH + OVERSHOOT_TOLERANCE) * 2 * SCALE + 20
 BELT_HEIGHT = 35
 
 BELT_FRAME_COLOR = (60, 60, 60)      # guide rails, visible along the belt's long edges from above
@@ -53,7 +60,6 @@ TOKEN_COLORS = {
 }
 
 
-SCALE = 20                       # pixels per model unit
 ORIGIN = (BELT_WIDTH // 2, VIEWPORT_SIZE[1] - BELT_HEIGHT // 2)  # bottom-left of the viewport is model (0, 0)
 
 
@@ -66,9 +72,12 @@ def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
 def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
     """Draws the belt as seen from directly above: guide rails along its
     long edges, a flat surface with tread ridges running across the
-    direction of travel, and a colored band at each end marking the feed
-    end (where parts enter) and the swap end (where parts exit), in the
-    belt's own unrotated left/right frame — as opposed to a side-on
+    direction of travel, and a colored band marking the feed sensor
+    (where parts enter) and the swap sensor (where parts exit) at their
+    actual model-coordinate positions -- HALF_LENGTH from center, not the
+    edges of the drawn belt, since BELT_WIDTH is drawn wider than that to
+    also cover the overshoot-tolerance zone (see OVERSHOOT_TOLERANCE) --
+    in the belt's own unrotated left/right frame, as opposed to a side-on
     silhouette, which would show the rollers as circular ends. Still a
     static picture (matches Milestone 1 scope).
 
@@ -83,7 +92,7 @@ def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> 
 
     # Inset more along the height than the length: the height-inset reveals
     # the frame as rails running along the belt's long edges, while the
-    # length-inset just leaves room for the roller bands at each end.
+    # length-inset just leaves a little room around the sensor bands.
     surface_rect = rect.inflate(-8, -12)
     pygame.draw.rect(belt_surface, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
 
@@ -93,10 +102,13 @@ def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> 
         pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
     belt_surface.set_clip(previous_clip)
 
-    for roller_rect, color in (
-        (pygame.Rect(surface_rect.left, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height), FEED_COLOR),
-        (pygame.Rect(surface_rect.right - ROLLER_BAND_WIDTH, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height), SWAP_COLOR),
+    sensor_offset_px = HALF_LENGTH * SCALE
+    for sensor_x, color in (
+        (rect.centerx - sensor_offset_px, FEED_COLOR),
+        (rect.centerx + sensor_offset_px, SWAP_COLOR),
     ):
+        roller_rect = pygame.Rect(0, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height)
+        roller_rect.centerx = sensor_x
         pygame.draw.rect(belt_surface, color, roller_rect)
 
     rotated = pygame.transform.rotate(belt_surface, machine.placementCoordinate.degrees)

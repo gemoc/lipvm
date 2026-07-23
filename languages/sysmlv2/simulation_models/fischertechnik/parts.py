@@ -9,6 +9,12 @@ from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 # feed/swap ends (matches the visualization's BELT_WIDTH/SCALE ratio).
 HALF_LENGTH = 2
 
+# Extra model units beyond HALF_LENGTH a token can travel before being
+# disowned -- gives MOVE_NB_STEPS/MOVE_OUT one step of overshoot past the
+# sensor positions before ownership is actually released, rather than
+# disowning the instant a token passes feed_position()/swap_position().
+OVERSHOOT_TOLERANCE = 1
+
 
 class ConveyorBeltMachine(PartSimulationModel):
 
@@ -115,7 +121,19 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._targetStepCount = 0
 
     def moveOut(self, direction):
-        pass
+        """Starts the belt moving `direction`, with the explicit goal of
+        pushing the token off the belt's physical extent -- unlike
+        moveToSensor, whose success condition is stopping exactly at the
+        boundary, this one's success condition *is* leaving it (past
+        HALF_LENGTH + OVERSHOOT_TOLERANCE, same as MOVE_NB_STEPS's
+        overshoot handling in advance()). Only sets the command/direction
+        -- the actual per-tick movement, overshoot-disowning, and
+        completion check happen in advance()/Factory.tick().
+        """
+        self._currentCommand = ConveyorCommandKind.MOVE_OUT
+        self._direction = direction
+        self._currentStepCount = 0
+        self._targetStepCount = 0
 
     def moveNbSteps(self, steps, direction):
         """Starts the belt moving `steps` model-grid units along its own
@@ -142,7 +160,7 @@ class ConveyorBeltMachine(PartSimulationModel):
         for token in self._factory.tokens_on(self):
             new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
             token.move_to(new_position)
-            if abs(self._local_x_offset(new_position)) > HALF_LENGTH:
+            if abs(self._local_x_offset(new_position)) > HALF_LENGTH + OVERSHOOT_TOLERANCE:
                 self._factory.transfer_token(token, None)
 
         if self._currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR:
@@ -152,6 +170,9 @@ class ConveyorBeltMachine(PartSimulationModel):
         elif self._currentCommand == ConveyorCommandKind.MOVE_NB_STEPS:
             self.record_step()
             if self._currentStepCount >= self._targetStepCount:
+                self.stop()
+        elif self._currentCommand == ConveyorCommandKind.MOVE_OUT:
+            if not self._factory.tokens_on(self):
                 self.stop()
 
     def record_step(self):
