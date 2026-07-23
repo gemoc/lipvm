@@ -1,4 +1,4 @@
-from core.operation import Operation, lazy_loop
+from core.operation import Operation, lazy_loop, lazy_while
 
 
 # --- Helpers ---
@@ -66,8 +66,10 @@ def test_repeats_while_true_stops_when_false():
         iterations[0] += 1
         return iterations[0] <= 2  # True on checks 1 and 2, False on check 3
 
+    body = lambda: lazy_loop([10, 20], lambda x: Operation(lambda val=x: results.append(val)))
+
     # When
-    chain = lazy_loop([10, 20], lambda x: Operation(lambda val=x: results.append(val)), Operation(check))
+    chain = lazy_while(body, Operation(check))
     _run(chain)
 
     # Then: collection ran twice
@@ -78,8 +80,10 @@ def test_with_condition_false_on_first_check_never_executes_body():
     # Given
     results = []
 
+    body = lambda: lazy_loop([1, 2], lambda x: Operation(lambda val=x: results.append(val)))
+
     # When
-    chain = lazy_loop([1, 2], lambda x: Operation(lambda val=x: results.append(val)), Operation(lambda: False))
+    chain = lazy_while(body, Operation(lambda: False))
     _run(chain)
 
     # Then
@@ -101,7 +105,7 @@ def test_with_condition_elements_built_lazily_per_iteration():
         return iterations[0] == 1  # True once, then False
 
     # When: chain is built but not yet executed
-    chain = lazy_loop([1, 2], tracked, Operation(check))
+    chain = lazy_while(lambda: lazy_loop([1, 2], tracked), Operation(check))
 
     # Then: nothing called yet
     assert elements == []

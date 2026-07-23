@@ -1,7 +1,7 @@
 from pyecore.ecore import *
 
 from core.language import AbstractSyntaxElement, RuntimeState
-from core.operation import Operation, lazy_loop, operation, if_then_else
+from core.operation import Operation, lazy_loop, lazy_while, operation, if_then_else
 
 from languages.robot.runtime import (
     Direction,
@@ -211,7 +211,10 @@ class RepeatWhile(Command, metaclass=MetaEClass):
 
     @operation
     def evaluate(self, runtime: RuntimeState) -> Operation:
-        return lazy_loop(self.body, lambda element, runtime: element.evaluate(runtime), self.condition.evaluate(runtime), args=(runtime,))
+
+        loop_over_body = lazy_loop(self.body, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
+
+        return lazy_while(lambda: loop_over_body, self.condition.evaluate(runtime), args=(runtime,))
 
 
 class WallPosition(Command, metaclass=MetaEClass):
