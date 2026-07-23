@@ -74,6 +74,17 @@ class ConveyorBeltMachine(PartSimulationModel):
     def swap_position(self) -> FactoryCoordinate:
         return self._end_position(HALF_LENGTH)
 
+    def _local_x_offset(self, position: FactoryCoordinate) -> int:
+        """Inverse of `_end_position`: given an absolute coordinate that
+        lies on this belt's axis, returns how far it sits from the belt's
+        center along the belt's own unrotated x-axis. Exact (no drift) for
+        0/90/180/270 degree placements, same as `_end_position`.
+        """
+        theta = math.radians(self._placementCoordinate.degrees)
+        dx = position.x - self._placementCoordinate.x
+        dy = position.y - self._placementCoordinate.y
+        return round(dx * math.cos(theta) + dy * math.sin(theta))
+
     def update_sensors(self):
         """Refreshes conveyorSensFeed/conveyorSensSwap from the tokens
         currently owned by this belt. A Token is just a point in this model,
@@ -86,13 +97,31 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._conveyorSensSwap = any(p.x == swap.x and p.y == swap.y for p in positions)
 
     def moveToSensor(self, direction):
-        pass
+        """Moves every token currently on this belt directly to whichever
+        end sensor `direction` points at (FORWARD -> swap end, BACKWARD ->
+        feed end) -- a discrete jump, matching the simulation's current
+        motion model (see TODO-LIST.md).
+        """
+        target = self.swap_position() if direction == DirectionKind.FORWARD else self.feed_position()
+        for token in self._factory.tokens_on(self):
+            token.move_to(target)
+        self.update_sensors()
 
     def moveOut(self, direction):
         pass
 
-    def MoveNbSteps(self, steps, direction):
-        pass
+    def moveNbSteps(self, steps, direction):
+        """Moves every token currently on this belt `steps` model-grid
+        units along the belt's own axis -- toward the swap end for FORWARD,
+        toward the feed end for BACKWARD -- clamped so it can't overshoot
+        past either end.
+        """
+        sign = 1 if direction == DirectionKind.FORWARD else -1
+        for token in self._factory.tokens_on(self):
+            offset = self._local_x_offset(token.position) + sign * steps
+            offset = max(-HALF_LENGTH, min(HALF_LENGTH, offset))
+            token.move_to(self._end_position(offset))
+        self.update_sensors()
 
     def stop(self):
         pass

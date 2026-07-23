@@ -7,7 +7,7 @@ of whether a display is even available.
 import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
-from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
+from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
@@ -24,6 +24,13 @@ PANEL_LEFT_PADDING = 16
 PANEL_TOP_PADDING = 16
 PANEL_LINE_HEIGHT = 20
 PANEL_MACHINE_GAP = 14           # extra vertical gap after each machine's block
+
+PANEL_BUTTON_WIDTH = 60
+PANEL_BUTTON_HEIGHT = 22
+PANEL_BUTTON_GAP = 6             # horizontal gap between buttons in the same row
+PANEL_BUTTON_COLOR = (210, 210, 210)
+PANEL_BUTTON_HOVER_COLOR = (185, 200, 225)
+PANEL_BUTTON_TEXT_COLOR = (20, 20, 20)
 
 BELT_WIDTH = 100
 BELT_HEIGHT = 35
@@ -105,18 +112,26 @@ def draw_token(screen: pygame.Surface, token: Token) -> None:
     pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
 
 
-def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font, label_font: pygame.font.Font) -> None:
+def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font, label_font: pygame.font.Font) -> list[tuple[pygame.Rect, object]]:
     """Draws a side panel to the right of the viewport listing each
-    machine's live attributes, one stacked block per machine. Machines are
-    labeled by their position in `machines` ("Belt 1", "Belt 2", ...) rather
-    than a real name — `ConveyorBeltMachine` doesn't carry one.
-    placementCoordinate is deliberately omitted: it's already conveyed by
-    the machine's drawn position in the viewport.
+    machine's live attributes and a row of manual control buttons, one
+    stacked block per machine. Machines are labeled by their position in
+    `machines` ("Belt 1", "Belt 2", ...) rather than a real name —
+    `ConveyorBeltMachine` doesn't carry one. placementCoordinate is
+    deliberately omitted: it's already conveyed by the machine's drawn
+    position in the viewport.
+
+    Returns the list of (rect, callback) pairs for the buttons just drawn,
+    so the caller's event loop can hit-test mouse clicks against them —
+    computed here, in the same pass as the drawing, so the clickable area
+    can never drift out of sync with what's on screen.
     """
     panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
     pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
     pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
 
+    mouse_pos = pygame.mouse.get_pos()
+    buttons = []
     x = PANEL_X + PANEL_LEFT_PADDING
     y = PANEL_TOP_PADDING
     for index, machine in enumerate(machines, start=1):
@@ -132,7 +147,24 @@ def draw_machine_panel(screen: pygame.Surface, machines, font: pygame.font.Font,
             screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
             y += PANEL_LINE_HEIGHT
 
-        y += PANEL_MACHINE_GAP
+        button_x = x
+        for label, callback in (
+            ("Feed", lambda m=machine: m.moveToSensor(DirectionKind.BACKWARD)),
+            ("Swap", lambda m=machine: m.moveToSensor(DirectionKind.FORWARD)),
+            ("-1", lambda m=machine: m.moveNbSteps(1, DirectionKind.BACKWARD)),
+            ("+1", lambda m=machine: m.moveNbSteps(1, DirectionKind.FORWARD)),
+        ):
+            rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
+            color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
+            pygame.draw.rect(screen, color, rect, border_radius=4)
+            label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
+            screen.blit(label_surface, label_surface.get_rect(center=rect.center))
+            buttons.append((rect, callback))
+            button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
+
+        y += PANEL_BUTTON_HEIGHT + PANEL_MACHINE_GAP
+
+    return buttons
 
 
 def draw_factory(factory, tick_rate: int = 60) -> None:
@@ -149,18 +181,23 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
     label_font = pygame.font.SysFont(None, 20, bold=True)
 
     running = True
+    buttons: list[tuple[pygame.Rect, object]] = []
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for rect, callback in buttons:
+                    if rect.collidepoint(event.pos):
+                        callback()
+                        break
 
         screen.fill(BACKGROUND_COLOR)
         for machine in factory.machines:
-            machine.update_sensors()
             draw_conveyor_belt(screen, machine)
         for token in factory.tokens:
             draw_token(screen, token)
-        draw_machine_panel(screen, factory.machines, font, label_font)
+        buttons = draw_machine_panel(screen, factory.machines, font, label_font)
 
         pygame.display.flip()
         clock.tick(tick_rate)
