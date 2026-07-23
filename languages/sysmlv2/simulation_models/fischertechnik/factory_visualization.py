@@ -192,6 +192,8 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
                         callback()
                         break
 
+        factory.tick()
+
         screen.fill(BACKGROUND_COLOR)
         for machine in factory.machines:
             draw_conveyor_belt(screen, machine)

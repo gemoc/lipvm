@@ -42,14 +42,6 @@ def build_demo_factory() -> Factory:
     token3 = Token("T3", belt3.feed_position(), TokenColorKind.RED)
     factory.spawn_token(token3, belt3)
 
-    # Sensor state only refreshes when a belt's own action methods run (see
-    # ConveyorBeltMachine.moveToSensor/moveNbSteps); since these tokens are
-    # placed directly rather than moved there by an action, each belt needs
-    # one explicit update_sensors() call so the panel reflects them from the
-    # first frame.
-    for belt in factory.machines:
-        belt.update_sensors()
-
     return factory
 
 

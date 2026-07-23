@@ -1,4 +1,9 @@
+from languages.sysmlv2.simulation_models.fischertechnik.step_pacer import StepPacer
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
+
+# One visible hop every this many Factory.tick() calls -- 0.5s at the
+# render loop's default 60fps (draw_factory's tick_rate).
+TICKS_PER_STEP = 30
 
 
 class Factory:
@@ -13,6 +18,7 @@ class Factory:
     def __init__(self):
         self._machines = []
         self._owners = {}
+        self._pacer = StepPacer(TICKS_PER_STEP)
 
     def register_machine(self, machine):
         self._machines.append(machine)
@@ -36,3 +42,19 @@ class Factory:
     @property
     def tokens(self):
         return list(self._owners.keys())
+
+    def tick(self):
+        """Advances every machine with an active command by one step,
+        paced to once every TICKS_PER_STEP calls per machine. Meant to be
+        called once per simulation tick (e.g. once per rendered frame) --
+        stays framework-agnostic itself, with no pygame/timing dependency,
+        so any caller (render loop, test) can drive it. Knows nothing
+        about what a "command" means for any particular machine kind --
+        that's entirely delegated to machine.advance().
+        """
+        for machine in self._machines:
+            if machine.currentCommand is None or not self._pacer.is_due(machine):
+                continue
+            machine.advance()
+            if machine.currentCommand is None:
+                self._pacer.reset(machine)

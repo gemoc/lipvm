@@ -2,6 +2,7 @@ import math
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
+from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # Model-unit distance from a belt's placementCoordinate to each of its
@@ -20,8 +21,6 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._currentStepCount : int = 0
         self._targetStepCount : int = 0
 
-        self._conveyorSensFeed : bool = False
-        self._conveyorSensSwap : bool = False
         self._conveyorSensImpulse : int = 0
         self._placementCoordinate : FactoryCoordinate
 
@@ -35,11 +34,15 @@ class ConveyorBeltMachine(PartSimulationModel):
 
     @property
     def conveyorSensFeed(self):
-        return self._conveyorSensFeed
+        feed = self.feed_position()
+        return any(token.position.x == feed.x and token.position.y == feed.y
+                   for token in self._factory.tokens_on(self))
 
     @property
     def conveyorSensSwap(self):
-        return self._conveyorSensSwap
+        swap = self.swap_position()
+        return any(token.position.x == swap.x and token.position.y == swap.y
+                   for token in self._factory.tokens_on(self))
 
     @property
     def conveyorSensImpulse(self):
@@ -53,15 +56,21 @@ class ConveyorBeltMachine(PartSimulationModel):
     def direction(self):
         return self._direction
 
+    @property
+    def currentStepCount(self):
+        return self._currentStepCount
+
+    @property
+    def targetStepCount(self):
+        return self._targetStepCount
+
     def _end_position(self, local_x_offset: int) -> FactoryCoordinate:
         """Coordinate of a feed/swap end: local_x_offset along the belt's
         own unrotated x-axis, rotated by placementCoordinate.degrees around
         its center. Rounded to the nearest grid cell since FactoryCoordinate
         is integer-only -- exact for 0/90/180/270 degree rotations.
         """
-        theta = math.radians(self._placementCoordinate.degrees)
-        dx = local_x_offset * math.cos(theta)
-        dy = local_x_offset * math.sin(theta)
+        dx, dy = rotate_offset(local_x_offset, self._placementCoordinate.degrees)
         return FactoryCoordinate(
             round(self._placementCoordinate.x + dx),
             round(self._placementCoordinate.y + dy),
@@ -75,56 +84,75 @@ class ConveyorBeltMachine(PartSimulationModel):
         return self._end_position(HALF_LENGTH)
 
     def _local_x_offset(self, position: FactoryCoordinate) -> int:
-        """Inverse of `_end_position`: given an absolute coordinate that
-        lies on this belt's axis, returns how far it sits from the belt's
-        center along the belt's own unrotated x-axis. Exact (no drift) for
-        0/90/180/270 degree placements, same as `_end_position`.
+        """Inverse of `_end_position`: given an absolute coordinate,
+        returns how far it sits from the belt's center along the belt's
+        own unrotated x-axis. Exact (no drift) for 0/90/180/270 degree
+        placements, same as `_end_position`.
         """
         theta = math.radians(self._placementCoordinate.degrees)
         dx = position.x - self._placementCoordinate.x
         dy = position.y - self._placementCoordinate.y
         return round(dx * math.cos(theta) + dy * math.sin(theta))
 
-    def update_sensors(self):
-        """Refreshes conveyorSensFeed/conveyorSensSwap from the tokens
-        currently owned by this belt. A Token is just a point in this model,
-        so "the whole token occupies the position" is an exact coordinate
-        match against the feed/swap end.
-        """
-        positions = [token.position for token in self._factory.tokens_on(self)]
-        feed, swap = self.feed_position(), self.swap_position()
-        self._conveyorSensFeed = any(p.x == feed.x and p.y == feed.y for p in positions)
-        self._conveyorSensSwap = any(p.x == swap.x and p.y == swap.y for p in positions)
-
     def moveToSensor(self, direction):
-        """Moves every token currently on this belt directly to whichever
-        end sensor `direction` points at (FORWARD -> swap end, BACKWARD ->
-        feed end) -- a discrete jump, matching the simulation's current
-        motion model (see TODO-LIST.md).
+        """Starts the belt moving toward whichever end sensor `direction`
+        points at (FORWARD -> swap end, BACKWARD -> feed end). Only sets
+        the command/direction -- like flipping a switch -- the actual
+        per-tick movement and boundary check happen in
+        Factory.advance()/tick().
         """
-        target = self.swap_position() if direction == DirectionKind.FORWARD else self.feed_position()
-        for token in self._factory.tokens_on(self):
-            token.move_to(target)
-        self.update_sensors()
+        self._currentCommand = ConveyorCommandKind.MOVE_TO_SENSOR
+        self._direction = direction
+        self._currentStepCount = 0
+        self._targetStepCount = 0
 
     def moveOut(self, direction):
         pass
 
     def moveNbSteps(self, steps, direction):
-        """Moves every token currently on this belt `steps` model-grid
-        units along the belt's own axis -- toward the swap end for FORWARD,
-        toward the feed end for BACKWARD -- clamped so it can't overshoot
-        past either end.
+        """Starts the belt moving `steps` model-grid units along its own
+        axis -- toward the swap end for FORWARD, toward the feed end for
+        BACKWARD. Only sets the command/direction/step boundary -- the
+        actual per-tick movement and boundary check happen in
+        Factory.advance()/tick().
         """
-        sign = 1 if direction == DirectionKind.FORWARD else -1
+        self._currentCommand = ConveyorCommandKind.MOVE_NB_STEPS
+        self._direction = direction
+        self._currentStepCount = 0
+        self._targetStepCount = steps
+
+    def advance(self):
+        """One tick's worth of work for this belt's active command: move
+        its token(s) one step -- disowning any token that ends up strictly
+        past the belt's physical ends (MOVE_NB_STEPS can overshoot;
+        MOVE_TO_SENSOR can't, since arriving exactly at feed/swap is its
+        own stop condition) -- then check whether the boundary for
+        currentCommand was just reached, stopping itself if so. Called by
+        Factory.tick(), already paced to the right cadence by the time
+        this runs.
+        """
         for token in self._factory.tokens_on(self):
-            offset = self._local_x_offset(token.position) + sign * steps
-            offset = max(-HALF_LENGTH, min(HALF_LENGTH, offset))
-            token.move_to(self._end_position(offset))
-        self.update_sensors()
+            new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
+            token.move_to(new_position)
+            if abs(self._local_x_offset(new_position)) > HALF_LENGTH:
+                self._factory.transfer_token(token, None)
+
+        if self._currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR:
+            arrived = self.conveyorSensSwap if self._direction == DirectionKind.FORWARD else self.conveyorSensFeed
+            if arrived:
+                self.stop()
+        elif self._currentCommand == ConveyorCommandKind.MOVE_NB_STEPS:
+            self.record_step()
+            if self._currentStepCount >= self._targetStepCount:
+                self.stop()
+
+    def record_step(self):
+        self._currentStepCount += 1
 
     def stop(self):
-        pass
+        self._currentCommand = None
+        self._currentStepCount = 0
+        self._targetStepCount = 0
 
     def statusRequest(self):
         pass

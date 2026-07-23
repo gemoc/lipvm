@@ -10,10 +10,10 @@ Deliberately adds nothing to core.vm/core.operation: each tick is a plain
 Python call to `ExecutableStateUsage.evaluate()`, same contract the tests
 already rely on. Folding this into the VM's own Operation chain (making
 ExecutableStateUsage/Transition real @operation links) is a separate,
-larger refactor — see TODO-LIST.md.
+larger refactor — see SYSML-TODO-LIST.md.
 
 Note the reactive loop itself only supplies repetition; injecting into a
-usage's `pending` mailbox (TODO-LIST.md item 6) is a separate, optional step
+usage's `pending` mailbox (SYSML-TODO-LIST.md item 6) is a separate, optional step
 via `sync_pending_items()` / `--pending-file`. Without it, a model with no
 other pending-producer will run its entry prologue once and then idle every
 following tick.
