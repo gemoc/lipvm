@@ -685,8 +685,19 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         # The behavior for this transition is encapsulated, just to mimic the Operation pattern
         transition = original_state_def.default_transition
         if transition is not None:
-            op_to_be_executed.append(Operation(self.set_new_current,
-                             args=(original_state_def.get_substate(transition.target.qualified_name),)))
+            target_state = original_state_def.get_substate(transition.target.qualified_name)
+            op_to_be_executed.append(Operation(self.set_new_current, args=(target_state,)))
+
+            #Step 3: execute the entry action of the newly-entered substate itself (e.g. Start's own
+            # `entry conveyorBelt.moveToSensor {...}`) -- distinct from original_state_def.entry_action
+            # above (the StateDef's own top-level entry, e.g. ConveyorBeltComplexMissionTwo's bare
+            # `entry;`). Previously only _fire_transition() ran a target substate's entry -- meaning
+            # the very first transition (StateDef default -> its first substate, handled here instead)
+            # silently skipped it. Queued after set_new_current (not run inline) so it fires only once
+            # that operation has actually executed and self.current genuinely reflects target_state,
+            # matching _fire_transition()'s own ordering for every later transition.
+            if target_state.entry is not None:
+                op_to_be_executed.append(target_state.entry.evaluate(runtime, self))
 
         return op_to_be_executed
 
