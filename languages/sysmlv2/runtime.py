@@ -357,19 +357,41 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
     @operation
-    def evaluate(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
         """Resolves action_def and binds each argument's Value, then performs
-        the call by dispatching to the ActionSimulationModel subclass (under
-        languages/sysmlv2/simulation_models) whose class name matches the
-        resolved ActionDef's name (e.g. "Print").
+        the call. Two shapes, per `target`:
+
+        - `target is None` (a direct action, e.g. `pEntry` performing
+          `Print`): dispatches to the ActionSimulationModel subclass (under
+          languages/sysmlv2/simulation_models) whose class name matches the
+          resolved ActionDef's own name (e.g. "Print") -- unchanged from
+          before.
+        - `target is not None` (a chained action, e.g. `do conveyorBelt.
+          moveToSensor`): resolves `target` (a "Parameter" reference, e.g.
+          conveyorBelt) via ReferenceValue -- same resolution
+          AttributeReference.evaluate() uses -- to the concrete
+          PartInstantiation this is actually being performed on, then calls
+          the real method through `runtime.simulation_bridge.call_action()`
+          using `self.name` (e.g. "moveToSensor", the perform-action's own
+          declared name -- NOT action_def.name, "MoveToSensor", which is
+          the ActionDefinition's name and not what's callable on the
+          PartSimulationModel).
 
         Argument values are resolved eagerly, via a plain Value.evaluate()
-        call (no longer @operation-decorated -- see Value's own docstring):
-        LiteralValue, the only subclass implemented so far, is pure static
-        data with nothing left to hot-swap, so nothing is lost by not
-        threading it through the Operation chain. This will need
-        revisiting once ReferenceValue (which reads live runtime state) is
-        implemented -- AttributeReference/BinaryExpression already are.
+        call (no longer @operation-decorated -- see Value's own docstring).
+
+        For the chained shape, bound arguments are merged from three layers,
+        lowest priority first so a later layer's dict update wins ties:
+        1. The resolved ActionDef's own formal-parameter defaults (e.g. a
+           default on MoveToSensor's `direction` parameter, if any model
+           ever declares one -- none do today).
+        2. The PartDef-contained occurrence's own bound arguments (e.g. if
+           ConveyorBeltMachine's own `perform action moveToSensor :
+           MoveToSensor { ... }` declaration bound something itself --
+           no model does today, but the mechanism doesn't assume it won't).
+        3. This specific call site's own bound arguments (e.g.
+           `direction=DirectionKind::FORWARD` directly on `do conveyorBelt.
+           moveToSensor` -- the only layer any current model actually uses).
         """
         if self.action_def is None:
             # An empty ActualAction (e.g. a bare `entry;` with no body) --
@@ -381,15 +403,46 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         action_def = action_def_record.element_type if action_def_record is not None else None
         name = action_def.name if action_def is not None else None
 
-        bound = {argument.name: argument.value.evaluate(runtime) for argument in self.arguments}
+        if self.target is None:
+            bound = {argument.name: argument.value.evaluate(runtime, current) for argument in self.arguments}
+            registry = _simulation_model_registry()
+            if name not in registry:
+                raise LookupError(
+                    f"No ActionSimulationModel subclass named '{name}' found in simulation_models "
+                    f"(available: {sorted(registry)})"
+                )
+            registry[name](**bound).evaluate()
+            return
 
-        registry = _simulation_model_registry()
-        if name not in registry:
-            raise LookupError(
-                f"No ActionSimulationModel subclass named '{name}' found in simulation_models "
-                f"(available: {sorted(registry)})"
+        part_instantiation = ReferenceValue(el=self.target).evaluate(runtime, current)
+        if not isinstance(part_instantiation, PartInstantiation):
+            raise NotImplementedError(
+                f"'{self.qualified_name}' is performed through '{self.target.qualified_name}', which "
+                f"resolved to a {type(part_instantiation).__name__!r}, not a PartInstantiation -- "
+                f"dispatching a chained action to anything other than a live part isn't handled yet."
             )
-        registry[name](**bound).evaluate()
+
+        part_def_record = runtime.sysml.lookup_table_part_defs.get_reference(
+            part_instantiation.part_def_origin.qualified_name)
+        part_def = part_def_record.element_type if part_def_record is not None else None
+        origin_occurrence = next(
+            (perform_action for perform_action in part_def.contained_perform_actions
+             if perform_action.qualified_name == self.qualified_name),
+            None,
+        ) if part_def is not None else None
+
+        bound = {}
+        if action_def is not None:
+            for parameter in action_def.parameters:
+                if parameter.default_value is not None:
+                    bound[parameter.name] = parameter.default_value.evaluate(runtime, current)
+        if origin_occurrence is not None:
+            for argument in origin_occurrence.arguments:
+                bound[argument.name] = argument.value.evaluate(runtime, current)
+        for argument in self.arguments:
+            bound[argument.name] = argument.value.evaluate(runtime, current)
+
+        runtime.simulation_bridge.call_action(part_instantiation.qualified_name, self.name, **bound)
 
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
@@ -475,10 +528,10 @@ class Transition(RuntimeStateElement, metaclass=MetaEClass):
     def set_effect(self, actual_action):
         self.effect = actual_action
 
-    def evaluate(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
 
         if self.effect is not None:
-            return self.effect.evaluate(runtime)
+            return self.effect.evaluate(runtime, current)
 
 class StateUsage(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDef's own nested substate (e.g.
@@ -626,7 +679,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
         #Step 1: Execute the entry action
         if original_state_def.entry_action is not None:
-            op_to_be_executed.append(original_state_def.entry_action.evaluate(runtime))
+            op_to_be_executed.append(original_state_def.entry_action.evaluate(runtime, self))
 
         #Step 2, start the transition
         # The behavior for this transition is encapsulated, just to mimic the Operation pattern
@@ -705,11 +758,11 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
         #Step 2 execute exit action of the current StateUsage
         if current_state_usage.exit is not None:
-            exit_action: Operation = current_state_usage.exit.evaluate(runtime)
+            exit_action: Operation = current_state_usage.exit.evaluate(runtime, self)
             op_to_be_executed.append(exit_action)
 
         #Step 3 execute the transition effect
-        transition_effect: Operation = designated_transition.evaluate(runtime)
+        transition_effect: Operation = designated_transition.evaluate(runtime, self)
         op_to_be_executed.append(transition_effect)
 
         #Step 4 change the current pointer to a new StateUsage
@@ -718,7 +771,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
         #Step 5 execute the entry action of the newly appointed StateUsage
         if target_state.entry is not None:
-            entry_action_of_new_current: Operation = target_state.entry.evaluate(runtime)
+            entry_action_of_new_current: Operation = target_state.entry.evaluate(runtime, self)
             op_to_be_executed.append(entry_action_of_new_current)
 
         return op_to_be_executed
