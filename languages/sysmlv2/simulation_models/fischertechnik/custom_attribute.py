@@ -1,11 +1,12 @@
 import math
 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind
+from languages.sysmlv2.simulation_models.generic import CustomAttributeModel
 
 
-class FactoryCoordinate:
+class FactoryCoordinate(CustomAttributeModel):
 
-    def __init__(self, x: int, y: int, degrees: int):
+    def __init__(self, x: float, y: float, degrees: float = 0.0):
         self._x = x
         self._y = y
         self._degrees = degrees

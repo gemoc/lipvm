@@ -1,6 +1,5 @@
-from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.generic import PartSimulationModel
+from languages.sysmlv2.simulation_models.generic import CustomAttributeModel, PartSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 
@@ -29,9 +28,14 @@ class FischertechnikBridge:
         truth for this, not a separate cache here), otherwise creates a
         live PartSimulationModel instance for `part_def_name` (e.g.
         "ConveyorBeltMachine"), names it `qualified_name`, registers it
-        with the Factory, and returns it. `attrs` are plain values (not
-        SysML AST nodes) -- currently only "placementCoordinate" (an
-        (x, y, degrees) triple) is understood; anything else is ignored.
+        with the Factory, and returns it. Each entry in `attrs` is a plain
+        (class_name, values) pair (not a SysML AST node), one per
+        CompositeCustomValue redefinition on the usage (built by
+        PartInstantiation.evaluate(), e.g. "placementCoordinate" ->
+        ("FactoryCoordinate", {"x": 10.0, "y": 0.0, "degrees": 0.0})) --
+        attr_name is set on the instance to class_name(**values), resolved
+        against the same kind of registry as part_def_name, so a second
+        custom attribute (beyond FactoryCoordinate) needs no changes here.
         """
         existing = self._factory.get_machine(qualified_name)
         if existing is not None:
@@ -41,9 +45,9 @@ class FischertechnikBridge:
         instance = klass(self._factory)
         instance.name = qualified_name
 
-        if "placementCoordinate" in attrs:
-            x, y, degrees = attrs["placementCoordinate"]
-            instance.placementCoordinate = FactoryCoordinate(x, y, degrees)
+        custom_attribute_registry = scan_for_subclasses(CustomAttributeModel)
+        for attr_name, (custom_class_name, values) in attrs.items():
+            setattr(instance, attr_name, custom_attribute_registry[custom_class_name](**values))
 
         self._factory.register_machine(instance)
         return instance

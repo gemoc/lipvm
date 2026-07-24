@@ -590,6 +590,36 @@ class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
     # for a composite one (e.g. placementCoordinate's own `{x, y}`).
     value = EReference(eType=Value, lower=0, upper=1, containment=True)
 
+# Converts a LiteralValue's string `el` back to the Python type its
+# scalar_type names -- the inverse of _literal_value()'s str(node.value)
+# encoding in syntax.py. BOOLEAN/INTEGER/REAL are the only ones a
+# CompositeCustomValue's elements need converted; STRING/NONE pass el
+# through unchanged (the default), since it's already the right shape.
+_LITERAL_PYTHON_CONVERTERS = {
+    ScalarType.BOOLEAN: lambda s: s == "True",
+    ScalarType.INTEGER: int,
+    ScalarType.REAL: float,
+}
+
+def _custom_attribute_value(value: "CompositeCustomValue"):
+    """Converts a CompositeCustomValue (e.g. placementCoordinate's
+    {x: 10.0, y: 0.0, degrees: 0.0}) into (class_name, values) -- generic
+    over which custom attribute type this is, not just FactoryCoordinate,
+    so a second custom attribute needs no changes on this side. class_name
+    is the bare name of the CustomAttributeDefinition this value is typed
+    by (e.g. "FactoryCoordinate"); resolving it to the matching Python
+    class (via scan_for_subclasses(CustomAttributeModel)) and constructing
+    it from `values` is left to whoever consumes this (currently only
+    FischertechnikBridge.instantiate()), same deferred-resolution
+    convention used everywhere else in this module.
+    """
+    class_name = value.type.reference_type.qualified_name.split("::")[-1]
+    values = {
+        element.name: _LITERAL_PYTHON_CONVERTERS.get(element.value.scalar_type, str)(element.value.el)
+        for element in value.elements
+    }
+    return class_name, values
+
 class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
 
     # Reference to the PartDef this usage is typed by
@@ -609,20 +639,24 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
         directly with self.qualified_name, rather than routing through
         this method again.
 
-        Only handles the "placementCoordinate" redefinition for now --
-        deliberately narrow, matching what the model actually has today,
-        not a general redefinition-dispatch system. Passes plain values to
-        the bridge (not the raw AttributeRedefinition/CompositeCustomValue
-        AST nodes), so the simulation side never needs to understand
-        SysML's shapes either.
+        Handles any redefinition whose value is a CompositeCustomValue
+        (e.g. cb1's placementCoordinate) generically -- not just
+        "placementCoordinate" by name -- so a second custom attribute
+        needs no changes here. A plain-scalar redefinition (e.g. a bare
+        `attribute :>> someInt = 5;`, no model has one today) is still
+        left unhandled, matching the previous narrowness; only composite
+        ones are simulation-bridge concerns. Passes plain values to the
+        bridge (not the raw AttributeRedefinition/CompositeCustomValue AST
+        nodes), so the simulation side never needs to understand SysML's
+        shapes either -- only which Python class (see
+        FischertechnikBridge.instantiate()) mirrors the custom type named.
         """
         part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
 
         attrs = {}
         for redefinition in self.attribute_redefinitions:
-            if redefinition.name == "placementCoordinate":
-                values = {element.name: float(element.value.el) for element in redefinition.value.elements}
-                attrs["placementCoordinate"] = (values["x"], values["y"], values.get("degrees", 0.0))
+            if isinstance(redefinition.value, CompositeCustomValue):
+                attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
 
         return runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
 

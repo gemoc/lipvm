@@ -27,6 +27,19 @@ class PartSimulationModel(ABC):
     def name(self, value):
         self._name = value
 
+class CustomAttributeModel(ABC):
+    """Marker base for every simulated custom attribute's Python mirror
+    (FactoryCoordinate, and any future custom attribute type in any
+    domain, e.g. a SensorReading). Purely a discovery hook for
+    scan_for_subclasses (see PartInstantiation.evaluate()/
+    FischertechnikBridge.instantiate()) -- unlike PartSimulationModel/
+    ActionSimulationModel, it declares no shared behavior or constructor,
+    since a custom attribute is a plain data holder whose shape is
+    entirely up to its own SysML AttributeDefinition and matching
+    __init__.
+    """
+    pass
+
 class Print(ActionSimulationModel):
 
     def __init__(self, msg):
