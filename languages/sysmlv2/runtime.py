@@ -1,11 +1,14 @@
 import logging
 from collections import deque
+from enum import Enum
 from typing import List, Optional
 
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
 from core.operation import operation, Operation
+from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
+    _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
@@ -19,24 +22,6 @@ def _simulation_model_registry() -> dict:
     see scan_for_subclasses for the caching/scanning details.
     """
     return scan_for_subclasses(ActionSimulationModel)
-
-# Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
-# requires an EClassifier (EEnum), which a Python Enum class isn't.
-TypeKind = EEnum('TypeKind', literals=['SCALAR', 'PART', 'ITEM', 'ACTION', 'CUSTOM', 'ENUM', 'UNKNOWN'])
-
-ParamDirection = EEnum('ParamDirection', literals=['IN', 'OUT', 'INOUT'])
-
-ScalarType = EEnum('ScalarType', literals=['NONE', 'BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
-
-# Only the scalar names ScalarValues.json actually declares are mapped;
-# names outside this set (e.g. Rational, Natural, Complex) still get a
-# SCALAR TypeRef, just with scalar_type left unset.
-_SCALAR_TYPE_BY_NAME = {
-    'Boolean': ScalarType.BOOLEAN,
-    'String': ScalarType.STRING,
-    'Integer': ScalarType.INTEGER,
-    'Real': ScalarType.REAL,
-}
 
 class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     """Runtime registry entry for a named SysML Definition.
@@ -69,19 +54,33 @@ class Reference(ElementDefinition, metaclass=MetaEClass):
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
         """Resolves this Value to its actual runtime result — e.g. a
         literal's own payload, a dereferenced Reference, or (for
-        AttributeReference/BinaryExpression once they override this) a
-        looked-up/computed result. Decorated with @operation, so calling
-        this captures the call as an Operation rather than running the
-        body immediately; the VM steps through it later.
+        AttributeReference/BinaryExpression) a looked-up/computed result.
+        Deliberately NOT @operation-decorated (unlike ActualAction.evaluate()/
+        Transition.evaluate()/etc., which the VM steps through): a Value
+        tree is a pure, side-effect-free read/computation with nothing to
+        interleave mid-evaluation, so it runs eagerly to a plain Python
+        value in one call — no Operation chain for a caller to drain (see
+        BinaryExpression, which previously needed exactly that draining
+        via @operation's left=/right= sub-operations, before this was
+        simplified back to plain recursive calls).
 
-        Placeholder only. Left unimplemented — including on every
-        subclass — until the broader execution/resolution pipeline is
-        built (see memory: todo-actualaction-resolution-pipeline, which
-        this is now part of).
+        `current` is the ExecutableStateUsage instance this Value is being
+        evaluated on behalf of (e.g. the running `cbSimulationSimple`, for
+        a guard condition on one of its transitions) — needed by
+        AttributeReference to resolve a formal parameter (e.g.
+        conveyorBelt) to the concrete instance actually bound in *this*
+        instance's own `arguments`, since the same StateDef can be
+        instantiated more than once with different bindings. Optional and
+        unused by subclasses that don't need it (LiteralValue), and
+        threaded through unchanged by BinaryExpression's recursion into
+        left/right — see each override for how it's used.
+
+        Placeholder only on this base class. See memory:
+        todo-actualaction-resolution-pipeline for the broader
+        execution/resolution pipeline this is part of.
         """
         raise NotImplementedError('Value.evaluate() not yet implemented')
 
@@ -89,12 +88,117 @@ class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
     scalar_type = EAttribute(eType=ScalarType, lower=0, upper=1)
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
-        return self.el
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+        """Converts `el` (always a string, per _literal_value()'s str(node.value)
+        encoding in syntax.py) back to the Python type `scalar_type` names --
+        not the raw string -- so a BinaryExpression comparing this against a
+        live attribute's actual Python value (e.g. a real bool from
+        AttributeReference.evaluate()) compares like-for-like instead of
+        `True == "True"` (always False). _LITERAL_PYTHON_CONVERTERS is
+        defined later in this module (shared with _custom_attribute_value())
+        but resolved at call time, so the forward reference is safe.
+        """
+        return _LITERAL_PYTHON_CONVERTERS.get(self.scalar_type, str)(self.el)
+
+
+# Maps a Reference's reference_type tag to the SysmlRuntimeState lookup
+# table it's registered in -- only for reference_type tags confirmed by
+# grepping syntax.py's _build_reference()/_resolve_feature_reference() call
+# sites (so this doesn't claim to cover a tag nothing actually assigns).
+# "Parameter" is deliberately absent: a formal parameter isn't registered
+# in any global table at all -- it only has a concrete value relative to
+# one specific running ExecutableStateUsage, so it can't be resolved this
+# way regardless (see the context-based fallback below).
+_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE = {
+    "PartInstantiation": "lookup_table_part_instantiations",
+    "PartDef": "lookup_table_part_defs",
+    "ActionDef": "lookup_table_action_defs",
+    "ItemDef": "lookup_table_item_defs",
+    "StateDef": "lookup_table_state_defs",
+    "CustomAttributeDefinition": "lookup_table_attribute_defs",
+}
 
 class ReferenceValue(Value):
     el = EReference(eType=Reference, lower=1, upper=1, containment=False)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+        """Resolves `el` (a bare Reference) by its `reference_type` tag --
+        different kinds of reference need genuinely different resolution,
+        not one uniform lookup:
+
+        - "EnumerationUsage" (e.g. direction=DirectionKind::FORWARD, an
+          action-argument binding) resolves all the way to the actual
+          Python enum member, since that's what a caller like
+          ActualAction.evaluate() needs to hand to a real method call
+          (e.g. machine.moveToSensor(direction=DirectionKind.FORWARD)).
+          scan_for_subclasses(Enum) is the same registry mechanism already
+          used for PartSimulationModel/ActionSimulationModel/
+          CustomAttributeModel, just scanning for Enum subclasses instead
+          -- reused as-is rather than adding new machinery, and called
+          directly here (not routed through the bridge), matching how
+          ActionSimulationModel dispatch already works.
+        - "Parameter" (e.g. conveyorBelt, a formal parameter name) is, by
+          construction, only meaningful relative to whichever
+          ExecutableStateUsage is currently evaluating it -- a formal
+          parameter's own qualified name (e.g. "...::conveyorBelt") is
+          never itself a lookup key in any global table. So this branch
+          is selected purely by `reference_type` -- whether `current` is
+          usable is a separate question, handled *inside* the branch, not
+          a precondition for entering it (otherwise a missing `current`
+          would silently fall through to the unrelated catch-all below,
+          reporting the wrong cause). It resolves against
+          `current.arguments`, the same lookup AttributeReference.evaluate()
+          currently duplicates inline for its own `target`. Raises
+          (with the specific reason -- no `current` at all, vs. `current`
+          present but nothing bound under this name -- embedded in the
+          message) rather than silently handing back the bare qualified
+          name, which a caller (e.g. BinaryExpression) could otherwise
+          compare against as if it were a real value.
+        - Anything else, with a registered lookup table (today, just
+          "PartInstantiation", e.g. conveyorBelt=cb1 -- confirmed by
+          walking both real models, nothing else shows up) resolves to
+          the actual registry record itself (e.g. the PartInstantiation),
+          not just its qualified name -- these are absolute, globally
+          registered names (cb1 is declared directly under package Main),
+          so a flat table lookup is correct and doesn't depend on which
+          instance is asking. Anything with neither a table entry nor
+          "Parameter"/"EnumerationUsage" (none observed today) raises,
+          naming the unrecognized reference_type and what's actually
+          handled, for the same reason.
+        """
+        if self.el.reference_type == "EnumerationUsage":
+            *_, enum_name, member_name = self.el.qualified_name.split("::")
+            enum_class = scan_for_subclasses(Enum)[enum_name]
+            return enum_class[member_name]
+
+        if self.el.reference_type == "Parameter":
+            if current is None:
+                raise RuntimeError(
+                    f"Cannot resolve parameter reference '{self.el.qualified_name}': "
+                    f"evaluate() was called with current=None, but a Parameter reference "
+                    f"can only be resolved against a running ExecutableStateUsage's own "
+                    f"bound arguments."
+                )
+            param_name = self.el.qualified_name.split("::")[-1]
+            binding = next((argument for argument in current.arguments if argument.name == param_name), None)
+            if binding is None:
+                raise LookupError(
+                    f"No argument named '{param_name}' bound on '{current.qualified_name}' "
+                    f"(available: {sorted(argument.name for argument in current.arguments)}) -- "
+                    f"cannot resolve parameter reference '{self.el.qualified_name}'."
+                )
+            return binding.value.evaluate(runtime, current)
+
+        table_name = _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE.get(self.el.reference_type)
+        if table_name is not None:
+            record = getattr(runtime.sysml, table_name).get_reference(self.el.qualified_name)
+            return record.element_type if record is not None else None
+
+        raise LookupError(
+            f"No resolution rule for reference_type '{self.el.reference_type}' "
+            f"(qualified_name='{self.el.qualified_name}') -- handled types: "
+            f"'EnumerationUsage', 'Parameter', {sorted(_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE)}."
+        )
 
 class AttributeReference(Value):
     """Reads an attribute's current value off whatever's bound to a formal
@@ -110,6 +214,34 @@ class AttributeReference(Value):
     """
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
     attribute = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+        """Resolves `target` (the formal parameter, e.g. `conveyorBelt`) by
+        wrapping it in a transient ReferenceValue and delegating to its own
+        evaluate() -- `target` carries the same "Parameter" reference_type
+        ReferenceValue already knows how to resolve against `current.arguments`
+        (with the same informative errors on failure), so this no longer
+        duplicates that lookup inline.
+
+        Only reads `attribute` off the resolved value through the bridge if
+        it actually resolved to a PartInstantiation -- the one case that
+        genuinely has a live simulation counterpart to read an attribute
+        from. Every model today binds `target` to a part (e.g.
+        conveyorBelt=cb1), so this is what actually happens in practice,
+        but nothing enforces a formal parameter must be bound to a part
+        specifically -- if it resolved to something else (e.g. a plain
+        scalar bound to that parameter instead), there's no "instance" to
+        read an attribute off of, so the resolved value itself, whatever
+        it is, is simply returned as-is rather than crashing on
+        `.qualified_name` (which only a PartInstantiation actually has).
+        """
+        resolved = ReferenceValue(el=self.target).evaluate(runtime, current)
+        if not isinstance(resolved, PartInstantiation):
+            raise NotImplementedError('Currently, only handling a case where attribute reference involves'
+                                      'Part Instantiation. Please handle it first before continuing.')
+        attribute_name = self.attribute.qualified_name.split("::")[-1]
+        return runtime.simulation_bridge.get_value_from_instance_attribute(
+            resolved.qualified_name, attribute_name)
 
 class BinaryExpression(Value):
     """A binary operation over two sub-values (e.g. `conveyorBelt.
@@ -127,6 +259,16 @@ class BinaryExpression(Value):
     operator = EAttribute(eType=EString, lower=1, upper=1)
     left = EReference(eType=Value, lower=1, upper=1, containment=True)
     right = EReference(eType=Value, lower=1, upper=1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+        """Plain recursive calls -- `current` passed to both sub-evaluations
+        unchanged (not re-resolved here), so an AttributeReference nested
+        anywhere in left/right still resolves against the same running
+        instance this whole expression is being evaluated for.
+        """
+        left = self.left.evaluate(runtime, current)
+        right = self.right.evaluate(runtime, current)
+        return _BINARY_OPERATORS[self.operator](left, right)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
@@ -221,12 +363,13 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         languages/sysmlv2/simulation_models) whose class name matches the
         resolved ActionDef's name (e.g. "Print").
 
-        Argument values are resolved eagerly (via .execute()) rather than
-        staying deferred: LiteralValue, the only subclass implemented so
-        far, is pure static data with nothing left to hot-swap, so nothing
-        is lost by not threading it through the Operation chain. This will
-        need revisiting once ReferenceValue/AttributeReference (which read
-        live runtime state) are implemented.
+        Argument values are resolved eagerly, via a plain Value.evaluate()
+        call (no longer @operation-decorated -- see Value's own docstring):
+        LiteralValue, the only subclass implemented so far, is pure static
+        data with nothing left to hot-swap, so nothing is lost by not
+        threading it through the Operation chain. This will need
+        revisiting once ReferenceValue (which reads live runtime state) is
+        implemented -- AttributeReference/BinaryExpression already are.
         """
         if self.action_def is None:
             # An empty ActualAction (e.g. a bare `entry;` with no body) --
@@ -238,7 +381,7 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         action_def = action_def_record.element_type if action_def_record is not None else None
         name = action_def.name if action_def is not None else None
 
-        bound = {argument.name: argument.value.evaluate(runtime).execute() for argument in self.arguments}
+        bound = {argument.name: argument.value.evaluate(runtime) for argument in self.arguments}
 
         registry = _simulation_model_registry()
         if name not in registry:
@@ -267,9 +410,32 @@ class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
 
     signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=True)
 
+    def evaluate(self, item: "ItemDef") -> bool:
+        """Returns whether `item` (a pending ItemDef popped off
+        ExecutableStateUsage.pending, see _check_and_fire()) is the signal
+        this trigger fires on — the only thing a signal trigger's firing
+        depends on, so this is all _match_transition() needs from it,
+        mirroring TransitionTriggerByWhenCondition.evaluate() one class
+        over (that one takes runtime/current instead of item, since a
+        when-condition's firing depends on live attribute state rather
+        than an incoming item -- each trigger kind's evaluate() takes
+        whatever it actually needs, not a shared signature).
+        """
+        return self.signal_origin.qualified_name == item.qualified_name
+
 class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 
     condition = EReference(eType=Value, lower=0, upper=1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage") -> bool:
+        """Evaluates `condition` to a plain bool, right now -- Value.evaluate()
+        is a plain eager call (not @operation-decorated), so this needs no
+        Operation-chain draining, just a bool() around whatever it returns.
+        Kept as its own method (mirroring _match_transition()'s own
+        plain-eager style one level up) since it's consumed as an
+        immediate yes/no by whoever decides whether to fire a transition.
+        """
+        return bool(self.condition.evaluate(runtime, current))
 
 class TransitionGuard(RuntimeStateElement, metaclass=MetaEClass):
 
@@ -475,19 +641,42 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
         self.current = new_state_candidate
 
-    def _match_transition(self, item):
-        """Returns the transition out of `current` whose trigger matches
-        `item`'s signal, if any. None both when no contained_transition has
-        a TransitionTriggerBySignal (e.g. a TransitionTriggerByWhenCondition,
-        which doesn't consult `pending` at all) and when none of them match
-        `item`.
+    def _find_matching_transition(self, runtime_state: RuntimeState, current_context: "ExecutableStateUsage"):
+        """Returns the first transition out of `current` whose trigger
+        actually fires, checking TransitionTriggerBySignal against
+        `processed_item` and TransitionTriggerByWhenCondition against live
+        attribute state -- keeps scanning past a transition whose trigger
+        doesn't match (rather than giving up after the first one checked),
+        since a state can have more than one outgoing transition (e.g.
+        Continue has both a when-condition and a signal transition).
+        `processed_item` is None whenever `pending` is empty -- expected
+        now that _check_and_fire() runs every tick regardless of pending
+        (so when-condition transitions get checked on their own, not just
+        when a signal happens to also be waiting). A TransitionTriggerBySignal
+        can never fire without an incoming item, so it's skipped entirely
+        in that case rather than evaluated against None.
         """
+
+        # Treat the pending attribute as a queue, take the first element and remove it from the queue
+        processed_item: Optional[ItemDef] = None
+        if current_context.pending:
+            processed_item = current_context.pending[0]
+            current_context.pending.remove(processed_item)
+
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
-            if not isinstance(trigger, TransitionTriggerBySignal):
-                continue
-            if trigger.signal_origin.qualified_name == item.qualified_name:
-                return transition
+            if isinstance(trigger, TransitionTriggerBySignal):
+                if processed_item is not None and trigger.evaluate(processed_item):
+                    return transition
+            elif isinstance(trigger, TransitionTriggerByWhenCondition):
+                if trigger.evaluate(runtime_state, current_context):
+                    return transition
+
+        if processed_item is not None:
+            logger.warning(
+                "%s: dropping pending item %s — no transition out of %s matches it",
+                self.qualified_name, processed_item.qualified_name, self.current.qualified_name)
+
         return None
 
     def _check_and_fire(self, runtime: RuntimeState, original_state_def: StateDef):
@@ -499,22 +688,13 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         to accumulate forever, since nothing will ever consume it once
         `current` has moved past the state that could have.
         """
-
-        if self.current is None or len(self.pending) == 0:
+        if self.current is None:
             return []
 
-        # Treat the pending attribute as a queue, take the first element and remove it from the queue
-        processed_item: ItemDef = self.pending[0]
-        self.pending.remove(processed_item)
-
-        transition = self._match_transition(processed_item)
+        transition = self._find_matching_transition(runtime, self)
         if transition is not None:
             op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
             return op_to_be_executed
-
-        logger.warning(
-            "%s: dropping pending item %s — no transition out of %s matches it",
-            self.qualified_name, processed_item.qualified_name, self.current.qualified_name)
 
         return []
 
@@ -589,17 +769,6 @@ class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
     # primitive redefinition (e.g. x's `= 10.0`), or a CompositeCustomValue
     # for a composite one (e.g. placementCoordinate's own `{x, y}`).
     value = EReference(eType=Value, lower=0, upper=1, containment=True)
-
-# Converts a LiteralValue's string `el` back to the Python type its
-# scalar_type names -- the inverse of _literal_value()'s str(node.value)
-# encoding in syntax.py. BOOLEAN/INTEGER/REAL are the only ones a
-# CompositeCustomValue's elements need converted; STRING/NONE pass el
-# through unchanged (the default), since it's already the right shape.
-_LITERAL_PYTHON_CONVERTERS = {
-    ScalarType.BOOLEAN: lambda s: s == "True",
-    ScalarType.INTEGER: int,
-    ScalarType.REAL: float,
-}
 
 def _custom_attribute_value(value: "CompositeCustomValue"):
     """Converts a CompositeCustomValue (e.g. placementCoordinate's
