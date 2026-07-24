@@ -622,7 +622,7 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
         for redefinition in self.attribute_redefinitions:
             if redefinition.name == "placementCoordinate":
                 values = {element.name: float(element.value.el) for element in redefinition.value.elements}
-                attrs["placementCoordinate"] = (values["x"], values["y"])
+                attrs["placementCoordinate"] = (values["x"], values["y"], values.get("degrees", 0.0))
 
         return runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
 

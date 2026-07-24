@@ -251,15 +251,15 @@ def test_simple_conveyor_belt_simulation():
 
     x_attribute, y_attribute, degrees_attribute = factory_coordinate_def.contained_attribute_use
     assert x_attribute.type.kind == rt.TypeKind.SCALAR
-    assert x_attribute.type.scalar_type == rt.ScalarType.INTEGER
+    assert x_attribute.type.scalar_type == rt.ScalarType.REAL
     assert x_attribute.type.reference_type is None
 
     assert y_attribute.type.kind == rt.TypeKind.SCALAR
-    assert y_attribute.type.scalar_type == rt.ScalarType.INTEGER
+    assert y_attribute.type.scalar_type == rt.ScalarType.REAL
     assert y_attribute.type.reference_type is None
 
     assert degrees_attribute.type.kind == rt.TypeKind.SCALAR
-    assert degrees_attribute.type.scalar_type == rt.ScalarType.INTEGER
+    assert degrees_attribute.type.scalar_type == rt.ScalarType.REAL
     assert degrees_attribute.type.reference_type is None
 
     # Test 5: Checking part definition
@@ -369,7 +369,8 @@ def test_simple_conveyor_belt_simulation():
     assert cb1.part_def_origin.reference_type == rt.PartDef.__name__
 
     # Test 11: Check cb1's attribute redefinition — `attribute :>>
-    # placementCoordinate { attribute :>> x = 10; attribute :>> y = 0; }`.
+    # placementCoordinate { attribute :>> x = 10.0; attribute :>> y = 0.0;
+    # attribute :>> degrees = 0.0; }` (x/y/degrees are Real, not Integer).
     # placementCoordinate itself redefines ConveyorBeltMachine's attribute of
     # the same name, and its value is a CompositeCustomValue (rather than a
     # plain literal) since FactoryCoordinate is a composite/custom type —
@@ -395,7 +396,7 @@ def test_simple_conveyor_belt_simulation():
         "Main::cb1::placementCoordinate::x", "Main::cb1::placementCoordinate::y", "Main::cb1::placementCoordinate::degrees"
     ]
     assert all(isinstance(element.value, rt.LiteralValue) for element in placement_value.elements)
-    assert [element.value.el for element in placement_value.elements] == ["10", "0", "0"]
+    assert [element.value.el for element in placement_value.elements] == ["10.0", "0.0", "0.0"]
 
     # Test 12: Check ConveyorBeltNominalMission's formal parameter
     # (`in conveyorBelt : ConveyorBeltMachine`) — unlike MySimulationDefinition

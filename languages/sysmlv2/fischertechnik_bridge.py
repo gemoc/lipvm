@@ -31,7 +31,7 @@ class FischertechnikBridge:
         "ConveyorBeltMachine"), names it `qualified_name`, registers it
         with the Factory, and returns it. `attrs` are plain values (not
         SysML AST nodes) -- currently only "placementCoordinate" (an
-        (x, y) pair) is understood; anything else is ignored.
+        (x, y, degrees) triple) is understood; anything else is ignored.
         """
         existing = self._factory.get_machine(qualified_name)
         if existing is not None:
@@ -42,8 +42,8 @@ class FischertechnikBridge:
         instance.name = qualified_name
 
         if "placementCoordinate" in attrs:
-            x, y = attrs["placementCoordinate"]
-            instance.placementCoordinate = FactoryCoordinate(x, y, 0)
+            x, y, degrees = attrs["placementCoordinate"]
+            instance.placementCoordinate = FactoryCoordinate(x, y, degrees)
 
         self._factory.register_machine(instance)
         return instance

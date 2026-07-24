@@ -4,6 +4,7 @@ rendering-library object, so they remain usable (and testable) independent
 of whether a display is even available.
 """
 
+import math
 import os
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # this file can get imported just for class discovery (see registry.py), not necessarily to actually render -- suppress pygame's own import-time banner so it doesn't pollute stdout for callers who never asked for it
 import pygame
@@ -64,11 +65,55 @@ TOKEN_COLORS = {
 
 ORIGIN = (BELT_WIDTH // 2, VIEWPORT_SIZE[1] - BELT_HEIGHT // 2)  # bottom-left of the viewport is model (0, 0)
 
+GRID_STEP = 5                          # model units between grid lines
+GRID_LINE_COLOR = (225, 225, 225)
+GRID_AXIS_COLOR = (170, 170, 170)      # the x=0 / y=0 lines, drawn heavier so the origin stands out
+GRID_LABEL_COLOR = (140, 140, 140)
+
 
 def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
     px = ORIGIN[0] + coord.x * SCALE
     py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
     return int(px), int(py)
+
+
+def _visible_model_range(axis_min_px: int, axis_max_px: int, origin_px: float, flip: bool, step: int) -> range:
+    """Model-unit values (multiples of `step`) whose grid line falls inside
+    `[axis_min_px, axis_max_px]` on screen, for one axis at a time. `flip`
+    accounts for the y-axis running opposite to pygame's screen-space
+    (see `to_screen`), so both axes can share this one helper.
+    """
+    if flip:
+        lo_unit = (origin_px - axis_max_px) / SCALE
+        hi_unit = (origin_px - axis_min_px) / SCALE
+    else:
+        lo_unit = (axis_min_px - origin_px) / SCALE
+        hi_unit = (axis_max_px - origin_px) / SCALE
+    return range(math.ceil(lo_unit / step) * step, math.floor(hi_unit / step) * step + 1, step)
+
+
+def draw_grid(screen: pygame.Surface, font: pygame.font.Font) -> None:
+    """Draws a light reference grid, one line every `GRID_STEP` model units,
+    labeled with the model coordinate each line represents -- so a
+    developer placing a new `part`'s `placementCoordinate` can look at this
+    grid and see directly where in the viewport that (x, y) will land,
+    instead of having to compute it from `SCALE`/`ORIGIN` by hand. Confined
+    to the viewport (excludes the side panel), drawn first so belts/tokens
+    render on top of it.
+    """
+    for gx in _visible_model_range(0, VIEWPORT_SIZE[0], ORIGIN[0], flip=False, step=GRID_STEP):
+        px, _ = to_screen(FactoryCoordinate(gx, 0, 0))
+        color = GRID_AXIS_COLOR if gx == 0 else GRID_LINE_COLOR
+        pygame.draw.line(screen, color, (px, 0), (px, VIEWPORT_SIZE[1]), 2 if gx == 0 else 1)
+        label = font.render(str(gx), True, GRID_LABEL_COLOR)
+        screen.blit(label, (px + 2, 2))
+
+    for gy in _visible_model_range(0, VIEWPORT_SIZE[1], ORIGIN[1], flip=True, step=GRID_STEP):
+        _, py = to_screen(FactoryCoordinate(0, gy, 0))
+        color = GRID_AXIS_COLOR if gy == 0 else GRID_LINE_COLOR
+        pygame.draw.line(screen, color, (0, py), (VIEWPORT_SIZE[0], py), 2 if gy == 0 else 1)
+        label = font.render(str(gy), True, GRID_LABEL_COLOR)
+        screen.blit(label, (2, py + 2))
 
 
 def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
@@ -214,6 +259,7 @@ def draw_factory(factory, tick_rate: int = 60) -> None:
         factory.tick()
 
         screen.fill(BACKGROUND_COLOR)
+        draw_grid(screen, font)
         for machine in factory.machines:
             draw_conveyor_belt(screen, machine)
         for token in factory.tokens:
