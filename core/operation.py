@@ -126,9 +126,14 @@ def lazy_loop(collection: list, function: Callable, args: tuple = ()) -> Operati
     def iterate(index: int = 0) -> Operation:
         if index >= len(collection):
             return None
-        element = function(collection[index], *args)
-        element.append(Operation(iterate, args=(index + 1,)))
-        return element
+
+        chain = function(collection[index], *args)
+
+        if not isinstance(chain, Operation):
+            raise Exception("The body function of the lazy loop must return an Operation")
+
+        chain.append(Operation(iterate, args=(index + 1,)))
+        return chain
 
     return Operation(iterate)
 
@@ -139,6 +144,10 @@ def lazy_while(function: Callable, condition: Operation, args: tuple = ()) -> Op
         # Operation.execute() will splice it in front of the loop's continuation.
         if repeat:
             chain = function(*args)
+
+            if not isinstance(chain, Operation):
+                raise Exception("The body function of the lazy while must return an Operation")
+        
             chain.append(lazy_while(function, condition, args))
             return chain
         return None
