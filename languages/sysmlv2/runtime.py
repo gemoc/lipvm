@@ -228,10 +228,13 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         need revisiting once ReferenceValue/AttributeReference (which read
         live runtime state) are implemented.
         """
-        action_def_record = (
-            runtime.sysml.lookup_table_action_defs.get_reference(self.action_def.qualified_name)
-            if self.action_def is not None else None
-        )
+        if self.action_def is None:
+            # An empty ActualAction (e.g. a bare `entry;` with no body) --
+            # see ActionUsage.to_actual_action()'s base case, which builds
+            # exactly this shape on purpose. Nothing to dispatch to.
+            return
+
+        action_def_record = runtime.sysml.lookup_table_action_defs.get_reference(self.action_def.qualified_name)
         action_def = action_def_record.element_type if action_def_record is not None else None
         name = action_def.name if action_def is not None else None
 

@@ -925,6 +925,16 @@ endif
 
         sync_pending_items(pending_file, item_defs_table, usages_by_name)
 
+        # Re-checked every reactive tick, not just once upfront -- idempotent
+        # via FischertechnikBridge.instantiate() (returns the existing
+        # machine if already registered), so this is a no-op for parts
+        # already instantiated. Doing it here rather than once in evaluate()
+        # means a PartInstantiation added later (e.g. by a HOTSWAP edit to a
+        # running program) gets picked up on the next tick instead of never.
+        part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
+        for an_instantiation in part_instantiation_elements:
+            an_instantiation.evaluate(runtime)
+
         return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
 
     @operation
@@ -953,10 +963,6 @@ endif
         usages_by_name = {}
         for usage in executable_stats:
             usages_by_name.setdefault(usage.name, []).append(usage)
-
-        part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
-        for an_instantiation in part_instantiation_elements:
-            an_instantiation.evaluate(runtime)
 
         return lazy_while(
             lambda runtime, event_file, table, usages, stats: self.read_events_and_execute(runtime, event_file, table, usages, stats), 
