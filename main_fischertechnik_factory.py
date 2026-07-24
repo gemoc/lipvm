@@ -1,6 +1,6 @@
-"""First integrated version of the interpreter + factory visualization,
-per OVERVIEW-TASKS.md task 5 / the "Question 1" home for this wiring raised
-in URGENT-STEP1-SUBTASKS.md.
+"""Integrated interpreter + factory visualization, per OVERVIEW-TASKS.md
+task 5 / the "Question 1" home for this wiring raised in
+URGENT-STEP1-SUBTASKS.md.
 
 Loads a SysML v2 model, builds a real `Factory`/`FischertechnikBridge` from
 it (so every `part` declared in the model -- e.g. `cb1` -- becomes a real,
@@ -11,18 +11,24 @@ threads per the architecture decided in OVERVIEW-TASKS.md:
 - Background thread: the interpreter's reactive loop, re-evaluating every
   `ExecutableStateUsage` on a tick.
 
-Deliberately incremental, not the full task 3-5 pipeline: `ActualAction`
-dispatch (task 3) and guard evaluation (task 4) aren't wired yet, so the
-model's own `do`/`accept when` behavior can't move a belt through the
-interpreter yet -- only the pygame panel's manual buttons can, same as
-`factory_simulation_demo.py`. This is safe to run as real threads today
-specifically because nothing on the interpreter's reactive path touches
-`Factory`/`ConveyorBeltMachine` until that dispatch exists (verified against
-`tests/conveyor-belt-simulation.xmi`: its only guarded transitions use
-`accept when`, which `_match_transition()` skips entirely -- no transition
-ever fires, so no cross-thread access happens). Once task 3/4 land, the two
-threads will need the request/response queue design from OVERVIEW-TASKS.md
-task 5 instead of this direct sharing.
+Guard evaluation (task 4) and real `ActualAction` dispatch (task 3) are
+both wired up now, so the model's own `do`/`accept when` behavior genuinely
+drives a belt through the interpreter, not just the pygame panel's manual
+buttons.
+
+Nothing runs until the user clicks "Start" in the visualization
+(`draw_start_panel()`/`on_start`, below): the model's eager
+part-instantiation pass and the interpreter thread's reactive loop both
+used to begin automatically, before the window was even shown; now both
+wait for that explicit click, via `started_event`. This is a UX/timing
+fix, not a thread-safety one -- once "Start" is clicked, this is still two
+threads directly sharing `Factory`/`ConveyorBeltMachine` with no locking,
+now that the interpreter thread genuinely calls real methods on it
+(`call_action`/`get_value_from_instance_attribute`). See
+OVERVIEW-TASKS.md task 5 / URGENT-STEP1-SUBTASKS.md open question 1 for
+the still-open cross-thread hazard this doesn't address -- the
+request/response queue design (task 5, rest) is the actual fix, still not
+built.
 """
 
 import argparse
@@ -40,15 +46,22 @@ DEFAULT_MODEL = "tests/conveyor-belt-simulation.xmi"
 
 
 def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory]:
-    """Loads `xmi_path`, wires a fresh `Factory`/`FischertechnikBridge` onto
-    the VM's runtime state, then runs one `vm.step()` -- enough to trigger
-    `Namespace.evaluate()`'s eager part-instantiation pass (see
-    URGENT-STEP1-SUBTASKS.md), which populates `factory` with a real,
-    model-placed machine for every `part` usage in the model.
+    """Loads `xmi_path` and wires a fresh `Factory`/`FischertechnikBridge`
+    onto the VM's runtime state -- deliberately does NOT step the VM here.
 
-    The bridge must be set between `vm.init()` (which creates `vm.state`)
-    and `vm.step()` (which is what actually runs the eager pass) -- it's
-    read via `runtime.simulation_bridge` partway through that same step.
+    Stepping used to happen eagerly right here (one `vm.step()`, enough to
+    trigger `Namespace.evaluate()`'s eager part-instantiation pass -- see
+    URGENT-STEP1-SUBTASKS.md), before the visualization window was even
+    shown. Now that both guard evaluation/firing (task 4) and real action
+    dispatch (task 3) are wired up, the model can genuinely run on its own
+    once started -- so "start" needs to be an explicit, visible user
+    action from inside the visualization (see main()'s `on_start`), not
+    something that already happened silently by the time the window opens.
+
+    The bridge must still be set between `vm.init()` (which creates
+    `vm.state`) and the first `vm.step()` (wherever that ends up being
+    called from) -- it's read via `runtime.simulation_bridge` partway
+    through that same step.
     """
     resource = load(xmi_path)
     scenario = Scenario(program_definition=resource.contents[0])
@@ -60,8 +73,6 @@ def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory]:
     factory = Factory()
     vm.state.simulation_bridge = FischertechnikBridge(factory)
 
-    vm.step()
-
     return vm, factory
 
 
@@ -70,8 +81,17 @@ def executable_state_usages(vm: VirtualMachine):
             for record in vm.state.sysml.lookup_table_executable_state_usages.records]
 
 
-def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event, tick_delay: float) -> None:
-    """Repeatedly steps the VM until `stop_event` is set.
+def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event, started_event: threading.Event,
+                          tick_delay: float) -> None:
+    """Waits for `started_event` (set once the user clicks "Start" in the
+    visualization) before stepping the VM at all, then repeatedly steps it
+    until `stop_event` is set.
+
+    Without this wait, this loop's own first `vm.step()` call would itself
+    trigger the eager part-instantiation pass the instant this thread
+    starts -- defeating the whole point of gating that behind a visible
+    user action, regardless of where the *explicit* first step (see
+    main()'s `on_start`) is called from.
 
     `ExecutableStateUsage.evaluate()` is `@operation(is_step=True)` --
     calling it directly only builds an `Operation`, it doesn't run the body
@@ -79,11 +99,9 @@ def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event, tick_d
     VM's own operation chain by `Namespace.evaluate()` (its `lazy_while`
     over `read_events_and_execute`, `syntax.py:930-965`), so `vm.step()` is
     what actually drives it one reactive pass at a time -- same contract
-    `test_simple_sysmlv2_example_with_behaviour` relies on. No behavior
-    wired to the belt yet (see module docstring): today this just keeps the
-    entry/default-transition prologue and (once implemented) signal-based
-    transitions running independently of the render loop.
+    `test_simple_sysmlv2_example_with_behaviour` relies on.
     """
+    started_event.wait()
     while not stop_event.is_set():
         vm.step()
         time.sleep(tick_delay)
@@ -99,20 +117,33 @@ def main() -> None:
 
     vm, factory = build_simulation(args.xmi)
 
-    print(f"Instantiated {len(factory.machines)} machine(s) from {args.xmi}:")
-    for machine in factory.machines:
-        print(f"  {machine.name} @ {machine.placementCoordinate}")
-
     stop_event = threading.Event()
+    started_event = threading.Event()
+
+    def on_start() -> None:
+        """Runs on the main/pygame thread, from the "Start" button's click
+        callback -- does the model's one-time eager part-instantiation
+        pass synchronously (so the belts appear in this same frame, not
+        whenever the background thread happens to get scheduled next),
+        then releases the interpreter thread to start its own ongoing
+        reactive loop.
+        """
+        vm.step()
+        print(f"Instantiated {len(factory.machines)} machine(s) from {args.xmi}:")
+        for machine in factory.machines:
+            print(f"  {machine.name} @ {machine.placementCoordinate}")
+        started_event.set()
+
     interpreter_thread = threading.Thread(
-        target=run_interpreter_loop, args=(vm, stop_event, args.tick_delay), daemon=True,
+        target=run_interpreter_loop, args=(vm, stop_event, started_event, args.tick_delay), daemon=True,
     )
     interpreter_thread.start()
 
     try:
-        draw_factory(factory)  # blocks on the main thread until the window closes
+        draw_factory(factory, on_start)  # blocks on the main thread until the window closes
     finally:
         stop_event.set()
+        started_event.set()  # release the interpreter thread if it's still waiting on "Start"
         interpreter_thread.join(timeout=2)
 
 

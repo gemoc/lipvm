@@ -90,6 +90,19 @@ class ConveyorBeltMachine(PartSimulationModel):
     def swap_position(self) -> FactoryCoordinate:
         return self._end_position(HALF_LENGTH)
 
+    def pre_feed_position(self) -> FactoryCoordinate:
+        """One step before the feed end -- the overshoot-tolerance boundary
+        on the feed side (see OVERSHOOT_TOLERANCE): still ownable if a token
+        sits here, but one step short of actually triggering conveyorSensFeed.
+        """
+        return self._end_position(-(HALF_LENGTH + OVERSHOOT_TOLERANCE))
+
+    def post_swap_position(self) -> FactoryCoordinate:
+        """One step past the swap end -- the overshoot-tolerance boundary
+        on the swap side, mirroring pre_feed_position().
+        """
+        return self._end_position(HALF_LENGTH + OVERSHOOT_TOLERANCE)
+
     def _local_x_offset(self, position: FactoryCoordinate) -> int:
         """Inverse of `_end_position`: given an absolute coordinate,
         returns how far it sits from the belt's center along the belt's
