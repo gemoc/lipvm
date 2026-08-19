@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
@@ -16,7 +17,43 @@ HALF_LENGTH = 2
 OVERSHOOT_TOLERANCE = 1
 
 
+@dataclass(frozen=True)
+class ConveyorBeltMachineSnapshot:
+    """One `ConveyorBeltMachine`'s full dynamic state as of one
+    `Factory.tick()` -- the per-machine value inside the Factory-wide
+    snapshot TODAYS-TASKS.md's published-snapshot design (step 1) publishes
+    once per tick. Mirrors every live property on `ConveyorBeltMachine`
+    itself, since a guard's `AttributeReference` can ask for any of them,
+    not just the ones today's demo panel happens to display.
+
+    Frozen (and every field here is itself immutable -- `FactoryCoordinate`
+    has no setters, the enums are plain enum members, everything else is a
+    plain bool/int) so a reference to one of these can be safely read from
+    another thread without risk of the machine it was copied from mutating
+    the copy underneath a reader -- see facade_proxy.py's `SimulationBridge`
+    docstring for the thread-confinement design this is part of.
+
+    Declared before `ConveyorBeltMachine` in this file (rather than after,
+    which would read more naturally) because `ConveyorBeltMachine` sets
+    `snapshot_type = ConveyorBeltMachineSnapshot` as a class attribute,
+    which needs this name to already exist. Built from a live
+    `ConveyorBeltMachine` via `PartSimulationModel.snapshot()`
+    (`generic.py`) -- reflects over this dataclass's own field list rather
+    than needing a hand-written mapping here.
+    """
+    placementCoordinate: FactoryCoordinate
+    conveyorSensFeed: bool
+    conveyorSensSwap: bool
+    conveyorSensImpulse: int
+    currentCommand: ConveyorCommandKind | None
+    direction: DirectionKind
+    currentStepCount: int
+    targetStepCount: int
+
+
 class ConveyorBeltMachine(PartSimulationModel):
+
+    snapshot_type = ConveyorBeltMachineSnapshot
 
     def __init__(self, factory):
         super().__init__()
@@ -116,23 +153,19 @@ class ConveyorBeltMachine(PartSimulationModel):
 
     def moveToSensor(self, direction):
         """Starts the belt moving toward whichever end sensor `direction`
-        points at (FORWARD -> swap end, BACKWARD -> feed end) -- unless a
-        token is already there, in which case there's nothing to move and
-        starting the command anyway would push it one step past the end on
-        the first tick (see advance()'s overshoot handling) instead of
-        ever detecting arrival. Only sets the command/direction -- like
-        flipping a switch -- the actual per-tick movement and boundary
-        check happen in ConveyorBeltMachine.advance()/Factory.tick().
+        points at (FORWARD -> swap end, BACKWARD -> feed end). Only sets
+        the command/direction -- like flipping a switch, nothing else --
+        deliberately not even an arrival check: if a token is already
+        sitting on the target sensor, `advance()`'s pre-move arrival check
+        (see its docstring) catches that on the very next tick and stops
+        immediately, without this method needing to know or care. Keeping
+        this to exactly two assignments matters beyond just tidiness --
+        see HOMEWORK-SAYYID.md task 1 on why a multi-step method here would
+        be unsafe to call from a thread other than the one that owns
+        `Factory` (currently not queue-backed yet -- see TODAYS-TASKS.md).
         """
-        already_arrived = self.conveyorSensSwap if direction == DirectionKind.FORWARD else self.conveyorSensFeed
-        if already_arrived:
-            self.stop()
-            return
-
         self._currentCommand = ConveyorCommandKind.MOVE_TO_SENSOR
         self._direction = direction
-        self._currentStepCount = 0
-        self._targetStepCount = 0
 
     def moveOut(self, direction):
         """Starts the belt moving `direction`, with the explicit goal of
@@ -146,8 +179,6 @@ class ConveyorBeltMachine(PartSimulationModel):
         """
         self._currentCommand = ConveyorCommandKind.MOVE_OUT
         self._direction = direction
-        self._currentStepCount = 0
-        self._targetStepCount = 0
 
     def moveNbSteps(self, steps, direction):
         """Starts the belt moving `steps` model-grid units along its own
@@ -162,14 +193,31 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._targetStepCount = steps
 
     def advance(self):
-        """One tick's worth of work for this belt's active command: move
-        its token(s) one step -- disowning any token that ends up strictly
-        past the belt's physical ends (MOVE_NB_STEPS can overshoot;
-        MOVE_TO_SENSOR can't, since arriving exactly at feed/swap is its
-        own stop condition) -- then check whether the boundary for
-        currentCommand was just reached, stopping itself if so. Called by
-        Factory.tick(), already paced to the right cadence by the time
-        this runs.
+        """One tick's worth of work for this belt's active command --
+        dispatches to whichever `_advance_*` method matches
+        `currentCommand`, each encapsulating its own pre-condition (if
+        any), the actual movement, and its own post-condition (if any) --
+        see each method's docstring for its specific contract. No branch
+        matches (and nothing happens) if `currentCommand` is None, though
+        Factory.tick() already only calls this when it isn't.
+
+        Called by Factory.tick(), already paced to the right cadence by
+        the time this runs.
+        """
+        if self._currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR:
+            self._advance_move_to_sens()
+        elif self._currentCommand == ConveyorCommandKind.MOVE_NB_STEPS:
+            self._advance_move_nb_steps()
+        elif self._currentCommand == ConveyorCommandKind.MOVE_OUT:
+            self._advance_move_out()
+
+    def _move_owned_tokens_one_step(self):
+        """Moves every token this belt currently owns one step along
+        `_direction`, disowning any that end up strictly past the belt's
+        physical ends (see OVERSHOOT_TOLERANCE). Shared by every
+        `_advance_*` method that can actually move a token --
+        MOVE_TO_SENSOR only calls this once its own pre-condition (below)
+        has ruled out "already arrived."
         """
         for token in self._factory.tokens_on(self):
             new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
@@ -177,17 +225,40 @@ class ConveyorBeltMachine(PartSimulationModel):
             if abs(self._local_x_offset(new_position)) > HALF_LENGTH + OVERSHOOT_TOLERANCE:
                 self._factory.transfer_token(token, None)
 
-        if self._currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR:
-            arrived = self.conveyorSensSwap if self._direction == DirectionKind.FORWARD else self.conveyorSensFeed
-            if arrived:
-                self.stop()
-        elif self._currentCommand == ConveyorCommandKind.MOVE_NB_STEPS:
-            self.record_step()
-            if self._currentStepCount >= self._targetStepCount:
-                self.stop()
-        elif self._currentCommand == ConveyorCommandKind.MOVE_OUT:
-            if not self._factory.tokens_on(self):
-                self.stop()
+    def _advance_move_to_sens(self):
+        """Pre-condition: already arrived at the target sensor? Stop
+        without moving -- this is what makes MOVE_TO_SENSOR unable to
+        overshoot, since it's checked *before* any movement happens this
+        tick, whether "already there" means the token was there when
+        moveToSensor() was called or a previous tick's move just landed it
+        there. No post-condition: arriving as a *result* of this tick's
+        move is caught by this same pre-condition on the next tick, not
+        within this call (see advance()'s docstring on this timing).
+        """
+        arrived = self.conveyorSensSwap if self._direction == DirectionKind.FORWARD else self.conveyorSensFeed
+        if arrived:
+            self.stop()
+            return
+        self._move_owned_tokens_one_step()
+
+    def _advance_move_out(self):
+        """No pre-condition -- always moves. Post-condition: stop once
+        this belt no longer owns any token -- the overshoot-disown inside
+        `_move_owned_tokens_one_step()` is what actually releases it, this
+        just notices and stops the command afterward.
+        """
+        self._move_owned_tokens_one_step()
+        if not self._factory.tokens_on(self):
+            self.stop()
+
+    def _advance_move_nb_steps(self):
+        """No pre-condition -- always moves. Post-condition: stop once
+        `currentStepCount` reaches `targetStepCount`.
+        """
+        self._move_owned_tokens_one_step()
+        self.record_step()
+        if self._currentStepCount >= self._targetStepCount:
+            self.stop()
 
     def record_step(self):
         self._currentStepCount += 1

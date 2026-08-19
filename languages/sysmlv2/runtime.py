@@ -891,7 +891,7 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
             if isinstance(redefinition.value, CompositeCustomValue):
                 attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
 
-        return runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
+        runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 

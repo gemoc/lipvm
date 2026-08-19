@@ -325,11 +325,17 @@ def draw_machine_panel(screen: pygame.Surface, machines, unowned_token_count: in
     return buttons
 
 
-def draw_factory(factory, on_start=lambda: None, tick_rate: int = 60) -> None:
+def draw_factory(factory, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60) -> None:
     """Static-picture render loop: every frame, redraws every registered
     machine at its placementCoordinate. Redrawing from scratch each frame
     is required by pygame (unlike tkinter, it has no persistent canvas),
     even though nothing moves yet — Milestone 1 is static-only.
+
+    `on_tick` runs right after `factory.tick()`, once per frame, only once
+    the simulation has started -- see main_fischertechnik_factory.py's
+    `on_tick`, which publishes a fresh snapshot there (TODAYS-TASKS.md step
+    2). Defaults to a no-op so callers with nothing to do after a tick
+    (e.g. factory_simulation_demo.py) don't need to pass anything.
 
     Nothing runs until the user clicks "Start": `factory.tick()` is
     skipped, and the panel shows draw_start_panel() instead of the normal
@@ -384,6 +390,7 @@ def draw_factory(factory, on_start=lambda: None, tick_rate: int = 60) -> None:
 
         if started:
             factory.tick()
+            on_tick()
 
         screen.fill(BACKGROUND_COLOR)
         draw_grid(screen, font)
