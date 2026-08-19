@@ -48,7 +48,7 @@ from tools.load_xmi_with_syntax import load
 DEFAULT_MODEL = "tests/conveyor-belt-simulation.xmi"
 
 
-def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory, ThreadChannel]:
+def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory]:
     """Loads `xmi_path` and wires a fresh `Factory`/`FischertechnikBridge`
     onto the VM's runtime state -- deliberately does NOT step the VM here.
 
@@ -81,10 +81,8 @@ def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory, ThreadChan
     vm.init()
 
     factory = Factory()
-    channel = ThreadChannel()
-    vm.state.simulation_bridge = SimulationBridge(channel)
 
-    return vm, factory, channel
+    return vm, factory
 
 
 def executable_state_usages(vm: VirtualMachine):
@@ -140,6 +138,43 @@ def run_interpreter_loop(vm: VirtualMachine, factory: Factory, xmi_path: str, st
         vm.step()
 
 
+def drain_and_publish(factory: Factory, channel: ThreadChannel) -> None:
+    """One tick's worth of owning-thread work -- the only thread ever
+    allowed to do any of the three things below (see HOMEWORK-SAYYID.md
+    task 1 / facade_proxy.py's `LatestSnapshot`/`ThreadChannel`
+    docstrings). Order matters: instantiate first, so a part created this
+    call already exists for the action-drain and snapshot-publish steps
+    that follow it.
+
+    1. Drains every `InstantiateCommand` queued since the last call and
+       actually constructs/registers each one (`factory.instantiate_machine()`).
+    2. Drains every `ActionCommand` queued since the last call and
+       actually executes each one (`factory.execute_action()`) -- this is
+       the one place any machine's action methods get called from, now
+       that `SimulationBridge.call_action()` only ever enqueues.
+    3. Publishes a fresh Factory-wide snapshot (`factory.build_snapshot()`,
+       framework-agnostic, knows nothing about threads) so the interpreter
+       thread's next `get_value_from_instance_attribute()` call sees this
+       tick's state, not a stale or torn one.
+
+    Deliberately a plain function taking `factory`/`channel` as arguments,
+    not a closure over `main()`'s locals -- `on_tick()` below is the only
+    caller that needs pygame/threading at all; anything driving one "tick"
+    synchronously (e.g. a future test exercising real simulation behavior)
+    can call this directly, no window or second thread required, since
+    nothing here blocks (see TODAYS-TASKS.md).
+    """
+    while not channel.instantiate_queue.empty():
+        command = channel.instantiate_queue.get_nowait()
+        factory.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
+
+    while not channel.action_queue.empty():
+        command = channel.action_queue.get_nowait()
+        factory.execute_action(command.qualified_name, command.action_name, command.args)
+
+    channel.latest_snapshot.publish(factory.build_snapshot())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("xmi", nargs="?", default=DEFAULT_MODEL,
@@ -148,7 +183,7 @@ def main() -> None:
                          help="Seconds between interpreter reactive passes (default: 0.25)")
     args = parser.parse_args()
 
-    vm, factory, channel = build_simulation(args.xmi)
+    vm, factory = build_simulation(args.xmi)
 
     stop_event = threading.Event()
     started_event = threading.Event()
@@ -172,34 +207,29 @@ def main() -> None:
 
     def on_tick() -> None:
         """Runs on the main/pygame thread, right after `factory.tick()`
-        each frame (see `draw_factory()`) -- the only thread allowed to do
-        any of the three things below (see HOMEWORK-SAYYID.md task 1 /
-        facade_proxy.py's `LatestSnapshot`/`ThreadChannel` docstrings).
+        each frame (see `draw_factory()`) -- resolves this scenario's
+        `ThreadChannel` (via the interpreter's own `simulation_bridge`,
+        constructed inside `Namespace.evaluate()`, `syntax.py`) and
+        delegates the actual per-tick work to `drain_and_publish()`, so
+        that logic isn't trapped inside this closure.
 
-        1. Drains every `InstantiateCommand` the interpreter thread has
-           queued since the last tick and actually constructs/registers
-           each one (`factory.instantiate_machine()`) -- runs first so a
-           part instantiated this tick already exists for steps 2/3 below,
-           same frame.
-        2. Drains every `ActionCommand` queued since the last tick and
-           actually executes each one (`factory.execute_action()`) -- this
-           is the one place any machine's action methods get called from,
-           now that `FischertechnikBridge.call_action()` only ever
-           enqueues.
-        3. Publishes a fresh Factory-wide snapshot (`factory.build_snapshot()`,
-           framework-agnostic, knows nothing about threads) so the
-           interpreter thread's next `get_value_from_instance_attribute()`
-           call sees this tick's state, not a stale or torn one.
+        `started` flips True (in `factory_visualization.py`'s
+        `handle_start()`) in the same click callback that releases the
+        interpreter thread via `started_event` -- with no wait in between.
+        This frame's `on_tick()` call can easily run before the interpreter
+        thread has gotten far enough into its first `vm.step()` to actually
+        construct `simulation_bridge` (`Namespace.evaluate()`,
+        `syntax.py:972-974`), so `vm.state.simulation_bridge` isn't
+        guaranteed to exist yet the first few times this runs -- an
+        ordinary startup race, not a bug to fix by adding a lock: skip this
+        frame's work and let the next one (at 60fps, ~16ms away) catch up
+        once the interpreter thread has actually gotten there.
         """
-        while not channel.instantiate_queue.empty():
-            command = channel.instantiate_queue.get_nowait()
-            factory.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
-
-        while not channel.action_queue.empty():
-            command = channel.action_queue.get_nowait()
-            factory.execute_action(command.qualified_name, command.action_name, command.args)
-
-        channel.latest_snapshot.publish(factory.build_snapshot())
+        try:
+            simulation_bridge: SimulationBridge = vm.state.simulation_bridge
+        except Exception:
+            return
+        drain_and_publish(factory, simulation_bridge.channel)
 
     try:
         draw_factory(factory, on_start, on_tick)  # blocks on the main thread until the window closes

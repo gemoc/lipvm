@@ -25,8 +25,27 @@ then; see `SimulationBridge`'s docstring.
 """
 
 import queue
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+from core.language import RuntimeStateElement
+
+
+class PartNotReadyError(Exception):
+    """Raised by `SimulationBridge.get_value_from_instance_attribute()`
+    when the part it's asked about doesn't exist in the published snapshot
+    yet -- either because no snapshot has been published at all, or
+    because this specific `qualified_name` isn't in the one that has been.
+    Both are the same situation from a caller's point of view: the
+    interpreter asked for a part to be instantiated (fire-and-forget,
+    `instantiate()`) and the owning thread just hasn't drained/published
+    that yet -- an ordinary startup race, not a real error.
+
+    Deliberately its own exception type rather than a bare `RuntimeError`,
+    so a caller that specifically wants to treat "not ready yet" as
+    non-fatal (e.g. `TransitionTrigger.evaluate()`, runtime.py) can catch
+    exactly this and nothing else -- see its docstring for why "not ready"
+    should mean "this trigger doesn't fire yet," not a crash.
+    """
 
 
 @dataclass(frozen=True)
@@ -116,7 +135,7 @@ class ThreadChannel:
         self.action_queue = queue.Queue()
         self.instantiate_queue = queue.Queue()
 
-class SimulationBridge:
+class SimulationBridge(RuntimeStateElement):
     """The interpreter-facing surface for the Fischertechnik simulation
     domain -- everything on the interpreter side (PartInstantiation.evaluate()/
     AttributeReference.evaluate()/ActualAction.evaluate() in runtime.py)
@@ -141,7 +160,8 @@ class SimulationBridge:
     thread-confinement guarantee real rather than just documented.
     """
 
-    def __init__(self, channel: ThreadChannel):
+    def __init__(self, channel: ThreadChannel, **kwargs):
+        super().__init__(**kwargs)
         self._channel = channel
 
     def instantiate(self, qualified_name: str, part_def_name: str, **attrs):
@@ -164,16 +184,21 @@ class SimulationBridge:
         """Reads from the latest Factory-wide snapshot published by the
         owning thread (see main_fischertechnik_factory.py's `on_tick`,
         which calls `factory.build_snapshot()` and publishes it), not from
-        the live machine -- thread-confined-safe. Raises if no snapshot
-        has been published yet (e.g. called before the first
-        `Factory.tick()`) or if `qualified_name` isn't in it, rather than
-        silently returning something wrong.
+        the live machine -- thread-confined-safe. Raises `PartNotReadyError`
+        (not a crash-worthy error -- see its docstring) if no snapshot has
+        been published yet, or if `qualified_name` isn't in the one that
+        has -- both mean the owning thread hasn't caught up to an
+        `instantiate()` call yet, an ordinary startup race, not a real
+        failure. Any other missing attribute (a typo, a genuinely wrong
+        name) still surfaces as a normal `AttributeError` from `getattr`,
+        since that's not the same situation.
         """
         snapshot = self._channel.latest_snapshot.read()
-        if snapshot is None:
-            raise RuntimeError(
-                f"No snapshot published yet -- can't read {attribute_name!r} on "
-                f"{qualified_name!r} before the owning thread's first Factory.tick()."
+        if snapshot is None or qualified_name not in snapshot:
+            raise PartNotReadyError(
+                f"{qualified_name!r} not in the latest published snapshot yet -- "
+                f"can't read {attribute_name!r} on it (owning thread hasn't drained "
+                f"its instantiate() request yet)."
             )
         return getattr(snapshot[qualified_name], attribute_name)
 
@@ -187,3 +212,7 @@ class SimulationBridge:
         on a machine (see HOMEWORK-SAYYID.md task 1).
         """
         self._channel.action_queue.put(ActionCommand(qualified_name, action_name, args))
+
+    @property
+    def channel(self):
+        return self._channel

@@ -10,6 +10,7 @@ from core.operation import operation, Operation
 from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
     _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
+from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
@@ -487,8 +488,20 @@ class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
         Kept as its own method (mirroring _match_transition()'s own
         plain-eager style one level up) since it's consumed as an
         immediate yes/no by whoever decides whether to fire a transition.
+
+        `PartNotReadyError` (facade_proxy.py) means a nested
+        `AttributeReference` asked about a part the owning thread hasn't
+        finished instantiating/publishing yet -- an ordinary startup race,
+        not a real failure (see that exception's docstring). Treated the
+        same as any other not-yet-satisfied condition: this trigger just
+        doesn't fire this tick, and gets re-checked the next one, same as
+        it would for a guard that's legitimately false for any other
+        reason.
         """
-        return bool(self.condition.evaluate(runtime, current))
+        try:
+            return bool(self.condition.evaluate(runtime, current))
+        except PartNotReadyError:
+            return False
 
 class TransitionGuard(RuntimeStateElement, metaclass=MetaEClass):
 

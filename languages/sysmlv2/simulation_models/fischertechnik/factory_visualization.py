@@ -325,6 +325,31 @@ def draw_machine_panel(screen: pygame.Surface, machines, unowned_token_count: in
     return buttons
 
 
+def _draw_viewport(screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
+    """The main factory-floor drawing (background, grid, every belt,
+    every token) -- happens every frame regardless of whether the
+    simulation has started, since belts/tokens already in `factory` are
+    drawn even before "Start" (see `draw_factory()`'s docstring). Factored
+    out so `draw_factory()`'s loop only needs to branch on `started` once
+    per frame, not twice around this shared, `started`-independent work.
+
+    The background fill is deliberately scoped to just the viewport rect
+    (`VIEWPORT_SIZE`), not the whole window -- `screen` also includes the
+    side panel (`WINDOW_SIZE = VIEWPORT_SIZE[0] + PANEL_WIDTH` wide), and
+    draw_machine_panel()/draw_start_panel() already clear their own panel
+    area independently (`PANEL_BACKGROUND_COLOR`). An unscoped fill here
+    would wipe out whichever panel was drawn if this runs after it in a
+    given frame -- scoping the fill means the two never touch each other's
+    screen region, so which one runs first stops mattering.
+    """
+    screen.fill(BACKGROUND_COLOR, pygame.Rect(0, 0, VIEWPORT_SIZE[0], VIEWPORT_SIZE[1]))
+    draw_grid(screen, font)
+    for machine in factory.machines:
+        draw_conveyor_belt(screen, machine)
+    for token in factory.tokens:
+        draw_token(screen, token)
+
+
 def draw_factory(factory, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60) -> None:
     """Static-picture render loop: every frame, redraws every registered
     machine at its placementCoordinate. Redrawing from scratch each frame
@@ -391,21 +416,13 @@ def draw_factory(factory, on_start=lambda: None, on_tick=lambda: None, tick_rate
         if started:
             factory.tick()
             on_tick()
-
-        screen.fill(BACKGROUND_COLOR)
-        draw_grid(screen, font)
-        for machine in factory.machines:
-            draw_conveyor_belt(screen, machine)
-        for token in factory.tokens:
-            draw_token(screen, token)
-
-        if started:
             unowned_token_count = len(factory.tokens_on(None))
             buttons = draw_machine_panel(screen, factory.machines, unowned_token_count, font, label_font,
-                                          selected_color, handle_select_color, handle_place_token)
+                                         selected_color, handle_select_color, handle_place_token)
         else:
             buttons = draw_start_panel(screen, font, label_font, handle_start)
 
+        _draw_viewport(screen, font, factory)
         pygame.display.flip()
         clock.tick(tick_rate)
 
