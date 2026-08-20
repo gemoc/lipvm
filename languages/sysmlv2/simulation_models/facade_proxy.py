@@ -136,28 +136,30 @@ class ThreadChannel:
         self.instantiate_queue = queue.Queue()
 
 class SimulationBridge(RuntimeStateElement):
-    """The interpreter-facing surface for the Fischertechnik simulation
-    domain -- everything on the interpreter side (PartInstantiation.evaluate()/
-    AttributeReference.evaluate()/ActualAction.evaluate() in runtime.py)
-    goes through this narrow surface instead of reaching into `Factory`
-    directly.
+    """The interpreter-facing surface for whatever simulation domain is
+    plugged in underneath -- everything on the interpreter side
+    (PartInstantiation.evaluate()/AttributeReference.evaluate()/
+    ActualAction.evaluate() in runtime.py) goes through this narrow
+    surface instead of reaching into a domain's own simulation model
+    (e.g. Fischertechnik's `Factory`) directly.
 
-    Fischertechnik-specific on purpose, not a generic simulation bridge --
-    see OVERVIEW-TASKS.md/URGENT-STEP1-SUBTASKS.md for why a second
-    simulation domain (e.g. water_power_plant) would get its own bridge
-    class, built against its actual shape once it exists, rather than
-    forcing every domain through one speculative shared interface now.
-    facade_proxy.py's `SimulationBridge` is the part that *is* meant to be
-    shared across domains (the method contract), though this class doesn't
-    currently subclass it -- built and evaluated separately on purpose,
-    still an open decision whether to wire that up.
+    Already domain-agnostic, not just intended to be: every operation
+    below deals only in `qualified_name` strings, plain dicts, and the
+    generic `InstantiateCommand`/`ActionCommand`/`ThreadChannel` types --
+    nothing here references `Factory`, `ConveyorBeltMachine`, or any other
+    Fischertechnik-specific shape. A second simulation domain (e.g.
+    water_power_plant) reuses this class as-is; only its own simulation
+    model (the thing actually draining `channel` and executing commands
+    each tick -- see `main_fischertechnik_factory.py`'s `on_tick`) needs
+    to be domain-specific.
 
-    Holds no `Factory` reference at all -- only `channel`, a
-    `ThreadChannel`. Every one of the 3 operations is now non-blocking
-    (reads via a published snapshot, `instantiate`/`call_action` both
-    fire-and-forget queues -- see TODAYS-TASKS.md), so this class never
-    needs to reach `Factory` directly, which is what makes the
-    thread-confinement guarantee real rather than just documented.
+    Holds no reference to any domain's simulation model at all -- only
+    `channel`, a `ThreadChannel`. Every one of the 3 operations is now
+    non-blocking (reads via a published snapshot, `instantiate`/
+    `call_action` both fire-and-forget queues -- see TODAYS-TASKS.md), so
+    this class never needs to reach a domain's simulation model directly,
+    which is what makes the thread-confinement guarantee real rather than
+    just documented.
     """
 
     def __init__(self, channel: ThreadChannel, **kwargs):

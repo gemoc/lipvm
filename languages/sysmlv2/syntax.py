@@ -955,16 +955,13 @@ endif
 
         return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
 
-    @operation
     def evaluate(self, runtime: RuntimeState):
 
         # A single SysmlRuntimeState, one LookupTable per Definition kind
         # (initialized in its own __init__), doubles as both the registry
         # built up by the visit() walk below and the structure the rest of
-        # the AST resolves against. visit() is plain/eager (unlike evaluate()
-        # itself, deferred and stepped by the VM via @operation) — see
-        # Element.visit()'s docstring for why the two stay separate.
-        # Additionally, the actual execution now is delegated to the pre-populated runtime elements
+        # the AST resolves against. Additionally, the actual execution now is
+        # delegated to the pre-populated runtime elements
         sysml_state = rt.SysmlRuntimeState(name="sysml")
         self.visit(sysml_state)
         runtime.elements.append(sysml_state)

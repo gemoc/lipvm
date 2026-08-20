@@ -40,7 +40,7 @@ import time
 
 from core.language import Scenario
 from core.vm import VirtualMachine
-from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel, SimulationBridge
+from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import draw_factory
 from tools.load_xmi_with_syntax import load
@@ -68,10 +68,9 @@ def build_simulation(xmi_path: str) -> tuple[VirtualMachine, Factory]:
     action from inside the visualization, not something that already
     happened silently by the time the window opens.
 
-    The bridge must still be set between `vm.init()` (which creates
-    `vm.state`) and the first `vm.step()` (now always `run_interpreter_loop`'s,
-    once `started_event` releases it) -- it's read via
-    `runtime.simulation_bridge` partway through that same step.
+    The bridge exists as soon as `vm.init()` returns -- `Namespace.evaluate()`
+    (`syntax.py`) constructs it eagerly now, no longer deferred behind a
+    `vm.step()` call.
     """
     resource = load(xmi_path)
     scenario = Scenario(program_definition=resource.contents[0])
@@ -137,44 +136,6 @@ def run_interpreter_loop(vm: VirtualMachine, factory: Factory, xmi_path: str, st
         time.sleep(tick_delay)
         vm.step()
 
-
-def drain_and_publish(factory: Factory, channel: ThreadChannel) -> None:
-    """One tick's worth of owning-thread work -- the only thread ever
-    allowed to do any of the three things below (see HOMEWORK-SAYYID.md
-    task 1 / facade_proxy.py's `SimulationSnapshot`/`ThreadChannel`
-    docstrings). Order matters: instantiate first, so a part created this
-    call already exists for the action-drain and snapshot-publish steps
-    that follow it.
-
-    1. Drains every `InstantiateCommand` queued since the last call and
-       actually constructs/registers each one (`factory.instantiate_machine()`).
-    2. Drains every `ActionCommand` queued since the last call and
-       actually executes each one (`factory.execute_action()`) -- this is
-       the one place any machine's action methods get called from, now
-       that `SimulationBridge.call_action()` only ever enqueues.
-    3. Publishes a fresh Factory-wide snapshot (`factory.build_snapshot()`,
-       framework-agnostic, knows nothing about threads) so the interpreter
-       thread's next `get_value_from_instance_attribute()` call sees this
-       tick's state, not a stale or torn one.
-
-    Deliberately a plain function taking `factory`/`channel` as arguments,
-    not a closure over `main()`'s locals -- `on_tick()` below is the only
-    caller that needs pygame/threading at all; anything driving one "tick"
-    synchronously (e.g. a future test exercising real simulation behavior)
-    can call this directly, no window or second thread required, since
-    nothing here blocks (see TODAYS-TASKS.md).
-    """
-    while not channel.instantiate_queue.empty():
-        command = channel.instantiate_queue.get_nowait()
-        factory.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
-
-    while not channel.action_queue.empty():
-        command = channel.action_queue.get_nowait()
-        factory.execute_action(command.qualified_name, command.action_name, command.args)
-
-    channel.latest_snapshot.publish(factory.build_snapshot())
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("xmi", nargs="?", default=DEFAULT_MODEL,
@@ -210,26 +171,46 @@ def main() -> None:
         each frame (see `draw_factory()`) -- resolves this scenario's
         `ThreadChannel` (via the interpreter's own `simulation_bridge`,
         constructed inside `Namespace.evaluate()`, `syntax.py`) and
-        delegates the actual per-tick work to `drain_and_publish()`, so
-        that logic isn't trapped inside this closure.
+        perform the actual per-tick work
 
-        `started` flips True (in `factory_visualization.py`'s
-        `handle_start()`) in the same click callback that releases the
-        interpreter thread via `started_event` -- with no wait in between.
-        This frame's `on_tick()` call can easily run before the interpreter
-        thread has gotten far enough into its first `vm.step()` to actually
-        construct `simulation_bridge` (`Namespace.evaluate()`,
-        `syntax.py:972-974`), so `vm.state.simulation_bridge` isn't
-        guaranteed to exist yet the first few times this runs -- an
-        ordinary startup race, not a bug to fix by adding a lock: skip this
-        frame's work and let the next one (at 60fps, ~16ms away) catch up
-        once the interpreter thread has actually gotten there.
+        One tick's worth of owning-thread work -- the only thread ever
+        allowed to do any of the three things below (see HOMEWORK-SAYYID.md
+        task 1 / facade_proxy.py's `SimulationSnapshot`/`ThreadChannel`
+        docstrings). Order matters: instantiate first, so a part created this
+        call already exists for the action-drain and snapshot-publish steps
+        that follow it.
+
+        1. Drains every `InstantiateCommand` queued since the last call and
+           actually constructs/registers each one (`factory.instantiate_machine()`).
+        2. Drains every `ActionCommand` queued since the last call and
+           actually executes each one (`factory.execute_action()`) -- this is
+           the one place any machine's action methods get called from, now
+           that `SimulationBridge.call_action()` only ever enqueues.
+        3. Publishes a fresh Factory-wide snapshot (`factory.build_snapshot()`,
+           framework-agnostic, knows nothing about threads) so the interpreter
+           thread's next attribute read sees this tick's state, not a stale
+           or torn one.
+
+        Deliberately a plain function taking `factory`/`channel` as arguments,
+        not a closure over `main()`'s locals -- `on_tick()` below is the only
+        caller that needs pygame/threading at all; anything driving one "tick"
+        synchronously (e.g. a future test exercising real simulation behavior)
+        can call this directly, no window or second thread required, since
+        nothing here blocks (see TODAYS-TASKS.md).
         """
-        try:
-            simulation_bridge: SimulationBridge = vm.state.simulation_bridge
-        except Exception:
-            return
-        drain_and_publish(factory, simulation_bridge.channel)
+
+        channel: ThreadChannel = vm.state.simulation_bridge.channel
+
+        while not channel.instantiate_queue.empty():
+            command = channel.instantiate_queue.get_nowait()
+            factory.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
+
+        while not channel.action_queue.empty():
+            command = channel.action_queue.get_nowait()
+            factory.execute_action(command.qualified_name, command.action_name, command.args)
+
+        channel.latest_snapshot.publish(factory.build_snapshot())
+
 
     try:
         draw_factory(factory, on_start, on_tick)  # blocks on the main thread until the window closes
