@@ -189,7 +189,7 @@ class ReferenceValue(Value):
                     f"(available: {sorted(argument.name for argument in current.arguments)}) -- "
                     f"cannot resolve parameter reference '{self.el.qualified_name}'."
                 )
-            return binding.value.evaluate(runtime, current)
+            return binding.value.evaluate(runtime, current, snapshot_from_bridge)
 
         table_name = _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE.get(self.el.reference_type)
         if table_name is not None:
@@ -744,10 +744,14 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
             processed_item = current_context.pending[0]
             current_context.pending.remove(processed_item)
 
-        #Get the latest snapshot from the Simulation. We do this here so that all guard are evaluated in
-        # the same condition
-
-        latest_simulation_snapshot: SimulationSnapshot = runtime_state.simulation_bridge.get_snapshot()
+        # Captured lazily, on the first TransitionTriggerByWhenCondition
+        # actually reached below -- not unconditionally up front -- so a
+        # state whose transitions are all plain signal triggers never touches
+        # simulation_bridge at all. Every when-condition guard checked in
+        # this pass still shares the exact same snapshot object once
+        # captured, same guarantee as before.
+        latest_simulation_snapshot: Optional[SimulationSnapshot] = None
+        snapshot_captured = False
 
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
@@ -755,6 +759,9 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
                 if processed_item is not None and trigger.evaluate(processed_item):
                     return transition
             elif isinstance(trigger, TransitionTriggerByWhenCondition):
+                if not snapshot_captured:
+                    latest_simulation_snapshot = runtime_state.simulation_bridge.get_snapshot()
+                    snapshot_captured = True
                 if trigger.evaluate(runtime_state, current_context, latest_simulation_snapshot):
                     return transition
 
