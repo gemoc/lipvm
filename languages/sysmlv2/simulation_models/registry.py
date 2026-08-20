@@ -9,11 +9,9 @@ from languages.sysmlv2 import simulation_models
 @functools.lru_cache()
 def scan_for_subclasses(base_class: type) -> dict:
     """Maps each concrete subclass of `base_class`'s name to the class
-    itself, discovered by recursively scanning every module in the
-    simulation_models package tree (including subpackages, e.g.
-    fischertechnik, and any future sibling like water_power_plant).
-    Computed once per (process, base_class) and cached, since the scan/
-    import work has no reason to repeat.
+    itself, discovered by scanning every module in the simulation_models
+    package tree (including subpackages). Cached per `base_class`, since
+    the scan has no reason to repeat.
     """
     registry = {}
     for _, module_name, _ in pkgutil.walk_packages(simulation_models.__path__, simulation_models.__name__ + "."):
