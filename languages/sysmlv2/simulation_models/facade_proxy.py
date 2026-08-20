@@ -12,7 +12,7 @@ PartInstantiation.evaluate()) never change shape regardless of domain.
 
 All 3 operations turned out to be non-blocking once their actual call sites
 were checked, not just 2 of 3 as originally planned (see TODAYS-TASKS.md):
-- reads publish/read a `LatestSnapshot`, once per tick, no request at all.
+- reads publish/read a `SimulationSnapshot`, once per tick, no request at all.
 - `call_action`/`instantiate` are both fire-and-forget one-way queues
   (`ActionCommand`/`InstantiateCommand`) -- confirmed by checking their real
   call sites discard the return value (runtime.py:445's call site and
@@ -31,7 +31,7 @@ from core.language import RuntimeStateElement
 
 
 class PartNotReadyError(Exception):
-    """Raised by `SimulationBridge.get_value_from_instance_attribute()`
+    """Raised by `SimulationBridge.read_attribute_from_snapshot()`
     when the part it's asked about doesn't exist in the published snapshot
     yet -- either because no snapshot has been published at all, or
     because this specific `qualified_name` isn't in the one that has been.
@@ -81,7 +81,7 @@ class ActionCommand:
     args: dict
 
 
-class LatestSnapshot:
+class SimulationSnapshot:
     """Generic 'topic' a single owning thread publishes to and any number
     of other threads read from -- holds whatever was last published;
     readers always see the newest value, never a backlog, and there is no
@@ -125,13 +125,13 @@ class ThreadChannel:
     compared by its contents -- same reasoning `Factory` (also a container
     of other stateful things) is a plain class rather than a dataclass.
 
-    Constructs its own `LatestSnapshot`/`Queue`s internally -- a caller
+    Constructs its own `SimulationSnapshot`/`Queue`s internally -- a caller
     just does `ThreadChannel()` and gets a ready-made bundle, rather than
     assembling the pieces itself.
     """
 
     def __init__(self):
-        self.latest_snapshot = LatestSnapshot()
+        self.latest_snapshot = SimulationSnapshot()
         self.action_queue = queue.Queue()
         self.instantiate_queue = queue.Queue()
 
@@ -180,20 +180,24 @@ class SimulationBridge(RuntimeStateElement):
         """
         self._channel.instantiate_queue.put(InstantiateCommand(qualified_name, part_def_name, attrs))
 
-    def get_value_from_instance_attribute(self, qualified_name: str, attribute_name: str):
-        """Reads from the latest Factory-wide snapshot published by the
-        owning thread (see main_fischertechnik_factory.py's `on_tick`,
-        which calls `factory.build_snapshot()` and publishes it), not from
-        the live machine -- thread-confined-safe. Raises `PartNotReadyError`
-        (not a crash-worthy error -- see its docstring) if no snapshot has
-        been published yet, or if `qualified_name` isn't in the one that
-        has -- both mean the owning thread hasn't caught up to an
-        `instantiate()` call yet, an ordinary startup race, not a real
-        failure. Any other missing attribute (a typo, a genuinely wrong
-        name) still surfaces as a normal `AttributeError` from `getattr`,
-        since that's not the same situation.
+    @staticmethod
+    def read_attribute_from_snapshot(snapshot, qualified_name: str, attribute_name: str):
+        """Resolves one attribute off an already-captured snapshot value --
+        the dict returned by a single `get_snapshot()` call. Callers must
+        capture that value once per evaluation pass (see
+        `ExecutableStateUsage._find_matching_transition()`, runtime.py) and
+        reuse it for every lookup in that pass; calling `get_snapshot()`
+        fresh per lookup reopens the torn-read window this exists to close.
+
+        Raises `PartNotReadyError` (not a crash-worthy error -- see its
+        docstring) if no snapshot has been published yet, or if
+        `qualified_name` isn't in the one that has -- both mean the owning
+        thread hasn't caught up to an `instantiate()` call yet, an ordinary
+        startup race, not a real failure. Any other missing attribute (a
+        typo, a genuinely wrong name) still surfaces as a normal
+        `AttributeError` from `getattr`, since that's not the same
+        situation.
         """
-        snapshot = self._channel.latest_snapshot.read()
         if snapshot is None or qualified_name not in snapshot:
             raise PartNotReadyError(
                 f"{qualified_name!r} not in the latest published snapshot yet -- "
@@ -216,3 +220,6 @@ class SimulationBridge(RuntimeStateElement):
     @property
     def channel(self):
         return self._channel
+
+    def get_snapshot(self):
+        return self._channel.latest_snapshot.read()

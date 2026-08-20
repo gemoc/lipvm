@@ -10,7 +10,7 @@ from core.operation import operation, Operation
 from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
     _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
-from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError
+from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError, SimulationSnapshot, SimulationBridge
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
@@ -50,12 +50,18 @@ class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
     contained_values = EAttribute(eType=EString, lower=1, upper=-1)
 
 class Reference(ElementDefinition, metaclass=MetaEClass):
+
+    '''
+    An element representing a reference to another runtime state elements.
+    It uses the qualified_name attribute as the main identifier to locate the original element
+    '''
     reference_type = EAttribute(eType=EString, lower=1, upper=1)
 
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+            SimulationSnapshot = None):
         """Resolves this Value to its actual runtime result — e.g. a
         literal's own payload, a dereferenced Reference, or (for
         AttributeReference/BinaryExpression) a looked-up/computed result.
@@ -63,25 +69,19 @@ class Value(RuntimeStateElement, metaclass=MetaEClass):
         Transition.evaluate()/etc., which the VM steps through): a Value
         tree is a pure, side-effect-free read/computation with nothing to
         interleave mid-evaluation, so it runs eagerly to a plain Python
-        value in one call — no Operation chain for a caller to drain (see
-        BinaryExpression, which previously needed exactly that draining
-        via @operation's left=/right= sub-operations, before this was
-        simplified back to plain recursive calls).
+        value in one call — no Operation chain for a caller to drain.
 
-        `current` is the ExecutableStateUsage instance this Value is being
-        evaluated on behalf of (e.g. the running `cbSimulationSimple`, for
-        a guard condition on one of its transitions) — needed by
-        AttributeReference to resolve a formal parameter (e.g.
-        conveyorBelt) to the concrete instance actually bound in *this*
-        instance's own `arguments`, since the same StateDef can be
-        instantiated more than once with different bindings. Optional and
-        unused by subclasses that don't need it (LiteralValue), and
-        threaded through unchanged by BinaryExpression's recursion into
-        left/right — see each override for how it's used.
+        `current` is the scope used to resolve this Value when it is being
+        evaluated. It can be mandatory (e.g., for resolving
+        AttributeReference to resolve a formal parameter) or optional (e.g., LiteralValue) depending
+        on the subclasses.
 
-        Placeholder only on this base class. See memory:
-        todo-actualaction-resolution-pipeline for the broader
-        execution/resolution pipeline this is part of.
+        `snapshot_from_bridge` is the values from Simulation, particularly important if
+        some values refer to the attribute of Parts that are mutated by the Simulation model. For values that are
+        unrelated with the attributes of a part, they will not use this.
+
+        Placeholder only on this base class. See memory: todo-actualaction-resolution-pipeline
+        for the broader execution/resolution pipeline this is part of.
         """
         raise NotImplementedError('Value.evaluate() not yet implemented')
 
@@ -89,7 +89,8 @@ class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
     scalar_type = EAttribute(eType=ScalarType, lower=0, upper=1)
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
         """Converts `el` (always a string, per _literal_value()'s str(node.value)
         encoding in syntax.py) back to the Python type `scalar_type` names --
         not the raw string -- so a BinaryExpression comparing this against a
@@ -122,10 +123,10 @@ _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE = {
 class ReferenceValue(Value):
     el = EReference(eType=Reference, lower=1, upper=1, containment=False)
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
         """Resolves `el` (a bare Reference) by its `reference_type` tag --
-        different kinds of reference need genuinely different resolution,
-        not one uniform lookup:
+        different kinds of reference need genuinely different resolution
 
         - "EnumerationUsage" (e.g. direction=DirectionKind::FORWARD, an
           action-argument binding) resolves all the way to the actual
@@ -216,7 +217,8 @@ class AttributeReference(Value):
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
     attribute = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
         """Resolves `target` (the formal parameter, e.g. `conveyorBelt`) by
         wrapping it in a transient ReferenceValue and delegating to its own
         evaluate() -- `target` carries the same "Parameter" reference_type
@@ -241,8 +243,8 @@ class AttributeReference(Value):
             raise NotImplementedError('Currently, only handling a case where attribute reference involves'
                                       'Part Instantiation. Please handle it first before continuing.')
         attribute_name = self.attribute.qualified_name.split("::")[-1]
-        return runtime.simulation_bridge.get_value_from_instance_attribute(
-            resolved.qualified_name, attribute_name)
+        return SimulationBridge.read_attribute_from_snapshot(
+            snapshot_from_bridge, resolved.qualified_name, attribute_name)
 
 class BinaryExpression(Value):
     """A binary operation over two sub-values (e.g. `conveyorBelt.
@@ -261,14 +263,15 @@ class BinaryExpression(Value):
     left = EReference(eType=Value, lower=1, upper=1, containment=True)
     right = EReference(eType=Value, lower=1, upper=1, containment=True)
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
         """Plain recursive calls -- `current` passed to both sub-evaluations
         unchanged (not re-resolved here), so an AttributeReference nested
         anywhere in left/right still resolves against the same running
         instance this whole expression is being evaluated for.
         """
-        left = self.left.evaluate(runtime, current)
-        right = self.right.evaluate(runtime, current)
+        left = self.left.evaluate(runtime, current, snapshot_from_bridge)
+        right = self.right.evaluate(runtime, current, snapshot_from_bridge)
         return _BINARY_OPERATORS[self.operator](left, right)
 
 class Record(ElementDefinition, metaclass=MetaEClass):
@@ -481,7 +484,8 @@ class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 
     condition = EReference(eType=Value, lower=0, upper=1, containment=True)
 
-    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage") -> bool:
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage", latest_simulation_snapshot:
+    SimulationSnapshot) -> bool:
         """Evaluates `condition` to a plain bool, right now -- Value.evaluate()
         is a plain eager call (not @operation-decorated), so this needs no
         Operation-chain draining, just a bool() around whatever it returns.
@@ -499,7 +503,7 @@ class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
         reason.
         """
         try:
-            return bool(self.condition.evaluate(runtime, current))
+            return bool(self.condition.evaluate(runtime, current, latest_simulation_snapshot))
         except PartNotReadyError:
             return False
 
@@ -740,13 +744,18 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
             processed_item = current_context.pending[0]
             current_context.pending.remove(processed_item)
 
+        #Get the latest snapshot from the Simulation. We do this here so that all guard are evaluated in
+        # the same condition
+
+        latest_simulation_snapshot: SimulationSnapshot = runtime_state.simulation_bridge.get_snapshot()
+
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
             if isinstance(trigger, TransitionTriggerBySignal):
                 if processed_item is not None and trigger.evaluate(processed_item):
                     return transition
             elif isinstance(trigger, TransitionTriggerByWhenCondition):
-                if trigger.evaluate(runtime_state, current_context):
+                if trigger.evaluate(runtime_state, current_context, latest_simulation_snapshot):
                     return transition
 
         if processed_item is not None:

@@ -141,7 +141,7 @@ def run_interpreter_loop(vm: VirtualMachine, factory: Factory, xmi_path: str, st
 def drain_and_publish(factory: Factory, channel: ThreadChannel) -> None:
     """One tick's worth of owning-thread work -- the only thread ever
     allowed to do any of the three things below (see HOMEWORK-SAYYID.md
-    task 1 / facade_proxy.py's `LatestSnapshot`/`ThreadChannel`
+    task 1 / facade_proxy.py's `SimulationSnapshot`/`ThreadChannel`
     docstrings). Order matters: instantiate first, so a part created this
     call already exists for the action-drain and snapshot-publish steps
     that follow it.

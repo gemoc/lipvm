@@ -117,7 +117,7 @@ class Factory:
         publish it anywhere or know anything about threads/queues/pygame,
         same "framework-agnostic" boundary `tick()` already draws for
         itself above -- publishing this where another thread can safely
-        read it (see facade_proxy.py's `LatestSnapshot`) is the caller's
+        read it (see facade_proxy.py's `SimulationSnapshot`) is the caller's
         concern, not Factory's.
         """
         return {machine.name: machine.snapshot() for machine in self._machines.values()}
