@@ -114,7 +114,7 @@ def main() -> None:
         publishes a fresh snapshot for the interpreter thread to read.
         """
 
-        channel: ThreadChannel = vm.state.simulation_bridge.channel
+        channel: ThreadChannel = vm.state.channel
 
         while not channel.instantiate_queue.empty():
             command = channel.instantiate_queue.get_nowait()

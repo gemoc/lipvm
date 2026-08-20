@@ -388,7 +388,7 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
           conveyorBelt) via ReferenceValue -- same resolution
           AttributeReference.evaluate() uses -- to the concrete
           PartInstantiation this is actually being performed on, then calls
-          the real method through `runtime.simulation_bridge.call_action()`
+          the real method through `SimulationBridge.call_action()`
           using `self.name` (e.g. "moveToSensor", the perform-action's own
           declared name -- NOT action_def.name, "MoveToSensor", which is
           the ActionDefinition's name and not what's callable on the
@@ -459,7 +459,7 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         for argument in self.arguments:
             bound[argument.name] = argument.value.evaluate(runtime, current)
 
-        runtime.simulation_bridge.call_action(part_instantiation.qualified_name, self.name, **bound)
+        SimulationBridge.call_action(runtime.channel, part_instantiation.qualified_name, self.name, **bound)
 
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
@@ -749,7 +749,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         # Captured lazily, on the first TransitionTriggerByWhenCondition
         # actually reached below -- not unconditionally up front -- so a
         # state whose transitions are all plain signal triggers never touches
-        # simulation_bridge at all. Every when-condition guard checked in
+        # the channel at all. Every when-condition guard checked in
         # this pass still shares the exact same snapshot object once
         # captured, same guarantee as before.
         latest_simulation_snapshot: Optional[SimulationSnapshot] = None
@@ -762,7 +762,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
                     return transition
             elif isinstance(trigger, TransitionTriggerByWhenCondition):
                 if not snapshot_captured:
-                    latest_simulation_snapshot = runtime_state.simulation_bridge.get_snapshot()
+                    latest_simulation_snapshot = runtime_state.channel.latest_snapshot.read()
                     snapshot_captured = True
                 if trigger.evaluate(runtime_state, current_context, latest_simulation_snapshot):
                     return transition
@@ -886,7 +886,7 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
 
     def evaluate(self, runtime: RuntimeState):
         """Ensures this usage's live simulation counterpart exists, via
-        runtime.simulation_bridge -- idempotency is entirely the bridge's
+        SimulationBridge -- idempotency is entirely the bridge's
         concern (backed by Factory's own machine registry, keyed by name),
         not something PartInstantiation tracks itself; no field is stored
         on self. Later code (e.g. ActualAction/AttributeReference)
@@ -913,7 +913,7 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
             if isinstance(redefinition.value, CompositeCustomValue):
                 attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
 
-        runtime.simulation_bridge.instantiate(self.qualified_name, part_def_name, **attrs)
+        SimulationBridge.instantiate(runtime.channel, self.qualified_name, part_def_name, **attrs)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 

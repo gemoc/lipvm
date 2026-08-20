@@ -12,7 +12,7 @@ from core.operation import operation
 # its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
-from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel, SimulationBridge
+from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
@@ -934,21 +934,16 @@ endif
         # means a PartInstantiation added later (e.g. by a HOTSWAP edit to a
         # running program) gets picked up on the next tick instead of never.
         #
-        # Skipped entirely if no simulation_bridge is configured on this
-        # RuntimeState -- not every scenario cares about simulation behavior
-        # (e.g. test_simple_conveyor_belt_simulation only checks parsed
-        # model structure, never touches Factory), so this shouldn't be a
-        # hard requirement for every vm.step() call. `simulation_bridge` is
-        # set via plain attribute assignment (e.g.
-        # `vm.state.simulation_bridge = ...`), which normal Python attribute
-        # lookup finds directly -- it's never added to `runtime.elements`,
-        # so checking that list (an earlier, wrong attempt at this fix) can
-        # never see a real bridge either. RuntimeState.__getattr__ only
-        # raises when neither normal lookup nor the `elements` scan finds
-        # the name, so actually attempting the access is the only reliable
-        # way to check "is one configured."
+        # Skipped entirely if no channel is configured on this RuntimeState
+        # -- not every scenario cares about simulation behavior (e.g.
+        # test_simple_conveyor_belt_simulation only checks parsed model
+        # structure, never touches Factory), so this shouldn't be a hard
+        # requirement for every vm.step() call. RuntimeState.__getattr__
+        # raises when the name isn't found in `runtime.elements`, so
+        # actually attempting the access is the reliable way to check "is
+        # one configured."
 
-        if runtime.simulation_bridge is not None:
+        if runtime.channel is not None:
             part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
             for an_instantiation in part_instantiation_elements:
                 an_instantiation.evaluate(runtime)
@@ -967,8 +962,7 @@ endif
         runtime.elements.append(sysml_state)
 
         #Initialization for Bridge to the simulation
-        channel = ThreadChannel()
-        runtime.elements.append(SimulationBridge(name="simulation_bridge", channel=channel))
+        runtime.elements.append(ThreadChannel(name="channel"))
 
         item_defs_table = runtime.sysml.lookup_table_item_defs
         pending_file = "pending_test_scratch.txt"
