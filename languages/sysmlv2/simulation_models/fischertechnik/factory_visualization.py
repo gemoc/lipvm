@@ -202,7 +202,7 @@ class FischertechnikVisualization(SimulationVisualization):
                            on_start_click) -> list[tuple[pygame.Rect, object]]:
         """Draws the side panel before the simulation has started: just a
         "Start" button and a short instruction -- no per-machine blocks, since
-        no part has been instantiated yet (see main_fischertechnik_factory.py's
+        no part has been instantiated yet (see main_lipvm_dtsimulation.py's
         `on_start`, which only runs -- and only then populates `factory.machines`
         -- once this button is actually clicked).
 
@@ -367,7 +367,7 @@ class FischertechnikVisualization(SimulationVisualization):
         even though nothing moves yet — Milestone 1 is static-only.
 
         `on_tick` runs right after `model.tick()`, once per frame, only once
-        the simulation has started -- see main_fischertechnik_factory.py's
+        the simulation has started -- see main_lipvm_dtsimulation.py's
         `on_tick`, which publishes a fresh snapshot there (TODAYS-TASKS.md step
         2). Defaults to a no-op so callers with nothing to do after a tick
         (e.g. factory_simulation_demo.py) don't need to pass anything.
@@ -377,7 +377,7 @@ class FischertechnikVisualization(SimulationVisualization):
         normal per-machine one (there's nothing to show yet -- `on_start`, not
         this method, is what actually populates `model.machines`). `started`
         flips permanently to True the moment that button fires; `on_start`
-        itself (defined by the caller, see main_fischertechnik_factory.py) is
+        itself (defined by the caller, see main_lipvm_dtsimulation.py) is
         responsible for whatever needs to happen exactly once at that point
         (the model's eager part-instantiation pass, releasing the interpreter
         thread, etc.) -- this method only decides what to draw/tick based on

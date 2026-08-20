@@ -89,7 +89,7 @@ class Factory(BaseSimulationModel):
         site (`syntax.py:936`), which discards its return value already.
         Deliberately doesn't import anything from facade_proxy.py --
         draining the queue and deciding when to call this is the caller's
-        concern (see main_fischertechnik_factory.py's `on_tick`), not
+        concern (see main_lipvm_dtsimulation.py's `on_tick`), not
         Factory's, same "framework-agnostic" boundary as `execute_action()`
         below.
         """
@@ -113,7 +113,7 @@ class Factory(BaseSimulationModel):
         or know about, same "framework-agnostic" boundary `tick()` and
         `build_snapshot()` already draw for themselves: draining the queue
         and deciding when to call this is the caller's concern (see
-        main_fischertechnik_factory.py's `on_tick`), not Factory's.
+        main_lipvm_dtsimulation.py's `on_tick`), not Factory's.
         """
         getattr(self.get_machine(qualified_name), action_name)(**args)
 

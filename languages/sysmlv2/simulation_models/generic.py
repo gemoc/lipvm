@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 class BaseSimulationModel(ABC):
     """Shared base for a whole simulation domain (Fischertechnik's
     `Factory`, and any future domain, e.g. water_power_plant) -- the
-    top-level object `main_fischertechnik_factory.py` (or its eventual
+    top-level object `main_lipvm_dtsimulation.py` (or its eventual
     generic successor) constructs and drives, as opposed to
     PartSimulationModel below (one machine within that domain).
 
@@ -19,7 +19,7 @@ class BaseSimulationModel(ABC):
 
     `instantiate_machine`/`execute_action`/`build_snapshot` are what the
     owning thread's `ThreadChannel`-draining logic calls each tick (see
-    `main_fischertechnik_factory.py`'s `on_tick`) -- the actual execution
+    `main_lipvm_dtsimulation.py`'s `on_tick`) -- the actual execution
     behind `SimulationBridge`'s fire-and-forget `instantiate()`/
     `call_action()` and its published-snapshot reads. `tick()` is called
     separately, once per rendered frame, by the visualization layer (see
@@ -47,7 +47,7 @@ class BaseSimulationModel(ABC):
 class SimulationVisualization(ABC):
     """Shared base for a domain's own rendering of its BaseSimulationModel
     -- the single entry point whoever drives the simulation (currently
-    `main_fischertechnik_factory.py`, or its eventual generic successor)
+    `main_lipvm_dtsimulation.py`, or its eventual generic successor)
     calls, regardless of domain.
 
     Narrow on purpose, same derivation as `BaseSimulationModel` above: the

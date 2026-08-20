@@ -150,7 +150,7 @@ class SimulationBridge(RuntimeStateElement):
     Fischertechnik-specific shape. A second simulation domain (e.g.
     water_power_plant) reuses this class as-is; only its own simulation
     model (the thing actually draining `channel` and executing commands
-    each tick -- see `main_fischertechnik_factory.py`'s `on_tick`) needs
+    each tick -- see `main_lipvm_dtsimulation.py`'s `on_tick`) needs
     to be domain-specific.
 
     Holds no reference to any domain's simulation model at all -- only
@@ -173,7 +173,7 @@ class SimulationBridge(RuntimeStateElement):
         value (confirmed: `PartInstantiation.evaluate()`'s only call site,
         `syntax.py:936`, discards it). The owning thread drains and
         executes these once per tick (see
-        `Factory.instantiate_machine()`/main_fischertechnik_factory.py's
+        `Factory.instantiate_machine()`/main_lipvm_dtsimulation.py's
         `on_tick`), same as `call_action()` below. `attrs` is a plain dict
         of attr_name -> (custom_class_name, values) pairs, one per
         CompositeCustomValue redefinition on the usage (built by
@@ -213,7 +213,7 @@ class SimulationBridge(RuntimeStateElement):
         directly -- fire-and-forget, thread-confined-safe, matching
         `call_action()`'s contract (nothing ever used its return value,
         see ActionCommand's docstring). The owning thread drains and
-        executes these once per tick (see main_fischertechnik_factory.py's
+        executes these once per tick (see main_lipvm_dtsimulation.py's
         `on_tick`), the only thread ever allowed to actually call a method
         on a machine (see HOMEWORK-SAYYID.md task 1).
         """
