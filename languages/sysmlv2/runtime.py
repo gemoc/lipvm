@@ -1,12 +1,12 @@
 import logging
 from collections import deque
 from enum import Enum
-from typing import List, Optional
+from typing import Optional
 
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
-from core.operation import operation, Operation
+from core.operation import operation
 from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
     _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
@@ -360,9 +360,22 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     # action_def — it's left as a bare Reference, not resolved here.
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
-    @operation
     def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
-        """Resolves action_def and binds each argument's Value, then performs
+        """Plain eager call, matching every other runtime record's evaluate()
+        except ExecutableStateUsage's own (the one genuine VM-step boundary,
+        see its docstring) -- @operation used to decorate this method, but
+        nothing ever drained it lazily: ExecutableStateUsage's own reactive
+        pass always called .execute() on the result immediately, in the same
+        breath it was built, so the decorator bought only an extra
+        build-then-immediately-unwrap indirection, not real steppability.
+        Removed for the same reason BinaryExpression's own lazy left=/right=
+        sub-operations were simplified back to plain recursive calls (see
+        Value's own docstring) -- this codebase's one deliberate decision is
+        that only ExecutableStateUsage.evaluate() is a real step; everything
+        it triggers (entry/exit actions, transition effects, part
+        instantiation) runs eagerly as an ordinary sub-call.
+
+        Resolves action_def and binds each argument's Value, then performs
         the call. Two shapes, per `target`:
 
         - `target is None` (a direct action, e.g. `pEntry` performing
@@ -660,8 +673,15 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
     @operation(is_step=True)
     def evaluate(self, runtime: RuntimeState):
-
-        op_to_be_executed: List[Operation] = []
+        """The one genuine VM-step boundary in this whole reactive pipeline
+        -- `is_step=True` is what makes VirtualMachine.step() stop right
+        before the *next* ExecutableStateUsage's own evaluate(), so one
+        step corresponds to exactly one instance's reactive pass. Everything
+        this method triggers below (entry/exit actions, transition effects,
+        part instantiation) runs as an ordinary eager sub-call, not a
+        separately-stepped Operation -- see ActualAction.evaluate()'s own
+        docstring for why that used to be otherwise and no longer is.
+        """
 
         #Step 1: Only start executing this ExecutableStateUsage if the StateDef is resolved, otherwise just return None
         record_referenced_state_def: Record = runtime.sysml.lookup_table_state_defs.get_reference(
@@ -673,54 +693,36 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         if original_state_def is None:
             return None
 
-        # Step 2: Execute the default entry action and transition
-        # Only if the current state is still none, otherwise go straight for the usual behavior
+        # Step 2: Run the default entry action and transition, only if the
+        # current state is still none, otherwise go straight for the usual behavior
         if self.current is None:
-            # This would later be removed once we resolve the confusion about how to
-            # Decompose the FSM into smaller operations
-            entry_behaviour: List[Operation] = self._run_entry_behaviour(runtime, original_state_def)
-            op_to_be_executed.extend(entry_behaviour)
+            self._run_entry_behaviour(runtime, original_state_def)
 
-        #Step 3: Execute one transition, if it is possible
-        fire_transition_side_effects: List[Operation] = self._check_and_fire(runtime, original_state_def)
-        op_to_be_executed.extend(fire_transition_side_effects)
-
-        #Since we are not yet relying on the actual operation annotation, we can just execute them now
-        for an_op in op_to_be_executed:
-            if an_op is not None:
-                an_op.execute()
+        # Step 3: Fire one transition, if one matches
+        self._check_and_fire(runtime, original_state_def)
 
     def _run_entry_behaviour(self, runtime: RuntimeState, original_state_def: StateDef):
 
-        op_to_be_executed: List[Operation] = []
-
-        #Step 1: Execute the entry action
+        #Step 1: Run the entry action
         if original_state_def.entry_action is not None:
-            op_to_be_executed.append(original_state_def.entry_action.evaluate(runtime, self))
+            original_state_def.entry_action.evaluate(runtime, self)
 
-        #Step 2, start the transition
-        # The behavior for this transition is encapsulated, just to mimic the Operation pattern
+        #Step 2: start the transition
         transition = original_state_def.default_transition
         if transition is not None:
             target_state = original_state_def.get_substate(transition.target.qualified_name)
-            op_to_be_executed.append(Operation(self.set_new_current, args=(target_state,)))
+            self.current = target_state
 
-            #Step 3: execute the entry action of the newly-entered substate itself (e.g. Start's own
+            #Step 3: run the entry action of the newly-entered substate itself (e.g. Start's own
             # `entry conveyorBelt.moveToSensor {...}`) -- distinct from original_state_def.entry_action
             # above (the StateDef's own top-level entry, e.g. ConveyorBeltComplexMissionTwo's bare
             # `entry;`). Previously only _fire_transition() ran a target substate's entry -- meaning
             # the very first transition (StateDef default -> its first substate, handled here instead)
-            # silently skipped it. Queued after set_new_current (not run inline) so it fires only once
-            # that operation has actually executed and self.current genuinely reflects target_state,
-            # matching _fire_transition()'s own ordering for every later transition.
+            # silently skipped it. Run after self.current is reassigned, not before, so it fires
+            # only once self.current genuinely reflects target_state, matching _fire_transition()'s
+            # own ordering for every later transition.
             if target_state.entry is not None:
-                op_to_be_executed.append(target_state.entry.evaluate(runtime, self))
-
-        return op_to_be_executed
-
-    def set_new_current(self, new_state_candidate: StateDef):
-
-        self.current = new_state_candidate
+                target_state.entry.evaluate(runtime, self)
 
     def _find_matching_transition(self, runtime_state: RuntimeState, current_context: "ExecutableStateUsage"):
         """Returns the first transition out of `current` whose trigger
@@ -782,39 +784,30 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         `current` has moved past the state that could have.
         """
         if self.current is None:
-            return []
+            return
 
         transition = self._find_matching_transition(runtime, self)
         if transition is not None:
-            op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
-            return op_to_be_executed
-
-        return []
+            self._fire_transition(runtime, transition, original_state_def)
 
     def _fire_transition(self, runtime: RuntimeState, designated_transition: Transition, original_state_def: StateDef):
 
-        op_to_be_executed: List[Operation] = []
         current_state_usage: StateUsage = self.current
 
-        #Step 2 execute exit action of the current StateUsage
+        #Step 1: run the exit action of the current StateUsage
         if current_state_usage.exit is not None:
-            exit_action: Operation = current_state_usage.exit.evaluate(runtime, self)
-            op_to_be_executed.append(exit_action)
+            current_state_usage.exit.evaluate(runtime, self)
 
-        #Step 3 execute the transition effect
-        transition_effect: Operation = designated_transition.evaluate(runtime, self)
-        op_to_be_executed.append(transition_effect)
+        #Step 2: run the transition effect
+        designated_transition.evaluate(runtime, self)
 
-        #Step 4 change the current pointer to a new StateUsage
+        #Step 3: change the current pointer to the new StateUsage
         target_state: StateUsage = original_state_def.get_substate(designated_transition.target.qualified_name)
         self.current = target_state
 
-        #Step 5 execute the entry action of the newly appointed StateUsage
+        #Step 4: run the entry action of the newly appointed StateUsage
         if target_state.entry is not None:
-            entry_action_of_new_current: Operation = target_state.entry.evaluate(runtime, self)
-            op_to_be_executed.append(entry_action_of_new_current)
-
-        return op_to_be_executed
+            target_state.entry.evaluate(runtime, self)
 
 class PartDef(ElementDefinition, metaclass=MetaEClass):
 
