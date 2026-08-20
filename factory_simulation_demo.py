@@ -8,7 +8,7 @@ it's wired to real model-instantiated parts (see MILESTONE1.md, steps 3-5).
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import draw_factory
+from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
@@ -50,7 +50,7 @@ def build_demo_factory() -> Factory:
 
 def main() -> None:
     factory = build_demo_factory()
-    draw_factory(factory)
+    FischertechnikVisualization().run(factory)
 
 
 if __name__ == "__main__":

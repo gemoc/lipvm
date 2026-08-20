@@ -7,7 +7,7 @@ it (so every `part` declared in the model -- e.g. `cb1` -- becomes a real,
 model-placed `ConveyorBeltMachine`), then runs the two halves as separate
 threads per the architecture decided in OVERVIEW-TASKS.md:
 
-- Main thread: `draw_factory()` (pygame requires this).
+- Main thread: `FactoryVisualization.run()` (pygame requires this).
 - Background thread: the interpreter's reactive loop, re-evaluating every
   `ExecutableStateUsage` on a tick.
 
@@ -17,7 +17,7 @@ drives a belt through the interpreter, not just the pygame panel's manual
 buttons.
 
 Nothing runs until the user clicks "Start" in the visualization
-(`draw_start_panel()`/`on_start`, below): the model's eager
+(`on_start`, below): the model's eager
 part-instantiation pass and the interpreter thread's reactive loop both
 used to begin automatically, before the window was even shown; now both
 wait for that explicit click, via `started_event`. `on_start` itself only
@@ -42,7 +42,7 @@ from core.language import Scenario
 from core.vm import VirtualMachine
 from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import draw_factory
+from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
 from tools.load_xmi_with_syntax import load
 
 DEFAULT_MODEL = "tests/conveyor-belt-simulation.xmi"
@@ -105,9 +105,9 @@ def run_interpreter_loop(vm: VirtualMachine, factory: Factory, xmi_path: str, st
     `on_start` doing it synchronously on the pygame thread. That used to
     be safe because the bridge called into `Factory` directly; once the
     bridge is queue-backed (TODAYS-TASKS.md step 3+), `on_start` calling
-    `vm.step()` from inside `draw_factory()`'s own event-handling loop
-    would deadlock -- it would block waiting for a reply that only
-    `draw_factory()`'s own loop can produce, on a later iteration it can
+    `vm.step()` from inside `FactoryVisualization.run()`'s own event-handling
+    loop would deadlock -- it would block waiting for a reply that only
+    that loop can produce, on a later iteration it can
     never reach while frozen inside this callback. Doing every `vm.step()`
     call from this one thread keeps a clean invariant: the interpreter
     thread is the only thread that ever calls into the bridge, full stop.
@@ -151,7 +151,7 @@ def main() -> None:
 
     def on_start() -> None:
         """Runs on the main/pygame thread, from the "Start" button's click
-        callback, synchronously inside `draw_factory()`'s own
+        callback, synchronously inside `FactoryVisualization.run()`'s own
         event-handling loop -- so it must not itself call anything that
         blocks waiting on that same loop (see `run_interpreter_loop`'s
         docstring). Only releases the interpreter thread; the model's
@@ -168,7 +168,7 @@ def main() -> None:
 
     def on_tick() -> None:
         """Runs on the main/pygame thread, right after `factory.tick()`
-        each frame (see `draw_factory()`) -- resolves this scenario's
+        each frame (see `FactoryVisualization.run()`) -- resolves this scenario's
         `ThreadChannel` (via the interpreter's own `simulation_bridge`,
         constructed inside `Namespace.evaluate()`, `syntax.py`) and
         perform the actual per-tick work
@@ -213,7 +213,7 @@ def main() -> None:
 
 
     try:
-        draw_factory(factory, on_start, on_tick)  # blocks on the main thread until the window closes
+        FischertechnikVisualization().run(factory, on_start, on_tick)  # blocks on the main thread until the window closes
     finally:
         stop_event.set()
         started_event.set()  # release the interpreter thread if it's still waiting on "Start"

@@ -14,6 +14,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine, HALF_LENGTH, OVERSHOOT_TOLERANCE
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
+from languages.sysmlv2.simulation_models.generic import SimulationVisualization
 
 VIEWPORT_SIZE = (800, 600)       # factory floor drawing area, excludes the attribute panel
 PANEL_WIDTH = 300
@@ -83,347 +84,356 @@ GRID_AXIS_COLOR = (170, 170, 170)      # the x=0 / y=0 lines, drawn heavier so t
 GRID_LABEL_COLOR = (140, 140, 140)
 
 
-def to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
-    px = ORIGIN[0] + coord.x * SCALE
-    py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
-    return int(px), int(py)
+class FischertechnikVisualization(SimulationVisualization):
+    """Fischertechnik's SimulationVisualization (generic.py). `run()` is
+    the only method ever called from outside this class -- every other
+    method below is a private drawing helper, previously a module-level
+    function, moved here so the whole rendering surface lives on one
+    class instead of being split between free functions and a thin
+    wrapper around them.
 
-
-def _visible_model_range(axis_min_px: int, axis_max_px: int, origin_px: float, flip: bool, step: int) -> range:
-    """Model-unit values (multiples of `step`) whose grid line falls inside
-    `[axis_min_px, axis_max_px]` on screen, for one axis at a time. `flip`
-    accounts for the y-axis running opposite to pygame's screen-space
-    (see `to_screen`), so both axes can share this one helper.
+    `run()`'s own local state (`started`/`selected_color`/`next_token_id`)
+    and its nested closures (`handle_start`/`handle_select_color`/
+    `handle_place_token`) deliberately stay as plain locals/closures, not
+    instance attributes -- they're fresh every call today (each `run()`
+    call starts a brand new pygame session), and promoting them to `self.`
+    state would change that semantics (state persisting across more than
+    one `run()` call on the same instance) as a side effect of a pure
+    move, not something asked for.
     """
-    if flip:
-        lo_unit = (origin_px - axis_max_px) / SCALE
-        hi_unit = (origin_px - axis_min_px) / SCALE
-    else:
-        lo_unit = (axis_min_px - origin_px) / SCALE
-        hi_unit = (axis_max_px - origin_px) / SCALE
-    return range(math.ceil(lo_unit / step) * step, math.floor(hi_unit / step) * step + 1, step)
 
+    def _to_screen(self, coord: FactoryCoordinate) -> tuple[int, int]:
+        px = ORIGIN[0] + coord.x * SCALE
+        py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
+        return int(px), int(py)
 
-def draw_grid(screen: pygame.Surface, font: pygame.font.Font) -> None:
-    """Draws a light reference grid, one line every `GRID_STEP` model units,
-    labeled with the model coordinate each line represents -- so a
-    developer placing a new `part`'s `placementCoordinate` can look at this
-    grid and see directly where in the viewport that (x, y) will land,
-    instead of having to compute it from `SCALE`/`ORIGIN` by hand. Confined
-    to the viewport (excludes the side panel), drawn first so belts/tokens
-    render on top of it.
-    """
-    for gx in _visible_model_range(0, VIEWPORT_SIZE[0], ORIGIN[0], flip=False, step=GRID_STEP):
-        px, _ = to_screen(FactoryCoordinate(gx, 0, 0))
-        color = GRID_AXIS_COLOR if gx == 0 else GRID_LINE_COLOR
-        pygame.draw.line(screen, color, (px, 0), (px, VIEWPORT_SIZE[1]), 2 if gx == 0 else 1)
-        label = font.render(str(gx), True, GRID_LABEL_COLOR)
-        screen.blit(label, (px + 2, 2))
+    def _visible_model_range(self, axis_min_px: int, axis_max_px: int, origin_px: float, flip: bool, step: int) -> range:
+        """Model-unit values (multiples of `step`) whose grid line falls inside
+        `[axis_min_px, axis_max_px]` on screen, for one axis at a time. `flip`
+        accounts for the y-axis running opposite to pygame's screen-space
+        (see `_to_screen`), so both axes can share this one helper.
+        """
+        if flip:
+            lo_unit = (origin_px - axis_max_px) / SCALE
+            hi_unit = (origin_px - axis_min_px) / SCALE
+        else:
+            lo_unit = (axis_min_px - origin_px) / SCALE
+            hi_unit = (axis_max_px - origin_px) / SCALE
+        return range(math.ceil(lo_unit / step) * step, math.floor(hi_unit / step) * step + 1, step)
 
-    for gy in _visible_model_range(0, VIEWPORT_SIZE[1], ORIGIN[1], flip=True, step=GRID_STEP):
-        _, py = to_screen(FactoryCoordinate(0, gy, 0))
-        color = GRID_AXIS_COLOR if gy == 0 else GRID_LINE_COLOR
-        pygame.draw.line(screen, color, (0, py), (VIEWPORT_SIZE[0], py), 2 if gy == 0 else 1)
-        label = font.render(str(gy), True, GRID_LABEL_COLOR)
-        screen.blit(label, (2, py + 2))
+    def _draw_grid(self, screen: pygame.Surface, font: pygame.font.Font) -> None:
+        """Draws a light reference grid, one line every `GRID_STEP` model units,
+        labeled with the model coordinate each line represents -- so a
+        developer placing a new `part`'s `placementCoordinate` can look at this
+        grid and see directly where in the viewport that (x, y) will land,
+        instead of having to compute it from `SCALE`/`ORIGIN` by hand. Confined
+        to the viewport (excludes the side panel), drawn first so belts/tokens
+        render on top of it.
+        """
+        for gx in self._visible_model_range(0, VIEWPORT_SIZE[0], ORIGIN[0], flip=False, step=GRID_STEP):
+            px, _ = self._to_screen(FactoryCoordinate(gx, 0, 0))
+            color = GRID_AXIS_COLOR if gx == 0 else GRID_LINE_COLOR
+            pygame.draw.line(screen, color, (px, 0), (px, VIEWPORT_SIZE[1]), 2 if gx == 0 else 1)
+            label = font.render(str(gx), True, GRID_LABEL_COLOR)
+            screen.blit(label, (px + 2, 2))
 
+        for gy in self._visible_model_range(0, VIEWPORT_SIZE[1], ORIGIN[1], flip=True, step=GRID_STEP):
+            _, py = self._to_screen(FactoryCoordinate(0, gy, 0))
+            color = GRID_AXIS_COLOR if gy == 0 else GRID_LINE_COLOR
+            pygame.draw.line(screen, color, (0, py), (VIEWPORT_SIZE[0], py), 2 if gy == 0 else 1)
+            label = font.render(str(gy), True, GRID_LABEL_COLOR)
+            screen.blit(label, (2, py + 2))
 
-def draw_conveyor_belt(screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
-    """Draws the belt as seen from directly above: guide rails along its
-    long edges, a flat surface with tread ridges running across the
-    direction of travel, and a colored band marking the feed sensor
-    (where parts enter) and the swap sensor (where parts exit) at their
-    actual model-coordinate positions -- HALF_LENGTH from center, not the
-    edges of the drawn belt, since BELT_WIDTH is drawn wider than that to
-    also cover the overshoot-tolerance zone (see OVERSHOOT_TOLERANCE) --
-    in the belt's own unrotated left/right frame, as opposed to a side-on
-    silhouette, which would show the rollers as circular ends. Still a
-    static picture (matches Milestone 1 scope).
+    def _draw_conveyor_belt(self, screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
+        """Draws the belt as seen from directly above: guide rails along its
+        long edges, a flat surface with tread ridges running across the
+        direction of travel, and a colored band marking the feed sensor
+        (where parts enter) and the swap sensor (where parts exit) at their
+        actual model-coordinate positions -- HALF_LENGTH from center, not the
+        edges of the drawn belt, since BELT_WIDTH is drawn wider than that to
+        also cover the overshoot-tolerance zone (see OVERSHOOT_TOLERANCE) --
+        in the belt's own unrotated left/right frame, as opposed to a side-on
+        silhouette, which would show the rollers as circular ends. Still a
+        static picture (matches Milestone 1 scope).
 
-    Composited on a local, unrotated surface first because pygame's draw
-    primitives have no rotation argument; the finished belt is rotated as
-    one image via pygame.transform.rotate and then blitted onto the screen,
-    recentered on the belt's placement coordinate.
-    """
-    belt_surface = pygame.Surface((BELT_WIDTH, BELT_HEIGHT), pygame.SRCALPHA)
-    rect = belt_surface.get_rect()
-    pygame.draw.rect(belt_surface, BELT_FRAME_COLOR, rect, border_radius=6)
+        Composited on a local, unrotated surface first because pygame's draw
+        primitives have no rotation argument; the finished belt is rotated as
+        one image via pygame.transform.rotate and then blitted onto the screen,
+        recentered on the belt's placement coordinate.
+        """
+        belt_surface = pygame.Surface((BELT_WIDTH, BELT_HEIGHT), pygame.SRCALPHA)
+        rect = belt_surface.get_rect()
+        pygame.draw.rect(belt_surface, BELT_FRAME_COLOR, rect, border_radius=6)
 
-    # Inset more along the height than the length: the height-inset reveals
-    # the frame as rails running along the belt's long edges, while the
-    # length-inset just leaves a little room around the sensor bands.
-    surface_rect = rect.inflate(-8, -12)
-    pygame.draw.rect(belt_surface, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
+        # Inset more along the height than the length: the height-inset reveals
+        # the frame as rails running along the belt's long edges, while the
+        # length-inset just leaves a little room around the sensor bands.
+        surface_rect = rect.inflate(-8, -12)
+        pygame.draw.rect(belt_surface, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
 
-    previous_clip = belt_surface.get_clip()
-    belt_surface.set_clip(surface_rect)
-    for x in range(surface_rect.left, surface_rect.right, TREAD_SPACING):
-        pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
-    belt_surface.set_clip(previous_clip)
+        previous_clip = belt_surface.get_clip()
+        belt_surface.set_clip(surface_rect)
+        for x in range(surface_rect.left, surface_rect.right, TREAD_SPACING):
+            pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
+        belt_surface.set_clip(previous_clip)
 
-    sensor_offset_px = HALF_LENGTH * SCALE
-    for sensor_x, color in (
-        (rect.centerx - sensor_offset_px, FEED_COLOR),
-        (rect.centerx + sensor_offset_px, SWAP_COLOR),
-    ):
-        roller_rect = pygame.Rect(0, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height)
-        roller_rect.centerx = sensor_x
-        pygame.draw.rect(belt_surface, color, roller_rect)
-
-    rotated = pygame.transform.rotate(belt_surface, machine.placementCoordinate.degrees)
-    px, py = to_screen(machine.placementCoordinate)
-    screen.blit(rotated, rotated.get_rect(center=(px, py)))
-
-
-def draw_token(screen: pygame.Surface, token: Token) -> None:
-    """Draws a Token as a small filled circle at its current position, on
-    top of whatever machine it's sitting on, colored by its TokenColorKind.
-    """
-    px, py = to_screen(token.position)
-    pygame.draw.circle(screen, TOKEN_COLORS[token.color], (px, py), TOKEN_RADIUS)
-    pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
-
-
-def draw_start_panel(screen: pygame.Surface, font: pygame.font.Font, label_font: pygame.font.Font,
-                      on_start_click) -> list[tuple[pygame.Rect, object]]:
-    """Draws the side panel before the simulation has started: just a
-    "Start" button and a short instruction -- no per-machine blocks, since
-    no part has been instantiated yet (see main_fischertechnik_factory.py's
-    `on_start`, which only runs -- and only then populates `factory.machines`
-    -- once this button is actually clicked).
-
-    Same (rect, callback) return shape as draw_machine_panel(), so
-    draw_factory()'s event loop hit-tests both the same way regardless of
-    which panel is currently showing.
-    """
-    panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
-    pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
-    pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
-
-    x = PANEL_X + PANEL_LEFT_PADDING
-    y = PANEL_TOP_PADDING
-
-    screen.blit(label_font.render("Simulation not started", True, PANEL_TEXT_COLOR), (x, y))
-    y += PANEL_LINE_HEIGHT
-    screen.blit(font.render("Click Start to instantiate the", True, PANEL_TEXT_COLOR), (x, y))
-    y += PANEL_LINE_HEIGHT
-    screen.blit(font.render("model's parts and begin.", True, PANEL_TEXT_COLOR), (x, y))
-    y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
-
-    mouse_pos = pygame.mouse.get_pos()
-    rect = pygame.Rect(x, y, START_BUTTON_WIDTH, START_BUTTON_HEIGHT)
-    color = START_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else START_BUTTON_COLOR
-    pygame.draw.rect(screen, color, rect, border_radius=6)
-    label_surface = label_font.render("Start", True, PANEL_BUTTON_TEXT_COLOR)
-    screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-
-    return [(rect, on_start_click)]
-
-
-def draw_color_palette(screen: pygame.Surface, x: int, y: int, selected_color: TokenColorKind,
-                        on_select_color) -> list[tuple[pygame.Rect, object]]:
-    """Draws one swatch per `TokenColorKind`, in a row starting at `(x, y)`,
-    with a heavier border around whichever one is `selected_color`. Each
-    swatch's callback just reports its own color back to `on_select_color`
-    -- the caller owns what "selected" actually means (draw_factory()'s
-    `selected_color` state), this function only renders the current value
-    and reports clicks.
-    """
-    buttons = []
-    swatch_x = x
-    for color in TokenColorKind:
-        rect = pygame.Rect(swatch_x, y, PALETTE_SWATCH_SIZE, PALETTE_SWATCH_SIZE)
-        pygame.draw.rect(screen, TOKEN_COLORS[color], rect, border_radius=4)
-        is_selected = color == selected_color
-        border_color = PALETTE_SELECTED_BORDER_COLOR if is_selected else PALETTE_UNSELECTED_BORDER_COLOR
-        pygame.draw.rect(screen, border_color, rect, width=3 if is_selected else 1, border_radius=4)
-        buttons.append((rect, lambda c=color: on_select_color(c)))
-        swatch_x += PALETTE_SWATCH_SIZE + PALETTE_SWATCH_GAP
-    return buttons
-
-
-def draw_machine_panel(screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
-                        label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                        on_place_token) -> list[tuple[pygame.Rect, object]]:
-    """Draws a side panel to the right of the viewport: a factory-wide
-    summary line, a token-color palette, then each machine's live
-    attributes and a row of 4 token-placement buttons, one stacked block
-    per machine. Machines are labeled by their position in `machines`
-    ("Belt 1", "Belt 2", ...) rather than a real name —
-    `ConveyorBeltMachine` doesn't carry one. placementCoordinate is
-    deliberately omitted: it's already conveyed by the machine's drawn
-    position in the viewport.
-
-    The only manual control left is placing a token -- previously
-    "Feed"/"Swap"/"-1"/"+1" buttons drove a belt's movement directly
-    (`machine.moveToSensor()`/`moveNbSteps()`); now that guard
-    evaluation/firing (task 4) and real action dispatch (task 3) are both
-    wired up, movement is meant to come only from the model's own
-    `do`/`accept when` behavior through the interpreter. Placing a token
-    is the one thing the model can't do for itself (nothing manufactures
-    tokens), hence it's the one manual control kept: "Pre-Feed"/"Feed"/
-    "Swap"/"Post-Swap" spawn a token of `selected_color`, owned by that
-    belt, at `machine.pre_feed_position()`/`feed_position()`/
-    `swap_position()`/`post_swap_position()` respectively -- the belt's
-    own overshoot-tolerance boundary on each side plus its two sensors,
-    not an arbitrary click position (see parts.py: OVERSHOOT_TOLERANCE is
-    already "one step" beyond the sensors in the model's own movement
-    logic, reused here rather than inventing a new distance).
-
-    Returns the (rect, callback) pairs for every button just drawn
-    (palette swatches and placement buttons alike), so the caller's event
-    loop can hit-test all of them the same way, computed here in the same
-    pass as the drawing so the clickable area can never drift out of sync
-    with what's on screen.
-    """
-    panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
-    pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
-    pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
-
-    mouse_pos = pygame.mouse.get_pos()
-    x = PANEL_X + PANEL_LEFT_PADDING
-    y = PANEL_TOP_PADDING
-
-    screen.blit(font.render(f"Unowned tokens: {unowned_token_count}", True, PANEL_TEXT_COLOR), (x, y))
-    y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
-
-    screen.blit(font.render("Token color to place:", True, PANEL_TEXT_COLOR), (x, y))
-    y += PANEL_LINE_HEIGHT
-    buttons = draw_color_palette(screen, x, y, selected_color, on_select_color)
-    y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
-
-    for index, machine in enumerate(machines, start=1):
-        screen.blit(label_font.render(f"Belt {index}", True, PANEL_TEXT_COLOR), (x, y))
-        y += PANEL_LINE_HEIGHT
-
-        for line in (
-            f"conveyorSensFeed: {machine.conveyorSensFeed}",
-            f"conveyorSensSwap: {machine.conveyorSensSwap}",
-            f"currentCommand: {machine.currentCommand}",
-            f"direction: {machine.direction}",
+        sensor_offset_px = HALF_LENGTH * SCALE
+        for sensor_x, color in (
+            (rect.centerx - sensor_offset_px, FEED_COLOR),
+            (rect.centerx + sensor_offset_px, SWAP_COLOR),
         ):
-            screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
+            roller_rect = pygame.Rect(0, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height)
+            roller_rect.centerx = sensor_x
+            pygame.draw.rect(belt_surface, color, roller_rect)
+
+        rotated = pygame.transform.rotate(belt_surface, machine.placementCoordinate.degrees)
+        px, py = self._to_screen(machine.placementCoordinate)
+        screen.blit(rotated, rotated.get_rect(center=(px, py)))
+
+    def _draw_token(self, screen: pygame.Surface, token: Token) -> None:
+        """Draws a Token as a small filled circle at its current position, on
+        top of whatever machine it's sitting on, colored by its TokenColorKind.
+        """
+        px, py = self._to_screen(token.position)
+        pygame.draw.circle(screen, TOKEN_COLORS[token.color], (px, py), TOKEN_RADIUS)
+        pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
+
+    def _draw_start_panel(self, screen: pygame.Surface, font: pygame.font.Font, label_font: pygame.font.Font,
+                           on_start_click) -> list[tuple[pygame.Rect, object]]:
+        """Draws the side panel before the simulation has started: just a
+        "Start" button and a short instruction -- no per-machine blocks, since
+        no part has been instantiated yet (see main_fischertechnik_factory.py's
+        `on_start`, which only runs -- and only then populates `factory.machines`
+        -- once this button is actually clicked).
+
+        Same (rect, callback) return shape as `_draw_machine_panel()`, so
+        `run()`'s event loop hit-tests both the same way regardless of
+        which panel is currently showing.
+        """
+        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+        pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
+        pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
+
+        x = PANEL_X + PANEL_LEFT_PADDING
+        y = PANEL_TOP_PADDING
+
+        screen.blit(label_font.render("Simulation not started", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT
+        screen.blit(font.render("Click Start to instantiate the", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT
+        screen.blit(font.render("model's parts and begin.", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
+
+        mouse_pos = pygame.mouse.get_pos()
+        rect = pygame.Rect(x, y, START_BUTTON_WIDTH, START_BUTTON_HEIGHT)
+        color = START_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else START_BUTTON_COLOR
+        pygame.draw.rect(screen, color, rect, border_radius=6)
+        label_surface = label_font.render("Start", True, PANEL_BUTTON_TEXT_COLOR)
+        screen.blit(label_surface, label_surface.get_rect(center=rect.center))
+
+        return [(rect, on_start_click)]
+
+    def _draw_color_palette(self, screen: pygame.Surface, x: int, y: int, selected_color: TokenColorKind,
+                             on_select_color) -> list[tuple[pygame.Rect, object]]:
+        """Draws one swatch per `TokenColorKind`, in a row starting at `(x, y)`,
+        with a heavier border around whichever one is `selected_color`. Each
+        swatch's callback just reports its own color back to `on_select_color`
+        -- the caller owns what "selected" actually means (`run()`'s own
+        `selected_color` state), this method only renders the current value
+        and reports clicks.
+        """
+        buttons = []
+        swatch_x = x
+        for color in TokenColorKind:
+            rect = pygame.Rect(swatch_x, y, PALETTE_SWATCH_SIZE, PALETTE_SWATCH_SIZE)
+            pygame.draw.rect(screen, TOKEN_COLORS[color], rect, border_radius=4)
+            is_selected = color == selected_color
+            border_color = PALETTE_SELECTED_BORDER_COLOR if is_selected else PALETTE_UNSELECTED_BORDER_COLOR
+            pygame.draw.rect(screen, border_color, rect, width=3 if is_selected else 1, border_radius=4)
+            buttons.append((rect, lambda c=color: on_select_color(c)))
+            swatch_x += PALETTE_SWATCH_SIZE + PALETTE_SWATCH_GAP
+        return buttons
+
+    def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
+                             label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
+                             on_place_token) -> list[tuple[pygame.Rect, object]]:
+        """Draws a side panel to the right of the viewport: a factory-wide
+        summary line, a token-color palette, then each machine's live
+        attributes and a row of 4 token-placement buttons, one stacked block
+        per machine. Machines are labeled by their position in `machines`
+        ("Belt 1", "Belt 2", ...) rather than a real name —
+        `ConveyorBeltMachine` doesn't carry one. placementCoordinate is
+        deliberately omitted: it's already conveyed by the machine's drawn
+        position in the viewport.
+
+        The only manual control left is placing a token -- previously
+        "Feed"/"Swap"/"-1"/"+1" buttons drove a belt's movement directly
+        (`machine.moveToSensor()`/`moveNbSteps()`); now that guard
+        evaluation/firing (task 4) and real action dispatch (task 3) are both
+        wired up, movement is meant to come only from the model's own
+        `do`/`accept when` behavior through the interpreter. Placing a token
+        is the one thing the model can't do for itself (nothing manufactures
+        tokens), hence it's the one manual control kept: "Pre-Feed"/"Feed"/
+        "Swap"/"Post-Swap" spawn a token of `selected_color`, owned by that
+        belt, at `machine.pre_feed_position()`/`feed_position()`/
+        `swap_position()`/`post_swap_position()` respectively -- the belt's
+        own overshoot-tolerance boundary on each side plus its two sensors,
+        not an arbitrary click position (see parts.py: OVERSHOOT_TOLERANCE is
+        already "one step" beyond the sensors in the model's own movement
+        logic, reused here rather than inventing a new distance).
+
+        Returns the (rect, callback) pairs for every button just drawn
+        (palette swatches and placement buttons alike), so the caller's event
+        loop can hit-test all of them the same way, computed here in the same
+        pass as the drawing so the clickable area can never drift out of sync
+        with what's on screen.
+        """
+        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+        pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
+        pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
+
+        mouse_pos = pygame.mouse.get_pos()
+        x = PANEL_X + PANEL_LEFT_PADDING
+        y = PANEL_TOP_PADDING
+
+        screen.blit(font.render(f"Unowned tokens: {unowned_token_count}", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
+
+        screen.blit(font.render("Token color to place:", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT
+        buttons = self._draw_color_palette(screen, x, y, selected_color, on_select_color)
+        y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
+
+        for index, machine in enumerate(machines, start=1):
+            screen.blit(label_font.render(f"Belt {index}", True, PANEL_TEXT_COLOR), (x, y))
             y += PANEL_LINE_HEIGHT
 
-        button_x = x
-        for label, position in (
-            ("Pre", machine.pre_feed_position()),
-            ("Feed", machine.feed_position()),
-            ("Swap", machine.swap_position()),
-            ("Post", machine.post_swap_position()),
-        ):
-            rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
-            color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
-            pygame.draw.rect(screen, color, rect, border_radius=4)
-            label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
-            screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-            buttons.append((rect, lambda m=machine, p=position: on_place_token(m, p)))
-            button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
+            for line in (
+                f"conveyorSensFeed: {machine.conveyorSensFeed}",
+                f"conveyorSensSwap: {machine.conveyorSensSwap}",
+                f"currentCommand: {machine.currentCommand}",
+                f"direction: {machine.direction}",
+            ):
+                screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
+                y += PANEL_LINE_HEIGHT
 
-        y += PANEL_BUTTON_HEIGHT + PANEL_MACHINE_GAP
+            button_x = x
+            for label, position in (
+                ("Pre", machine.pre_feed_position()),
+                ("Feed", machine.feed_position()),
+                ("Swap", machine.swap_position()),
+                ("Post", machine.post_swap_position()),
+            ):
+                rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
+                color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
+                pygame.draw.rect(screen, color, rect, border_radius=4)
+                label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
+                screen.blit(label_surface, label_surface.get_rect(center=rect.center))
+                buttons.append((rect, lambda m=machine, p=position: on_place_token(m, p)))
+                button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
 
-    return buttons
+            y += PANEL_BUTTON_HEIGHT + PANEL_MACHINE_GAP
 
+        return buttons
 
-def _draw_viewport(screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
-    """The main factory-floor drawing (background, grid, every belt,
-    every token) -- happens every frame regardless of whether the
-    simulation has started, since belts/tokens already in `factory` are
-    drawn even before "Start" (see `draw_factory()`'s docstring). Factored
-    out so `draw_factory()`'s loop only needs to branch on `started` once
-    per frame, not twice around this shared, `started`-independent work.
+    def _draw_viewport(self, screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
+        """The main factory-floor drawing (background, grid, every belt,
+        every token) -- happens every frame regardless of whether the
+        simulation has started, since belts/tokens already in `factory` are
+        drawn even before "Start" (see `run()`'s docstring). Factored
+        out so `run()`'s loop only needs to branch on `started` once
+        per frame, not twice around this shared, `started`-independent work.
 
-    The background fill is deliberately scoped to just the viewport rect
-    (`VIEWPORT_SIZE`), not the whole window -- `screen` also includes the
-    side panel (`WINDOW_SIZE = VIEWPORT_SIZE[0] + PANEL_WIDTH` wide), and
-    draw_machine_panel()/draw_start_panel() already clear their own panel
-    area independently (`PANEL_BACKGROUND_COLOR`). An unscoped fill here
-    would wipe out whichever panel was drawn if this runs after it in a
-    given frame -- scoping the fill means the two never touch each other's
-    screen region, so which one runs first stops mattering.
-    """
-    screen.fill(BACKGROUND_COLOR, pygame.Rect(0, 0, VIEWPORT_SIZE[0], VIEWPORT_SIZE[1]))
-    draw_grid(screen, font)
-    for machine in factory.machines:
-        draw_conveyor_belt(screen, machine)
-    for token in factory.tokens:
-        draw_token(screen, token)
+        The background fill is deliberately scoped to just the viewport rect
+        (`VIEWPORT_SIZE`), not the whole window -- `screen` also includes the
+        side panel (`WINDOW_SIZE = VIEWPORT_SIZE[0] + PANEL_WIDTH` wide), and
+        `_draw_machine_panel()`/`_draw_start_panel()` already clear their own
+        panel area independently (`PANEL_BACKGROUND_COLOR`). An unscoped fill
+        here would wipe out whichever panel was drawn if this runs after it in
+        a given frame -- scoping the fill means the two never touch each
+        other's screen region, so which one runs first stops mattering.
+        """
+        screen.fill(BACKGROUND_COLOR, pygame.Rect(0, 0, VIEWPORT_SIZE[0], VIEWPORT_SIZE[1]))
+        self._draw_grid(screen, font)
+        for machine in factory.machines:
+            self._draw_conveyor_belt(screen, machine)
+        for token in factory.tokens:
+            self._draw_token(screen, token)
 
+    def run(self, model, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60) -> None:
+        """Static-picture render loop: every frame, redraws every registered
+        machine at its placementCoordinate. Redrawing from scratch each frame
+        is required by pygame (unlike tkinter, it has no persistent canvas),
+        even though nothing moves yet — Milestone 1 is static-only.
 
-def draw_factory(factory, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60) -> None:
-    """Static-picture render loop: every frame, redraws every registered
-    machine at its placementCoordinate. Redrawing from scratch each frame
-    is required by pygame (unlike tkinter, it has no persistent canvas),
-    even though nothing moves yet — Milestone 1 is static-only.
+        `on_tick` runs right after `model.tick()`, once per frame, only once
+        the simulation has started -- see main_fischertechnik_factory.py's
+        `on_tick`, which publishes a fresh snapshot there (TODAYS-TASKS.md step
+        2). Defaults to a no-op so callers with nothing to do after a tick
+        (e.g. factory_simulation_demo.py) don't need to pass anything.
 
-    `on_tick` runs right after `factory.tick()`, once per frame, only once
-    the simulation has started -- see main_fischertechnik_factory.py's
-    `on_tick`, which publishes a fresh snapshot there (TODAYS-TASKS.md step
-    2). Defaults to a no-op so callers with nothing to do after a tick
-    (e.g. factory_simulation_demo.py) don't need to pass anything.
+        Nothing runs until the user clicks "Start": `model.tick()` is
+        skipped, and the panel shows `_draw_start_panel()` instead of the
+        normal per-machine one (there's nothing to show yet -- `on_start`, not
+        this method, is what actually populates `model.machines`). `started`
+        flips permanently to True the moment that button fires; `on_start`
+        itself (defined by the caller, see main_fischertechnik_factory.py) is
+        responsible for whatever needs to happen exactly once at that point
+        (the model's eager part-instantiation pass, releasing the interpreter
+        thread, etc.) -- this method only decides what to draw/tick based on
+        whether that's happened yet. Belts/tokens already in `model` are
+        still drawn even before "Start" (`factory_simulation_demo.py` builds
+        its belts synchronously up front and has nothing to gate, hence
+        `on_start`'s no-op default) -- only `model.tick()` and the
+        interpreter-driven case's part-instantiation are actually deferred.
+        """
+        pygame.init()
+        screen = pygame.display.set_mode(WINDOW_SIZE)
+        pygame.display.set_caption("Fischertechnik Factory")
+        clock = pygame.time.Clock()
+        font = pygame.font.SysFont(None, 18)
+        label_font = pygame.font.SysFont(None, 20, bold=True)
 
-    Nothing runs until the user clicks "Start": `factory.tick()` is
-    skipped, and the panel shows draw_start_panel() instead of the normal
-    per-machine one (there's nothing to show yet -- `on_start`, not this
-    function, is what actually populates `factory.machines`). `started`
-    flips permanently to True the moment that button fires; `on_start`
-    itself (defined by the caller, see main_fischertechnik_factory.py) is
-    responsible for whatever needs to happen exactly once at that point
-    (the model's eager part-instantiation pass, releasing the interpreter
-    thread, etc.) -- this function only decides what to draw/tick based on
-    whether that's happened yet. Belts/tokens already in `factory` are
-    still drawn even before "Start" (`factory_simulation_demo.py` builds
-    its belts synchronously up front and has nothing to gate, hence
-    `on_start`'s no-op default) -- only `factory.tick()` and the
-    interpreter-driven case's part-instantiation are actually deferred.
-    """
-    pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
-    pygame.display.set_caption("Fischertechnik Factory")
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont(None, 18)
-    label_font = pygame.font.SysFont(None, 20, bold=True)
+        started = False
+        selected_color = TokenColorKind.BLUE
+        next_token_id = itertools.count(1)
 
-    started = False
-    selected_color = TokenColorKind.BLUE
-    next_token_id = itertools.count(1)
+        def handle_start():
+            nonlocal started
+            on_start()
+            started = True
 
-    def handle_start():
-        nonlocal started
-        on_start()
-        started = True
+        def handle_select_color(color: TokenColorKind) -> None:
+            nonlocal selected_color
+            selected_color = color
 
-    def handle_select_color(color: TokenColorKind) -> None:
-        nonlocal selected_color
-        selected_color = color
+        def handle_place_token(machine, position: FactoryCoordinate) -> None:
+            token = Token(f"T{next(next_token_id)}", position, selected_color)
+            model.spawn_token(token, machine)
 
-    def handle_place_token(machine, position: FactoryCoordinate) -> None:
-        token = Token(f"T{next(next_token_id)}", position, selected_color)
-        factory.spawn_token(token, machine)
+        running = True
+        buttons: list[tuple[pygame.Rect, object]] = []
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for rect, callback in buttons:
+                        if rect.collidepoint(event.pos):
+                            callback()
+                            break
 
-    running = True
-    buttons: list[tuple[pygame.Rect, object]] = []
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                for rect, callback in buttons:
-                    if rect.collidepoint(event.pos):
-                        callback()
-                        break
+            if started:
+                model.tick()
+                on_tick()
+                unowned_token_count = len(model.tokens_on(None))
+                buttons = self._draw_machine_panel(screen, model.machines, unowned_token_count, font, label_font,
+                                                    selected_color, handle_select_color, handle_place_token)
+            else:
+                buttons = self._draw_start_panel(screen, font, label_font, handle_start)
 
-        if started:
-            factory.tick()
-            on_tick()
-            unowned_token_count = len(factory.tokens_on(None))
-            buttons = draw_machine_panel(screen, factory.machines, unowned_token_count, font, label_font,
-                                         selected_color, handle_select_color, handle_place_token)
-        else:
-            buttons = draw_start_panel(screen, font, label_font, handle_start)
+            self._draw_viewport(screen, font, model)
+            pygame.display.flip()
+            clock.tick(tick_rate)
 
-        _draw_viewport(screen, font, factory)
-        pygame.display.flip()
-        clock.tick(tick_rate)
-
-    pygame.quit()
+        pygame.quit()

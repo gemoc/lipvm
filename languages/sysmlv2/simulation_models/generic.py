@@ -1,6 +1,77 @@
 import dataclasses
 from abc import ABC, abstractmethod
 
+class BaseSimulationModel(ABC):
+    """Shared base for a whole simulation domain (Fischertechnik's
+    `Factory`, and any future domain, e.g. water_power_plant) -- the
+    top-level object `main_fischertechnik_factory.py` (or its eventual
+    generic successor) constructs and drives, as opposed to
+    PartSimulationModel below (one machine within that domain).
+
+    Narrow on purpose: only the methods actually called on a domain's
+    simulation model from *outside* it -- derived by grepping the real
+    call sites (see GENERIC-SIMULATION-TASKS.md), not guessed. Everything
+    else a concrete domain needs (Fischertechnik's token/machine
+    bookkeeping -- `register_machine`, `spawn_token`, `transfer_token`,
+    `owner_of`, `tokens_on`, `tokens`, `get_machine`) stays on that
+    domain's own class, not part of this contract -- normal subclassing,
+    this only demands the minimum every domain must provide.
+
+    `instantiate_machine`/`execute_action`/`build_snapshot` are what the
+    owning thread's `ThreadChannel`-draining logic calls each tick (see
+    `main_fischertechnik_factory.py`'s `on_tick`) -- the actual execution
+    behind `SimulationBridge`'s fire-and-forget `instantiate()`/
+    `call_action()` and its published-snapshot reads. `tick()` is called
+    separately, once per rendered frame, by the visualization layer (see
+    `factory_visualization.py`) -- not `ThreadChannel`-connected, but
+    needed for the same reason: every domain needs some "advance one
+    tick" operation, regardless of what channel wiring exists around it.
+    """
+
+    @abstractmethod
+    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def build_snapshot(self) -> dict:
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def tick(self) -> None:
+        raise NotImplementedError("Sub-class must implement this method.")
+
+class SimulationVisualization(ABC):
+    """Shared base for a domain's own rendering of its BaseSimulationModel
+    -- the single entry point whoever drives the simulation (currently
+    `main_fischertechnik_factory.py`, or its eventual generic successor)
+    calls, regardless of domain.
+
+    Narrow on purpose, same derivation as `BaseSimulationModel` above: the
+    only thing ever called on Fischertechnik's own visualization from
+    *outside* `factory_visualization.py` is its `run(model, on_start,
+    on_tick, tick_rate)` -- every other method on `FactoryVisualization`
+    (drawing individual machines/tokens/panels, mouse click handling) is
+    only ever called from *within* that same class, so it stays private to
+    that concrete implementation, not part of this contract -- same
+    reasoning `Factory`'s own token/machine bookkeeping stays off
+    `BaseSimulationModel`.
+
+    `run()` is left purely abstract, no shared/default implementation --
+    Fischertechnik's is the only visualization that exists to design
+    against (it's pygame-specific; a future domain might not even use
+    pygame), so there's nothing yet that's actually known to be common
+    across domains to put here.
+    """
+
+    @abstractmethod
+    def run(self, model: BaseSimulationModel, on_start=lambda: None,
+            on_tick=lambda: None, tick_rate: int = 60) -> None:
+        raise NotImplementedError("Sub-class must implement this method.")
+
 class ActionSimulationModel(ABC):
 
     @abstractmethod

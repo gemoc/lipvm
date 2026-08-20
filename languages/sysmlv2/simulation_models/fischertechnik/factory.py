@@ -1,20 +1,27 @@
-from languages.sysmlv2.simulation_models.fischertechnik.step_pacer import StepPacer
+from languages.sysmlv2.simulation_models.step_pacer import StepPacer
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
-from languages.sysmlv2.simulation_models.generic import CustomAttributeModel, PartSimulationModel
+from languages.sysmlv2.simulation_models.generic import CustomAttributeModel, PartSimulationModel, BaseSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 # One visible hop every this many Factory.tick() calls -- 0.5s at the
-# render loop's default 60fps (draw_factory's tick_rate).
+# render loop's default 60fps (FactoryVisualization.run()'s tick_rate).
 TICKS_PER_STEP = 30
 
 
-class Factory:
+class Factory(BaseSimulationModel):
     """Central registry of every machine and Token in the simulation, and
     which machine currently owns each Token. Owns this bookkeeping itself,
     rather than each machine holding its own token list, so machine classes
     (ConveyorBeltMachine, a future Gripper, ...) stay pure structural
     mirrors of their SysML PartDefinition, with no token-handling state of
     their own.
+
+    Fischertechnik's own concrete SimulationModel (generic.py) --
+    `register_machine`/`get_machine`/`machines`/`spawn_token`/
+    `transfer_token`/`owner_of`/`tokens_on`/`tokens` below are all
+    Fischertechnik-specific extras beyond that shared contract, used only
+    by this domain's own visualization (factory_visualization.py), not
+    part of what a different domain needs to provide.
     """
 
     def __init__(self):
