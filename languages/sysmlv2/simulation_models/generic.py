@@ -108,6 +108,10 @@ class PartSimulationModel(ABC):
             **{field.name: getattr(self, field.name) for field in dataclasses.fields(self.snapshot_type)}
         )
 
+    def tick(self) -> None:
+        """This method will be called by the simulation for every tick."""
+        raise NotImplementedError("Sub-class must implement this method.")
+
 class CustomAttributeModel(ABC):
     """Marker base for every simulated custom attribute's Python mirror
     (FactoryCoordinate, and any future custom attribute type). Purely a

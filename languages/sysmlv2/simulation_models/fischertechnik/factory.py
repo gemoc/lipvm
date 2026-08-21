@@ -69,7 +69,7 @@ class Factory(BaseSimulationModel):
         for machine in self._machines.values():
             if machine.currentCommand is None or not self._pacer.is_due(machine):
                 continue
-            machine.advance()
+            machine.tick()
             if machine.currentCommand is None:
                 self._pacer.reset(machine)
 

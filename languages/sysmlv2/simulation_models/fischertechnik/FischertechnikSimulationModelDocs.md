@@ -16,8 +16,8 @@ grid's axis lines cross, it's an actual outline.
 ```python
 SCALE = 20                       # pixels per model unit
 MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODEL_RANGE on both x and y
-FEED_TO_SWAP_LENGTH = 4          # model units, distance between a belt's feed and swap sensors (parts.py)
-FULL_LENGTH = 6                  # model units, total ownable extent incl. one overshoot step past each sensor (parts.py)
+FEED_TO_SWAP_LENGTH = 4          # model units, distance between a belt's feed and swap sensors (conveyor_belt.py)
+FULL_LENGTH = 6                  # model units, total ownable extent incl. one overshoot step past each sensor (conveyor_belt.py)
 
 BELT_WIDTH = FULL_LENGTH * SCALE + 20   # = 140 (7 model units)
 BELT_CROSS_WIDTH = 2             # model units, cross-belt (perpendicular-to-travel) dimension
@@ -28,10 +28,10 @@ BELT_HEIGHT = BELT_CROSS_WIDTH * SCALE                              # = 40 (2 mo
 axis, across the belt) are both now expressed as a model-unit quantity
 times `SCALE` — no bare pixel numbers. `BELT_HEIGHT` is purely a rendering
 size (unlike `FEED_TO_SWAP_LENGTH`/`FULL_LENGTH`, which also drive movement
-math in `parts.py`) — no simulation behavior depends on it, so
-`BELT_CROSS_WIDTH` lives in `factory_visualization.py`, not `parts.py`.
+math in `fischertechnik_parts/conveyor_belt.py`) — no simulation behavior depends on it, so
+`BELT_CROSS_WIDTH` lives in `factory_visualization.py`, not `fischertechnik_parts/conveyor_belt.py`.
 
-`FEED_TO_SWAP_LENGTH`/`FULL_LENGTH` (`parts.py`) replaced the older
+`FEED_TO_SWAP_LENGTH`/`FULL_LENGTH` (`fischertechnik_parts/conveyor_belt.py`) replaced the older
 `HALF_LENGTH`/`OVERSHOOT_TOLERANCE` pair — same values, expressed as two
 full lengths instead of a half-length plus a tolerance to add to it:
 `FEED_TO_SWAP_LENGTH` is the distance between the feed and swap sensors a
@@ -62,6 +62,44 @@ clamping on `x`/`y` — any float is accepted. A `placementCoordinate` outside
 0–40 still exists as a value; it just renders outside the floor's drawn
 boundary (still visible in the surrounding margin, up to a point — see
 below).
+
+## Computing a belt's feed/swap (and overshoot) positions
+
+Given a belt's `placementCoordinate = (x₀, y₀, θ)`, its sensor and overshoot
+positions are deterministic — no need to run the simulation to find them.
+This is exactly `_end_position()` in `fischertechnik_parts/conveyor_belt.py`: rotate a local-x offset by
+`θ` around the belt's center, add to `(x₀, y₀)`, round to the nearest grid
+cell.
+
+```
+feed       = ( round(x₀ − 2·cos θ), round(y₀ − 2·sin θ) )   # FEED_TO_SWAP_LENGTH / 2 = 2
+swap       = ( round(x₀ + 2·cos θ), round(y₀ + 2·sin θ) )
+pre_feed   = ( round(x₀ − 3·cos θ), round(y₀ − 3·sin θ) )   # FULL_LENGTH / 2 = 3
+post_swap  = ( round(x₀ + 3·cos θ), round(y₀ + 3·sin θ) )
+```
+
+`θ` is in degrees, converted to radians before applying `cos`/`sin`. This is
+standard math convention (counterclockwise), computed in model space --
+*before* the visualization's y-flip for screen rendering (see "Screen
+mapping" below), so don't derive it by eyeballing the rendered image.
+
+For the four cardinal rotations belts are actually placed at (0/90/180/270°),
+this resolves to exact integers, no rounding error:
+
+| `degrees` | feed | swap | pre_feed | post_swap |
+|---|---|---|---|---|
+| `0`   | `(x₀ − 2, y₀)` | `(x₀ + 2, y₀)` | `(x₀ − 3, y₀)` | `(x₀ + 3, y₀)` |
+| `90`  | `(x₀, y₀ − 2)` | `(x₀, y₀ + 2)` | `(x₀, y₀ − 3)` | `(x₀, y₀ + 3)` |
+| `180` | `(x₀ + 2, y₀)` | `(x₀ − 2, y₀)` | `(x₀ + 3, y₀)` | `(x₀ − 3, y₀)` |
+| `270` | `(x₀, y₀ + 2)` | `(x₀, y₀ − 2)` | `(x₀, y₀ + 3)` | `(x₀, y₀ − 3)` |
+
+Useful for placing a part that services this belt (e.g. a gripper) without
+running the simulation first: target `swap` to pick a token off the belt,
+`feed` to place one on, `pre_feed`/`post_swap` to reach the one-step
+overshoot boundary rather than the sensor itself.
+
+**Worked example** — belt at `(x₀=10.0, y₀=0.0, θ=0.0)`:
+`feed = (8, 0)`, `swap = (12, 0)`, `pre_feed = (7, 0)`, `post_swap = (13, 0)`.
 
 ## Why there's a margin around the floor, and why it doesn't affect (0, 0)
 

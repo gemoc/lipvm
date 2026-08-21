@@ -25,3 +25,23 @@ class FactoryCoordinate(CustomAttributeModel):
     @property
     def degrees(self):
         return self._degrees
+
+class Position3D(CustomAttributeModel):
+
+    def __init__(self, vertical:float, horizontal:float, rot:float):
+
+        self._vertical = vertical
+        self._horizontal = horizontal
+        self._rot = rot
+
+    @property
+    def vertical(self):
+        return self._vertical
+
+    @property
+    def horizontal(self):
+        return self._horizontal
+
+    @property
+    def rot(self):
+        return self._rot

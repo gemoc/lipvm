@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
+from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
@@ -57,7 +58,7 @@ class ConveyorBeltMachine(PartSimulationModel):
 
     snapshot_type = ConveyorBeltMachineSnapshot
 
-    def __init__(self, factory):
+    def __init__(self, factory: Factory):
         super().__init__()
 
         self._factory = factory
@@ -68,7 +69,7 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._targetStepCount : int = 0
 
         self._conveyorSensImpulse : int = 0
-        self._placementCoordinate : FactoryCoordinate
+        self._placementCoordinate : FactoryCoordinate = None
 
     @property
     def placementCoordinate(self):
@@ -194,7 +195,7 @@ class ConveyorBeltMachine(PartSimulationModel):
         self._currentStepCount = 0
         self._targetStepCount = steps
 
-    def advance(self):
+    def tick(self):
         """One tick's worth of work for this belt's active command --
         dispatches to whichever `_advance_*` method matches
         `currentCommand`, each encapsulating its own pre-condition (if

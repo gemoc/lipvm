@@ -12,7 +12,7 @@ import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
-from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine, FEED_TO_SWAP_LENGTH, FULL_LENGTH
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import ConveyorBeltMachine, FEED_TO_SWAP_LENGTH, FULL_LENGTH
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import SimulationVisualization
 
@@ -27,9 +27,9 @@ MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODE
 BELT_WIDTH = FULL_LENGTH * SCALE + 20
 
 # Model-unit, cross-belt (perpendicular-to-travel) dimension -- purely a
-# rendering size, unlike FEED_TO_SWAP_LENGTH/FULL_LENGTH (parts.py), which
+# rendering size, unlike FEED_TO_SWAP_LENGTH/FULL_LENGTH (conveyor_belt.py), which
 # also drive movement math. No simulation behavior depends on this value,
-# so it lives here rather than in parts.py.
+# so it lives here rather than in conveyor_belt.py.
 BELT_CROSS_WIDTH = 2
 BELT_HEIGHT = BELT_CROSS_WIDTH * SCALE
 
@@ -314,7 +314,7 @@ class FischertechnikVisualization(SimulationVisualization):
         belt, at `machine.pre_feed_position()`/`feed_position()`/
         `swap_position()`/`post_swap_position()` respectively -- the belt's
         own FULL_LENGTH boundary on each side plus its two sensors, not an
-        arbitrary click position (see parts.py: FULL_LENGTH is already "one
+        arbitrary click position (see conveyor_belt.py: FULL_LENGTH is already "one
         step" beyond the sensors in the model's own movement logic, reused
         here rather than inventing a new distance).
 
