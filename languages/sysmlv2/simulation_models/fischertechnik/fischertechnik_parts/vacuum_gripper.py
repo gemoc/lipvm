@@ -6,6 +6,21 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import ExecutionSt
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
+# At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
+# With the model size, let's divide it up into 5, which yields length 5.5 and width 3.7
+VGR_BASE_LENGTH: float = 5.5
+VGR_BASE_WIDTH: float = 3.7
+
+# From center to the start of the arm is 12.2 cm (+- 0.5 cm).
+# Let's round it up to 12.
+# With the model size, let's divide it up into 5, which yields 2.4
+DEFAULT_ARM_PIPE_LENGTH: float = 2.4
+
+# The gripper's arm held inside the gripper pipe can be extended/
+# In real life, the maximum arm extension length is 15.2 cm -> round it up to 15
+# With the model size, let's divide it up into 5, which yields 3.0
+MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE: float = 3.0
+MAX_ARM_ENCODER_VALUE: float = 1881.0
 
 @dataclass(frozen=True)
 class VacuumGripperMachineSnapshot:

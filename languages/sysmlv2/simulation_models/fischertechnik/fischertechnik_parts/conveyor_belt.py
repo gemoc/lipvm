@@ -9,14 +9,11 @@ from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # Model-unit distance between a belt's feed and swap sensor positions --
 # the span a token actually rides across, end to end.
+# In reality, let's say right now the full length is 24cm
 FEED_TO_SWAP_LENGTH = 4
 
 # Model-unit distance across the belt's full ownable extent: FEED_TO_SWAP_LENGTH
-# plus one overshoot step past each sensor -- gives MOVE_NB_STEPS/MOVE_OUT one
-# step of overshoot past the sensor positions before ownership is actually
-# released, rather than disowning the instant a token passes
-# feed_position()/swap_position(). Matches the visualization's
-# BELT_WIDTH/SCALE functional-length ratio.
+# In reality, let's say right now the full length is 30cm
 FULL_LENGTH = 6
 
 

@@ -9,7 +9,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
-from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import ConveyorBeltMachine
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
 
