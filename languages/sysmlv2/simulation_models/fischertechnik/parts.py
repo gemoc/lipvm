@@ -6,15 +6,17 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKi
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
-# Model-unit distance from a belt's placementCoordinate to each of its
-# feed/swap ends (matches the visualization's BELT_WIDTH/SCALE ratio).
-HALF_LENGTH = 2
+# Model-unit distance between a belt's feed and swap sensor positions --
+# the span a token actually rides across, end to end.
+FEED_TO_SWAP_LENGTH = 4
 
-# Extra model units beyond HALF_LENGTH a token can travel before being
-# disowned -- gives MOVE_NB_STEPS/MOVE_OUT one step of overshoot past the
-# sensor positions before ownership is actually released, rather than
-# disowning the instant a token passes feed_position()/swap_position().
-OVERSHOOT_TOLERANCE = 1
+# Model-unit distance across the belt's full ownable extent: FEED_TO_SWAP_LENGTH
+# plus one overshoot step past each sensor -- gives MOVE_NB_STEPS/MOVE_OUT one
+# step of overshoot past the sensor positions before ownership is actually
+# released, rather than disowning the instant a token passes
+# feed_position()/swap_position(). Matches the visualization's
+# BELT_WIDTH/SCALE functional-length ratio.
+FULL_LENGTH = 6
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ class ConveyorBeltMachine(PartSimulationModel):
     def targetStepCount(self):
         return self._targetStepCount
 
-    def _end_position(self, local_x_offset: int) -> FactoryCoordinate:
+    def _end_position(self, local_x_offset: float) -> FactoryCoordinate:
         """Coordinate of a feed/swap end: local_x_offset along the belt's
         own unrotated x-axis, rotated by placementCoordinate.degrees around
         its center. Rounded to the nearest grid cell since FactoryCoordinate
@@ -122,23 +124,23 @@ class ConveyorBeltMachine(PartSimulationModel):
         )
 
     def feed_position(self) -> FactoryCoordinate:
-        return self._end_position(-HALF_LENGTH)
+        return self._end_position(-FEED_TO_SWAP_LENGTH / 2)
 
     def swap_position(self) -> FactoryCoordinate:
-        return self._end_position(HALF_LENGTH)
+        return self._end_position(FEED_TO_SWAP_LENGTH / 2)
 
     def pre_feed_position(self) -> FactoryCoordinate:
-        """One step before the feed end -- the overshoot-tolerance boundary
-        on the feed side (see OVERSHOOT_TOLERANCE): still ownable if a token
-        sits here, but one step short of actually triggering conveyorSensFeed.
+        """One step before the feed end -- the FULL_LENGTH boundary on the
+        feed side: still ownable if a token sits here, but one step short of
+        actually triggering conveyorSensFeed.
         """
-        return self._end_position(-(HALF_LENGTH + OVERSHOOT_TOLERANCE))
+        return self._end_position(-FULL_LENGTH / 2)
 
     def post_swap_position(self) -> FactoryCoordinate:
-        """One step past the swap end -- the overshoot-tolerance boundary
-        on the swap side, mirroring pre_feed_position().
+        """One step past the swap end -- the FULL_LENGTH boundary on the
+        swap side, mirroring pre_feed_position().
         """
-        return self._end_position(HALF_LENGTH + OVERSHOOT_TOLERANCE)
+        return self._end_position(FULL_LENGTH / 2)
 
     def _local_x_offset(self, position: FactoryCoordinate) -> int:
         """Inverse of `_end_position`: given an absolute coordinate,
@@ -172,8 +174,8 @@ class ConveyorBeltMachine(PartSimulationModel):
         pushing the token off the belt's physical extent -- unlike
         moveToSensor, whose success condition is stopping exactly at the
         boundary, this one's success condition *is* leaving it (past
-        HALF_LENGTH + OVERSHOOT_TOLERANCE, same as MOVE_NB_STEPS's
-        overshoot handling in advance()). Only sets the command/direction
+        FULL_LENGTH / 2, same as MOVE_NB_STEPS's overshoot handling in
+        advance()). Only sets the command/direction
         -- the actual per-tick movement, overshoot-disowning, and
         completion check happen in advance()/Factory.tick().
         """
@@ -214,15 +216,15 @@ class ConveyorBeltMachine(PartSimulationModel):
     def _move_owned_tokens_one_step(self):
         """Moves every token this belt currently owns one step along
         `_direction`, disowning any that end up strictly past the belt's
-        physical ends (see OVERSHOOT_TOLERANCE). Shared by every
-        `_advance_*` method that can actually move a token --
-        MOVE_TO_SENSOR only calls this once its own pre-condition (below)
-        has ruled out "already arrived."
+        physical ends (see FULL_LENGTH). Shared by every `_advance_*`
+        method that can actually move a token -- MOVE_TO_SENSOR only calls
+        this once its own pre-condition (below) has ruled out "already
+        arrived."
         """
         for token in self._factory.tokens_on(self):
             new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
             token.move_to(new_position)
-            if abs(self._local_x_offset(new_position)) > HALF_LENGTH + OVERSHOOT_TOLERANCE:
+            if abs(self._local_x_offset(new_position)) > FULL_LENGTH / 2:
                 self._factory.transfer_token(token, None)
 
     def _advance_move_to_sens(self):

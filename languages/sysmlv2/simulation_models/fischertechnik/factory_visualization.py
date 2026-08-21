@@ -12,11 +12,46 @@ import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
-from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine, HALF_LENGTH, OVERSHOOT_TOLERANCE
+from languages.sysmlv2.simulation_models.fischertechnik.parts import ConveyorBeltMachine, FEED_TO_SWAP_LENGTH, FULL_LENGTH
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import SimulationVisualization
 
-VIEWPORT_SIZE = (800, 600)       # factory floor drawing area, excludes the attribute panel
+SCALE = 20                       # pixels per model unit
+MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODEL_RANGE on both x and y
+
+# Wide enough that a token at the FULL_LENGTH boundary -- FULL_LENGTH / 2
+# model units from center, the furthest a token can travel while still
+# owned (see ConveyorBeltMachine.advance()) -- still visually sits on the
+# drawn belt, keeping the same 10px-per-side margin the original design
+# had just beyond FEED_TO_SWAP_LENGTH / 2 alone.
+BELT_WIDTH = FULL_LENGTH * SCALE + 20
+
+# Model-unit, cross-belt (perpendicular-to-travel) dimension -- purely a
+# rendering size, unlike FEED_TO_SWAP_LENGTH/FULL_LENGTH (parts.py), which
+# also drive movement math. No simulation behavior depends on this value,
+# so it lives here rather than in parts.py.
+BELT_CROSS_WIDTH = 2
+BELT_HEIGHT = BELT_CROSS_WIDTH * SCALE
+
+
+def _floor_layout(model_range: float, scale: int, belt_width: int, belt_height: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Computes (VIEWPORT_SIZE, ORIGIN) for a `model_range` x `model_range`
+    factory floor at the given `scale`. Reserves a uniform pixel margin on
+    every edge, sized to half the belt's larger dimension -- enough that a
+    belt centered on any boundary coordinate (x or y = 0 or `model_range`),
+    in any of its 0/90/180/270 degree placements, still fits on the canvas
+    instead of clipping. Model (0, 0) lands exactly on the floor's own
+    bottom-left corner (see `_draw_floor_boundary`); the margin is blank
+    canvas *outside* that corner, reserved purely for overhang -- a modeler
+    writing `placementCoordinate` values never needs to account for it.
+    """
+    margin = max(belt_width, belt_height) // 2
+    size = int(model_range * scale) + 2 * margin
+    return (size, size), (margin, size - margin)
+
+
+VIEWPORT_SIZE, ORIGIN = _floor_layout(MODEL_RANGE, SCALE, BELT_WIDTH, BELT_HEIGHT)  # factory floor drawing area, excludes the attribute panel
+
 PANEL_WIDTH = 300
 WINDOW_SIZE = (VIEWPORT_SIZE[0] + PANEL_WIDTH, VIEWPORT_SIZE[1])
 BACKGROUND_COLOR = (255, 255, 255)
@@ -49,16 +84,6 @@ PALETTE_SWATCH_GAP = 8
 PALETTE_SELECTED_BORDER_COLOR = (20, 20, 20)
 PALETTE_UNSELECTED_BORDER_COLOR = (150, 150, 150)
 
-SCALE = 20                       # pixels per model unit
-
-# Wide enough that a token at the overshoot-tolerance boundary --
-# HALF_LENGTH + OVERSHOOT_TOLERANCE model units from center, the furthest
-# a token can travel while still owned (see ConveyorBeltMachine.advance())
-# -- still visually sits on the drawn belt, keeping the same 10px-per-side
-# margin the original design had just beyond HALF_LENGTH alone.
-BELT_WIDTH = (HALF_LENGTH + OVERSHOOT_TOLERANCE) * 2 * SCALE + 20
-BELT_HEIGHT = 35
-
 BELT_FRAME_COLOR = (60, 60, 60)      # guide rails, visible along the belt's long edges from above
 BELT_SURFACE_COLOR = (35, 35, 35)    # the belt's top surface, inset from the rails
 BELT_TREAD_COLOR = (70, 70, 70)      # tread ridges, running across the belt's direction of travel
@@ -75,13 +100,11 @@ TOKEN_COLORS = {
     TokenColorKind.RED: (200, 40, 40),
 }
 
-
-ORIGIN = (BELT_WIDTH // 2, VIEWPORT_SIZE[1] - BELT_HEIGHT // 2)  # bottom-left of the viewport is model (0, 0)
-
 GRID_STEP = 5                          # model units between grid lines
 GRID_LINE_COLOR = (225, 225, 225)
 GRID_AXIS_COLOR = (170, 170, 170)      # the x=0 / y=0 lines, drawn heavier so the origin stands out
 GRID_LABEL_COLOR = (140, 140, 140)
+FLOOR_BOUNDARY_COLOR = (120, 120, 120) # outlines the (0,0)-(MODEL_RANGE,MODEL_RANGE) floor edge, distinct from the grid lines inside it
 
 
 class FischertechnikVisualization(SimulationVisualization):
@@ -144,15 +167,28 @@ class FischertechnikVisualization(SimulationVisualization):
             label = font.render(str(gy), True, GRID_LABEL_COLOR)
             screen.blit(label, (2, py + 2))
 
+    def _draw_floor_boundary(self, screen: pygame.Surface) -> None:
+        """Outlines the (0, 0)-(MODEL_RANGE, MODEL_RANGE) floor rect, so the
+        origin corner `_floor_layout` promises is actually visible on screen
+        rather than just implied by where the grid's axis lines cross. The
+        margin `_floor_layout` reserves around this rect is deliberately
+        blank outside it -- overhang room for a belt centered on a boundary
+        coordinate, not part of the floor itself.
+        """
+        top_left = self._to_screen(FactoryCoordinate(0, MODEL_RANGE, 0))
+        bottom_right = self._to_screen(FactoryCoordinate(MODEL_RANGE, 0, 0))
+        rect = pygame.Rect(top_left[0], top_left[1], bottom_right[0] - top_left[0], bottom_right[1] - top_left[1])
+        pygame.draw.rect(screen, FLOOR_BOUNDARY_COLOR, rect, width=2)
+
     def _draw_conveyor_belt(self, screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
         """Draws the belt as seen from directly above: guide rails along its
         long edges, a flat surface with tread ridges running across the
         direction of travel, and a colored band marking the feed sensor
         (where parts enter) and the swap sensor (where parts exit) at their
-        actual model-coordinate positions -- HALF_LENGTH from center, not the
-        edges of the drawn belt, since BELT_WIDTH is drawn wider than that to
-        also cover the overshoot-tolerance zone (see OVERSHOOT_TOLERANCE) --
-        in the belt's own unrotated left/right frame, as opposed to a side-on
+        actual model-coordinate positions -- FEED_TO_SWAP_LENGTH / 2 from
+        center, not the edges of the drawn belt, since BELT_WIDTH is drawn
+        wider than that to also cover the overshoot zone (see FULL_LENGTH)
+        -- in the belt's own unrotated left/right frame, as opposed to a side-on
         silhouette, which would show the rollers as circular ends. Still a
         static picture (matches Milestone 1 scope).
 
@@ -177,7 +213,7 @@ class FischertechnikVisualization(SimulationVisualization):
             pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
         belt_surface.set_clip(previous_clip)
 
-        sensor_offset_px = HALF_LENGTH * SCALE
+        sensor_offset_px = int(FEED_TO_SWAP_LENGTH / 2 * SCALE)
         for sensor_x, color in (
             (rect.centerx - sensor_offset_px, FEED_COLOR),
             (rect.centerx + sensor_offset_px, SWAP_COLOR),
@@ -277,10 +313,10 @@ class FischertechnikVisualization(SimulationVisualization):
         "Swap"/"Post-Swap" spawn a token of `selected_color`, owned by that
         belt, at `machine.pre_feed_position()`/`feed_position()`/
         `swap_position()`/`post_swap_position()` respectively -- the belt's
-        own overshoot-tolerance boundary on each side plus its two sensors,
-        not an arbitrary click position (see parts.py: OVERSHOOT_TOLERANCE is
-        already "one step" beyond the sensors in the model's own movement
-        logic, reused here rather than inventing a new distance).
+        own FULL_LENGTH boundary on each side plus its two sensors, not an
+        arbitrary click position (see parts.py: FULL_LENGTH is already "one
+        step" beyond the sensors in the model's own movement logic, reused
+        here rather than inventing a new distance).
 
         Returns the (rect, callback) pairs for every button just drawn
         (palette swatches and placement buttons alike), so the caller's event
@@ -355,6 +391,7 @@ class FischertechnikVisualization(SimulationVisualization):
         """
         screen.fill(BACKGROUND_COLOR, pygame.Rect(0, 0, VIEWPORT_SIZE[0], VIEWPORT_SIZE[1]))
         self._draw_grid(screen, font)
+        self._draw_floor_boundary(screen)
         for machine in factory.machines:
             self._draw_conveyor_belt(screen, machine)
         for token in factory.tokens:
