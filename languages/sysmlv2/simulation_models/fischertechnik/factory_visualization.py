@@ -1,7 +1,12 @@
-"""Pygame rendering for a Factory. The only file in this package allowed to
-import pygame — Factory/ConveyorBeltMachine/Token stay free of any
-rendering-library object, so they remain usable (and testable) independent
-of whether a display is even available.
+"""Pygame rendering for a Factory: the viewport (grid, floor boundary,
+tokens), the side panel, and the run loop. Per-machine-kind drawing lives
+in fischertechnik_parts_visualization/ instead (one MachineVisualization
+subclass per machine kind, e.g. ConveyorBeltVisualization) -- this file's
+own viewport constants/helpers (SCALE/_to_screen/BELT_WIDTH/etc.) are
+imported from here into those. Machine classes themselves
+(Factory/ConveyorBeltMachine/VacuumGripperMachine/Token) stay free of any
+rendering-library object, so they remain usable (and testable)
+independent of whether a display is even available.
 """
 
 import itertools
@@ -12,9 +17,11 @@ import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
-from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import ConveyorBeltMachine, FEED_TO_SWAP_LENGTH, FULL_LENGTH
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import FULL_LENGTH
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import SimulationVisualization
+from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 SCALE = 20                       # pixels per model unit
 MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODEL_RANGE on both x and y
@@ -107,6 +114,17 @@ GRID_LABEL_COLOR = (140, 140, 140)
 FLOOR_BOUNDARY_COLOR = (120, 120, 120) # outlines the (0,0)-(MODEL_RANGE,MODEL_RANGE) floor edge, distinct from the grid lines inside it
 
 
+def _to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
+    """Model coordinate -> screen pixel, via SCALE/ORIGIN. Module-level
+    (not a FischertechnikVisualization method) since it carries no
+    instance state, and both FischertechnikVisualization itself and every
+    per-machine-kind MachineVisualization drawer (e.g.
+    ConveyorBeltVisualization) need it.
+    """
+    px = ORIGIN[0] + coord.x * SCALE
+    py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
+    return int(px), int(py)
+
 class FischertechnikVisualization(SimulationVisualization):
     """Fischertechnik's SimulationVisualization (generic.py). `run()` is
     the only method ever called from outside this class -- every other
@@ -125,10 +143,16 @@ class FischertechnikVisualization(SimulationVisualization):
     move, not something asked for.
     """
 
-    def _to_screen(self, coord: FactoryCoordinate) -> tuple[int, int]:
-        px = ORIGIN[0] + coord.x * SCALE
-        py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
-        return int(px), int(py)
+    def __init__(self):
+        """Builds `self._drawers`, a `PartSimulationModel` subclass ->
+        `MachineVisualization` instance map, discovered via
+        `scan_for_subclasses()` (`registry.py`) rather than hardcoded --
+        so `_draw_viewport()` can dispatch on `type(machine)` without
+        knowing about any specific machine kind, and a future
+        `MachineVisualization` subclass (e.g. for `VacuumGripperMachine`)
+        needs no change here to be picked up.
+        """
+        self._drawers = {klass.machine_type: klass() for klass in scan_for_subclasses(MachineVisualization).values()}
 
     def _visible_model_range(self, axis_min_px: int, axis_max_px: int, origin_px: float, flip: bool, step: int) -> range:
         """Model-unit values (multiples of `step`) whose grid line falls inside
@@ -154,14 +178,14 @@ class FischertechnikVisualization(SimulationVisualization):
         render on top of it.
         """
         for gx in self._visible_model_range(0, VIEWPORT_SIZE[0], ORIGIN[0], flip=False, step=GRID_STEP):
-            px, _ = self._to_screen(FactoryCoordinate(gx, 0, 0))
+            px, _ = _to_screen(FactoryCoordinate(gx, 0, 0))
             color = GRID_AXIS_COLOR if gx == 0 else GRID_LINE_COLOR
             pygame.draw.line(screen, color, (px, 0), (px, VIEWPORT_SIZE[1]), 2 if gx == 0 else 1)
             label = font.render(str(gx), True, GRID_LABEL_COLOR)
             screen.blit(label, (px + 2, 2))
 
         for gy in self._visible_model_range(0, VIEWPORT_SIZE[1], ORIGIN[1], flip=True, step=GRID_STEP):
-            _, py = self._to_screen(FactoryCoordinate(0, gy, 0))
+            _, py = _to_screen(FactoryCoordinate(0, gy, 0))
             color = GRID_AXIS_COLOR if gy == 0 else GRID_LINE_COLOR
             pygame.draw.line(screen, color, (0, py), (VIEWPORT_SIZE[0], py), 2 if gy == 0 else 1)
             label = font.render(str(gy), True, GRID_LABEL_COLOR)
@@ -175,62 +199,16 @@ class FischertechnikVisualization(SimulationVisualization):
         blank outside it -- overhang room for a belt centered on a boundary
         coordinate, not part of the floor itself.
         """
-        top_left = self._to_screen(FactoryCoordinate(0, MODEL_RANGE, 0))
-        bottom_right = self._to_screen(FactoryCoordinate(MODEL_RANGE, 0, 0))
+        top_left = _to_screen(FactoryCoordinate(0, MODEL_RANGE, 0))
+        bottom_right = _to_screen(FactoryCoordinate(MODEL_RANGE, 0, 0))
         rect = pygame.Rect(top_left[0], top_left[1], bottom_right[0] - top_left[0], bottom_right[1] - top_left[1])
         pygame.draw.rect(screen, FLOOR_BOUNDARY_COLOR, rect, width=2)
-
-    def _draw_conveyor_belt(self, screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
-        """Draws the belt as seen from directly above: guide rails along its
-        long edges, a flat surface with tread ridges running across the
-        direction of travel, and a colored band marking the feed sensor
-        (where parts enter) and the swap sensor (where parts exit) at their
-        actual model-coordinate positions -- FEED_TO_SWAP_LENGTH / 2 from
-        center, not the edges of the drawn belt, since BELT_WIDTH is drawn
-        wider than that to also cover the overshoot zone (see FULL_LENGTH)
-        -- in the belt's own unrotated left/right frame, as opposed to a side-on
-        silhouette, which would show the rollers as circular ends. Still a
-        static picture (matches Milestone 1 scope).
-
-        Composited on a local, unrotated surface first because pygame's draw
-        primitives have no rotation argument; the finished belt is rotated as
-        one image via pygame.transform.rotate and then blitted onto the screen,
-        recentered on the belt's placement coordinate.
-        """
-        belt_surface = pygame.Surface((BELT_WIDTH, BELT_HEIGHT), pygame.SRCALPHA)
-        rect = belt_surface.get_rect()
-        pygame.draw.rect(belt_surface, BELT_FRAME_COLOR, rect, border_radius=6)
-
-        # Inset more along the height than the length: the height-inset reveals
-        # the frame as rails running along the belt's long edges, while the
-        # length-inset just leaves a little room around the sensor bands.
-        surface_rect = rect.inflate(-8, -12)
-        pygame.draw.rect(belt_surface, BELT_SURFACE_COLOR, surface_rect, border_radius=3)
-
-        previous_clip = belt_surface.get_clip()
-        belt_surface.set_clip(surface_rect)
-        for x in range(surface_rect.left, surface_rect.right, TREAD_SPACING):
-            pygame.draw.line(belt_surface, BELT_TREAD_COLOR, (x, surface_rect.top), (x, surface_rect.bottom), 2)
-        belt_surface.set_clip(previous_clip)
-
-        sensor_offset_px = int(FEED_TO_SWAP_LENGTH / 2 * SCALE)
-        for sensor_x, color in (
-            (rect.centerx - sensor_offset_px, FEED_COLOR),
-            (rect.centerx + sensor_offset_px, SWAP_COLOR),
-        ):
-            roller_rect = pygame.Rect(0, surface_rect.top, ROLLER_BAND_WIDTH, surface_rect.height)
-            roller_rect.centerx = sensor_x
-            pygame.draw.rect(belt_surface, color, roller_rect)
-
-        rotated = pygame.transform.rotate(belt_surface, machine.placementCoordinate.degrees)
-        px, py = self._to_screen(machine.placementCoordinate)
-        screen.blit(rotated, rotated.get_rect(center=(px, py)))
 
     def _draw_token(self, screen: pygame.Surface, token: Token) -> None:
         """Draws a Token as a small filled circle at its current position, on
         top of whatever machine it's sitting on, colored by its TokenColorKind.
         """
-        px, py = self._to_screen(token.position)
+        px, py = _to_screen(token.position)
         pygame.draw.circle(screen, TOKEN_COLORS[token.color], (px, py), TOKEN_RADIUS)
         pygame.draw.circle(screen, TOKEN_OUTLINE_COLOR, (px, py), TOKEN_RADIUS, 1)
 
@@ -295,28 +273,22 @@ class FischertechnikVisualization(SimulationVisualization):
                              on_place_token) -> list[tuple[pygame.Rect, object]]:
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, a token-color palette, then each machine's live
-        attributes and a row of 4 token-placement buttons, one stacked block
-        per machine. Machines are labeled by their position in `machines`
-        ("Belt 1", "Belt 2", ...) rather than a real name —
-        `ConveyorBeltMachine` doesn't carry one. placementCoordinate is
-        deliberately omitted: it's already conveyed by the machine's drawn
-        position in the viewport.
+        attributes and an optional row of buttons, one stacked block per
+        machine. Machines are labeled by their position within their own
+        kind (`ConveyorBeltVisualization.panel_label` = "Belt", so "Belt 1",
+        "Belt 2", ...) rather than a real name — `ConveyorBeltMachine`
+        doesn't carry one. placementCoordinate is deliberately omitted:
+        it's already conveyed by the machine's drawn position in the
+        viewport.
 
-        The only manual control left is placing a token -- previously
-        "Feed"/"Swap"/"-1"/"+1" buttons drove a belt's movement directly
-        (`machine.moveToSensor()`/`moveNbSteps()`); now that guard
-        evaluation/firing (task 4) and real action dispatch (task 3) are both
-        wired up, movement is meant to come only from the model's own
-        `do`/`accept when` behavior through the interpreter. Placing a token
-        is the one thing the model can't do for itself (nothing manufactures
-        tokens), hence it's the one manual control kept: "Pre-Feed"/"Feed"/
-        "Swap"/"Post-Swap" spawn a token of `selected_color`, owned by that
-        belt, at `machine.pre_feed_position()`/`feed_position()`/
-        `swap_position()`/`post_swap_position()` respectively -- the belt's
-        own FULL_LENGTH boundary on each side plus its two sensors, not an
-        arbitrary click position (see conveyor_belt.py: FULL_LENGTH is already "one
-        step" beyond the sensors in the model's own movement logic, reused
-        here rather than inventing a new distance).
+        The live attribute lines and button row are both delegated to each
+        machine's own `MachineVisualization` drawer (`panel_lines()`/
+        `panel_buttons()`, `fischertechnik_parts_visualization/generic.py`)
+        instead of being hardcoded here -- this method used to assume every
+        machine was a ConveyorBeltMachine (`machine.conveyorSensFeed`,
+        `machine.pre_feed_position()`, ...), which would raise
+        `AttributeError` the moment a different machine kind (e.g.
+        VacuumGripperMachine) got registered.
 
         Returns the (rect, callback) pairs for every button just drawn
         (palette swatches and placement buttons alike), so the caller's event
@@ -340,35 +312,23 @@ class FischertechnikVisualization(SimulationVisualization):
         buttons = self._draw_color_palette(screen, x, y, selected_color, on_select_color)
         y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
 
-        for index, machine in enumerate(machines, start=1):
-            screen.blit(label_font.render(f"Belt {index}", True, PANEL_TEXT_COLOR), (x, y))
+        kind_counts: dict[type, int] = {}
+        for machine in machines:
+            drawer = self._drawers[type(machine)]
+            kind_counts[type(machine)] = kind_counts.get(type(machine), 0) + 1
+
+            screen.blit(label_font.render(f"{drawer.panel_label} {kind_counts[type(machine)]}", True, PANEL_TEXT_COLOR), (x, y))
             y += PANEL_LINE_HEIGHT
 
-            for line in (
-                f"conveyorSensFeed: {machine.conveyorSensFeed}",
-                f"conveyorSensSwap: {machine.conveyorSensSwap}",
-                f"currentCommand: {machine.currentCommand}",
-                f"direction: {machine.direction}",
-            ):
+            for line in drawer.panel_lines(machine):
                 screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
                 y += PANEL_LINE_HEIGHT
 
-            button_x = x
-            for label, position in (
-                ("Pre", machine.pre_feed_position()),
-                ("Feed", machine.feed_position()),
-                ("Swap", machine.swap_position()),
-                ("Post", machine.post_swap_position()),
-            ):
-                rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
-                color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
-                pygame.draw.rect(screen, color, rect, border_radius=4)
-                label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
-                screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-                buttons.append((rect, lambda m=machine, p=position: on_place_token(m, p)))
-                button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
-
-            y += PANEL_BUTTON_HEIGHT + PANEL_MACHINE_GAP
+            button_row = drawer.panel_buttons(screen, x, y, font, mouse_pos, machine, on_place_token)
+            buttons.extend(button_row)
+            if button_row:
+                y += PANEL_BUTTON_HEIGHT
+            y += PANEL_MACHINE_GAP
 
         return buttons
 
@@ -393,7 +353,7 @@ class FischertechnikVisualization(SimulationVisualization):
         self._draw_grid(screen, font)
         self._draw_floor_boundary(screen)
         for machine in factory.machines:
-            self._draw_conveyor_belt(screen, machine)
+            self._drawers[type(machine)].draw(screen, machine)
         for token in factory.tokens:
             self._draw_token(screen, token)
 

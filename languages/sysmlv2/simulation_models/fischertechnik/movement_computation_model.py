@@ -21,3 +21,28 @@ def cb_step_position(current: FactoryCoordinate, degrees: int, direction: Direct
     sign = 1 if direction == DirectionKind.FORWARD else -1
     dx, dy = rotate_offset(sign * step_size, degrees)
     return FactoryCoordinate(round(current.x + dx), round(current.y + dy), current.degrees)
+
+
+def arm_encoder_to_model_size():
+
+    pass
+
+def rot_encoder_to_model_size():
+
+    pass
+
+
+def arm_step_method(current: float, target: float, step: float = 0.0016):
+
+    pass
+
+def rotation_step_method(current: float, target: float, step: float = 8.0) -> float:
+    """Moves `current` at most `step` closer to `target`, clamped so it
+    never overshoots -- lands exactly on `target` once within one step of
+    it. Shared by every encoder axis's `_advance_*` method in tick().
+    """
+    if current < target:
+        return min(current + step, target)
+    if current > target:
+        return max(current - step, target)
+    return current

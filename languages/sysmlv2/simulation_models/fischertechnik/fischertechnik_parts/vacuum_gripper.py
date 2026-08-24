@@ -7,14 +7,19 @@ from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
-# With the model size, let's divide it up into 5, which yields length 5.5 and width 3.7
-VGR_BASE_LENGTH: float = 5.5
+# With the model size, let's divide it up into 5, which yields length 5.1 and width 3.7
+VGR_BASE_LENGTH: float = 5.1
 VGR_BASE_WIDTH: float = 3.7
 
+# There is also a dimension to the `tower` which held the arm. This tower has a base of 10 cm and width 7 cm
+# With the model size, let's divide it up into 5, which yields length 2 and width 1.4
+VGR_TOWER_BASE_LENGTH: float = 2.0
+VGR_TOWER_BASE_WIDTH: float = 1.4
+
 # From center to the start of the arm is 12.2 cm (+- 0.5 cm).
-# Let's round it up to 12.
-# With the model size, let's divide it up into 5, which yields 2.4
-DEFAULT_ARM_PIPE_LENGTH: float = 2.4
+# Let's round it up to 13, taking the account that we add 0.5 cm.
+# With the model size, let's divide it up into 5, which yields 2.6
+DEFAULT_ARM_PIPE_LENGTH: float = 2.6
 
 # The gripper's arm held inside the gripper pipe can be extended/
 # In real life, the maximum arm extension length is 15.2 cm -> round it up to 15
@@ -22,9 +27,17 @@ DEFAULT_ARM_PIPE_LENGTH: float = 2.4
 MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE: float = 3.0
 
 # The gripper's arm max encoder value (To fully extend the arm) which would be 1881
-# Round it up to 1880
-# For now, to show it in the model size, I will make it 18
-MAX_ARM_ENCODER_VALUE: float = 18.0
+# Round it up to 1880. However, when looking at the max extension length in terms of model size
+# Dividing 3.0 into 1880 is too much. Thus, I am using 240 for now
+MAX_ARM_ENCODER_VALUE: float = 1880.0
+
+# There is also a maximum value for the rotation encoder value
+# Based on current data, the actual maximum encoder value is 2986 (for 360 degree)
+# To see if we can do the whole 360 degree, then we can calculate what encoder value to get 1 degree increment:
+# 2986/360 = 8.2944....
+# For now, to show it in the model size, I will make it 8 encoder values for 1 degree. So in total, the maximum
+# encoder values for the model size is 8*360 = 2880
+MAX_ROT_ENCODER_VALUE: float = 2880.0
 
 @dataclass(frozen=True)
 class VacuumGripperMachineSnapshot:
@@ -164,7 +177,8 @@ class VacuumGripperMachine(PartSimulationModel):
         executionStatus attributes to None
         :return:
         """
-        pass
+        self._currentCommand = None
+        self._executionStatus = None
 
     def moveToSafePosition(self):
         """
@@ -177,11 +191,22 @@ class VacuumGripperMachine(PartSimulationModel):
 
     def retractArm(self):
         """
-        This signifies a movement to fully retract the arm. To achieve this, we need the vertical and arm encoder values
-        to be 0
+        This signifies a movement to fully retract the arm. To achieve this, we need the arm encoder values to be 0
         :return:
         """
+        self._expectedArmEncoderValue = 0.0
+        self._currentCommand = VacuumGripperCommandKind.RETRACT_ARM
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
+
+    def setup(self):
+
         pass
 
     def tick(self) -> None:
-        pass
+        if self._currentCommand == VacuumGripperCommandKind.RETRACT_ARM:
+            self._advance_retract_arm()
+
+    def _advance_retract_arm(self):
+        self._armEncoder = _step_toward(self._armEncoder, self._expectedArmEncoderValue, ARM_ENCODER_STEP_PER_TICK)
+        if self._armEncoder == self._expectedArmEncoderValue:
+            self.stop()
