@@ -20,7 +20,11 @@ DEFAULT_ARM_PIPE_LENGTH: float = 2.4
 # In real life, the maximum arm extension length is 15.2 cm -> round it up to 15
 # With the model size, let's divide it up into 5, which yields 3.0
 MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE: float = 3.0
-MAX_ARM_ENCODER_VALUE: float = 1881.0
+
+# The gripper's arm max encoder value (To fully extend the arm) which would be 1881
+# Round it up to 1880
+# For now, to show it in the model size, I will make it 18
+MAX_ARM_ENCODER_VALUE: float = 18.0
 
 @dataclass(frozen=True)
 class VacuumGripperMachineSnapshot:

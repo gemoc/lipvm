@@ -310,19 +310,25 @@ def _populate_parameters(record, behavior):
 
 def _bound_arguments(element):
     """Builds an Argument for each of `element`'s owned features that has a
-    bound value (e.g. msg="Entry" on a PerformActionUsage, conveyorBelt=cb1
-    on a StateUsage) — the call-site counterpart to _populate_parameters,
+    resolved value — either a plain bound value (e.g. msg="Entry" on a
+    PerformActionUsage, conveyorBelt=cb1 on a StateUsage) or, since a
+    ReferenceUsage in-parameter can also be bound by nesting `:>>`
+    sub-attribute redefinitions directly under it instead of a FeatureValue
+    (e.g. vgrMission's pickFromFeederPosition { attribute :>> vertical =
+    940.0; ... }), a composite value built from those — see
+    _resolved_value(). The call-site counterpart to _populate_parameters,
     which builds the formal Parameter declarations instead.
     """
-    return [
-        rt.Argument(
-            name=feature.declaredName,
-            qualified_name=qualified_name(feature),
-            value=_to_runtime_value(_bound_value(feature)),
-        )
-        for feature in _owned_by_kind(element, FeatureMembership)
-        if _bound_value(feature) is not None
-    ]
+    arguments = []
+    for feature in _owned_by_kind(element, FeatureMembership):
+        value = _resolved_value(feature, qualified_name(feature))
+        if value is not None:
+            arguments.append(rt.Argument(
+                name=feature.declaredName,
+                qualified_name=qualified_name(feature),
+                value=value,
+            ))
+    return arguments
 
 
 def _owned_attribute_redefinitions(element, owner_qualified_name):
@@ -339,6 +345,35 @@ def _owned_attribute_redefinitions(element, owner_qualified_name):
         for feature in _owned_by_kind(element, FeatureMembership)
         if isinstance(feature, AttributeUsage) and _redefined_feature(feature) is not None
     ]
+
+
+def _resolved_value(feature, feature_qualified_name, fallback_type_node=None):
+    """Builds the Value for `feature`: a CompositeCustomValue if `feature`
+    owns nested AttributeUsage redefinitions (e.g. placementCoordinate's
+    x/y, or a ReferenceUsage in-parameter bound via nested vertical/
+    horizontal/rot redefinitions instead of a FeatureValue), otherwise the
+    plain value bound via feature's own FeatureValue — or None if neither
+    applies.
+
+    `fallback_type_node` covers the case where `feature` carries no
+    FeatureTyping of its own (true for both an anonymous `:>>` redefinition
+    and a bound in-parameter like pickFromFeederPosition, whose type only
+    lives on the formal parameter it fulfills) — callers that have a node
+    to fall back to (e.g. to_redefinition()'s `redefined`) pass it in;
+    callers that don't (e.g. _bound_arguments()) leave the resulting
+    CompositeCustomValue.type as None, deferring resolution to whoever
+    consumes it later, same convention used everywhere else in this module.
+    """
+    nested_redefinitions = _owned_attribute_redefinitions(feature, feature_qualified_name)
+    if nested_redefinitions:
+        return rt.CompositeCustomValue(
+            type=_build_type_ref(_feature_type(feature) or fallback_type_node),
+            elements=[
+                rt.Argument(name=r.name, qualified_name=r.qualified_name, value=r.value)
+                for r in nested_redefinitions
+            ],
+        )
+    return _to_runtime_value(_bound_value(feature))
 
 
 def _build_type_ref(type_node):
@@ -4221,21 +4256,11 @@ specializesFromLibrary('Base::dataValues')"""
         name = redefined.declaredName
         redefinition_qualified_name = f"{owner_qualified_name}::{name}"
 
-        nested_redefinitions = _owned_attribute_redefinitions(self, redefinition_qualified_name)
-        if nested_redefinitions:
-            # self rarely carries its own FeatureTyping — a redefinition's
-            # type is normally inherited from the feature it redefines
-            # (e.g. placementCoordinate's override has no FeatureTyping of
-            # its own, only redefined's does), so fall back to redefined's.
-            value = rt.CompositeCustomValue(
-                type=_build_type_ref(_feature_type(self) or _feature_type(redefined)),
-                elements=[
-                    rt.Argument(name=r.name, qualified_name=r.qualified_name, value=r.value)
-                    for r in nested_redefinitions
-                ],
-            )
-        else:
-            value = _to_runtime_value(_bound_value(self))
+        # self rarely carries its own FeatureTyping — a redefinition's type
+        # is normally inherited from the feature it redefines (e.g.
+        # placementCoordinate's override has no FeatureTyping of its own,
+        # only redefined's does), so fall back to redefined's.
+        value = _resolved_value(self, redefinition_qualified_name, fallback_type_node=_feature_type(redefined))
 
         return rt.AttributeRedefinition(
             name=name,

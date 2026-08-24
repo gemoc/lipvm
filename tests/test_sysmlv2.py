@@ -611,3 +611,260 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
     captured = capsys.readouterr()
     assert captured.out.splitlines() == ["Next Please"]
 
+def test_cb_vgr_sysml_model():
+    # Given
+    resource = load("tests/vgr-cb-simulation.xmi")
+    root = resource.contents[0]
+
+    scenario = Scenario(
+        program_definition=root
+    )
+
+    # When
+    vm = VirtualMachine()
+    vm.scenario = scenario
+    vm.init()
+    vm.step()
+
+    # Then
+    sysml_state = vm.state.sysml
+    assert isinstance(sysml_state, rt.SysmlRuntimeState)
+
+    action_defs_table = sysml_state.lookup_table_action_defs
+
+    # Test 1: All action definitions exist, across both the ConveyorBelt
+    # and (new) VacuumGripper command packages, in declaration order.
+    assert ([reference.qualified_name for reference in action_defs_table.records] == [
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveToSensor",
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveOut",
+        "ConveyorBeltSystem::ConveyorBeltCommands::MoveNbSteps",
+        "ConveyorBeltSystem::ConveyorBeltCommands::Stop",
+        "ConveyorBeltSystem::ConveyorBeltCommands::StatusRequest",
+        "VacuumGripperSystem::VacuumGripperCommands::GoToPosition",
+        "VacuumGripperSystem::VacuumGripperCommands::Move",
+        "VacuumGripperSystem::VacuumGripperCommands::Pick",
+        "VacuumGripperSystem::VacuumGripperCommands::Place",
+        "VacuumGripperSystem::VacuumGripperCommands::Setup",
+        "VacuumGripperSystem::VacuumGripperCommands::Grip",
+        "VacuumGripperSystem::VacuumGripperCommands::Release",
+        "VacuumGripperSystem::VacuumGripperCommands::Stop",
+        "VacuumGripperSystem::VacuumGripperCommands::MoveToSafePosition",
+        "VacuumGripperSystem::VacuumGripperCommands::RetractArm",
+        "VacuumGripperSystem::VacuumGripperCommands::StatusRequest",
+    ])
+
+    # Test 2: Get one action def with a custom-typed (Position3D) parameter,
+    # one with no parameters at all, and one with only `out` parameters
+    # (Grip/Release report vacuum state back via out attributes rather than
+    # taking any in-parameters — new shape not exercised by the conveyor
+    # belt model).
+    go_to_position_def = action_defs_table.get_reference(
+        "VacuumGripperSystem::VacuumGripperCommands::GoToPosition").element_type
+    assert isinstance(go_to_position_def, rt.ActionDef)
+    assert [parameter.name for parameter in go_to_position_def.parameters] == ["targetPosition"]
+    assert go_to_position_def.parameters[0].direction == rt.ParamDirection.IN
+    assert go_to_position_def.parameters[0].type.kind == rt.TypeKind.CUSTOM
+    assert go_to_position_def.parameters[0].type.reference_type.qualified_name == \
+        "VacuumGripperSystem::VacuumGripperCommands::Position3D"
+
+    setup_def = action_defs_table.get_reference("VacuumGripperSystem::VacuumGripperCommands::Setup").element_type
+    assert isinstance(setup_def, rt.ActionDef)
+    assert list(setup_def.parameters) == []
+
+    grip_def = action_defs_table.get_reference("VacuumGripperSystem::VacuumGripperCommands::Grip").element_type
+    assert isinstance(grip_def, rt.ActionDef)
+    assert [parameter.name for parameter in grip_def.parameters] == ["vacuumActValve", "vacuumActCompressorOn"]
+    assert all(parameter.direction == rt.ParamDirection.OUT for parameter in grip_def.parameters)
+    assert all(parameter.type.kind == rt.TypeKind.SCALAR for parameter in grip_def.parameters)
+    assert all(parameter.type.scalar_type == rt.ScalarType.BOOLEAN for parameter in grip_def.parameters)
+
+    # Test 3: Check item definitions — messages/events that can be sent or
+    # received — across Common, ConveyorBeltMessages (now including the new
+    # Stop/Start events) and the new VacuumGripperMessages package.
+    item_defs_table = sysml_state.lookup_table_item_defs
+
+    assert ([reference.qualified_name for reference in item_defs_table.records] == [
+        "Common::Messages::EventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::FeedFreeEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::SwapBusyEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::CBCommandSuccessEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::StopEventMessage",
+        "ConveyorBeltSystem::ConveyorBeltMessages::StartEventMessage",
+        "VacuumGripperSystem::VacuumGripperMessages::VGRCommandSuccessEventMessage",
+    ])
+
+    # Test 4: Check executable states — Main declares three
+    # (`cbFeederMission`, `cbTransportMission` both typed by the reused
+    # ConveyorBeltSimpleMission state def, and `vgrMission` typed by the
+    # new VGRMissionWith2CB state def), unlike the single `cbSimulation`
+    # in the plain conveyor belt model.
+    executable_states = sysml_state.lookup_table_executable_state_usages
+
+    assert [reference.qualified_name for reference in executable_states.records] == [
+        "Main::cbFeederMission", "Main::cbTransportMission", "Main::vgrMission",
+    ]
+
+    cb_feeder_mission, cb_transport_mission, vgr_mission = (
+        reference.element_type for reference in executable_states.records
+    )
+
+    # Test 5: The two ConveyorBelt missions share one StateDef
+    # (ConveyorBeltSimpleMission) but each binds a different part instance
+    # (cb1 / cb2) — proving two ExecutableStateUsage instances of the same
+    # state def are tracked as distinct entries, not collapsed into one.
+    assert cb_feeder_mission.state_def_origin.qualified_name == "ConveyorBeltStates::ConveyorBeltSimpleMission"
+    assert cb_feeder_mission.state_def_origin.reference_type == rt.StateDef.__name__
+    assert cb_transport_mission.state_def_origin.qualified_name == "ConveyorBeltStates::ConveyorBeltSimpleMission"
+    assert cb_transport_mission.state_def_origin.reference_type == rt.StateDef.__name__
+
+    assert [argument.name for argument in cb_feeder_mission.arguments] == ["conveyorBelt"]
+    assert isinstance(cb_feeder_mission.arguments[0].value, rt.ReferenceValue)
+    assert cb_feeder_mission.arguments[0].value.el.qualified_name == "Main::cb1"
+
+    assert [argument.name for argument in cb_transport_mission.arguments] == ["conveyorBelt"]
+    assert isinstance(cb_transport_mission.arguments[0].value, rt.ReferenceValue)
+    assert cb_transport_mission.arguments[0].value.el.qualified_name == "Main::cb2"
+
+    # Test 6: vgrMission (VGRMissionWith2CB) binds five in-parameters —
+    # three part references (vgrOne/feederCB/transportCB, all
+    # ReferenceValue → PartInstantiation) and two composite attribute
+    # values (pickFromFeederPosition/placeToTransportPosition, each bound
+    # by nesting `attribute :>> vertical/horizontal/rot` redefinitions
+    # directly under the parameter itself, rather than a FeatureValue
+    # pointing at a standalone attribute) — a mixed reference/composite
+    # argument shape the single-part-argument ConveyorBeltSimpleMission
+    # never exercises.
+    assert vgr_mission.state_def_origin.qualified_name == "VGRStates::VGRMissionWith2CB"
+    assert vgr_mission.state_def_origin.reference_type == rt.StateDef.__name__
+
+    assert [argument.name for argument in vgr_mission.arguments] == [
+        "vgrOne", "feederCB", "transportCB", "pickFromFeederPosition", "placeToTransportPosition",
+    ]
+
+    vgr_one_arg, feeder_cb_arg, transport_cb_arg, pick_pos_arg, place_pos_arg = vgr_mission.arguments
+
+    assert all(
+        isinstance(argument.value, rt.ReferenceValue)
+        for argument in (vgr_one_arg, feeder_cb_arg, transport_cb_arg)
+    )
+    bound_qualified_names = [
+        argument.value.el.qualified_name for argument in (vgr_one_arg, feeder_cb_arg, transport_cb_arg)
+    ]
+    assert bound_qualified_names == ["Main::vgr1", "Main::cb1", "Main::cb2"]
+
+    bound_reference_types = [
+        argument.value.el.reference_type for argument in (vgr_one_arg, feeder_cb_arg, transport_cb_arg)
+    ]
+    assert bound_reference_types == ["PartInstantiation", "PartInstantiation", "PartInstantiation"]
+
+    for position_arg, expected_vertical, expected_rot in (
+        (pick_pos_arg, 940.0, 0.0),
+        (place_pos_arg, 940.0, 1750.0),
+    ):
+        assert isinstance(position_arg.value, rt.CompositeCustomValue)
+        assert [element.name for element in position_arg.value.elements] == ["vertical", "horizontal", "rot"]
+        assert all(isinstance(element.value, rt.LiteralValue) for element in position_arg.value.elements)
+        vertical, horizontal, rot = (float(element.value.el) for element in position_arg.value.elements)
+        assert vertical == expected_vertical
+        assert horizontal == 0.0
+        assert rot == expected_rot
+
+    # Test 7: Check part instantiations table — cb1/cb2 (reused
+    # ConveyorBeltMachine, as in the plain conveyor belt model) plus the
+    # new vgr1, typed by the new VacuumGripperMachine part def.
+    part_instantiations = sysml_state.lookup_table_part_instantiations
+    assert [reference.qualified_name for reference in part_instantiations.records] == [
+        "Main::cb1", "Main::cb2", "Main::vgr1",
+    ]
+
+    cb1, cb2, vgr1 = (reference.element_type for reference in part_instantiations.records)
+
+    for part_instantiation, part_def_qualified_name in (
+        (cb1, "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"),
+        (cb2, "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"),
+        (vgr1, "VacuumGripperSystem::VacuumGripper::VacuumGripperMachine"),
+    ):
+        assert isinstance(part_instantiation, rt.PartInstantiation)
+        assert part_instantiation.part_def_origin.qualified_name == part_def_qualified_name
+        assert part_instantiation.part_def_origin.reference_type == rt.PartDef.__name__
+
+    # Test 8: vgr1's placementCoordinate redefinition — same
+    # attribute-redefinition shape as cb1's in the plain conveyor belt
+    # model (Test 11 there), but now on the new VacuumGripperMachine part
+    # def, confirming the redefinition machinery isn't special-cased to
+    # ConveyorBeltMachine.
+    assert [redefinition.name for redefinition in vgr1.attribute_redefinitions] == ["placementCoordinate"]
+
+    vgr1_placement_redefinition = vgr1.attribute_redefinitions[0]
+    assert isinstance(vgr1_placement_redefinition, rt.AttributeRedefinition)
+    assert vgr1_placement_redefinition.qualified_name == "Main::vgr1::placementCoordinate"
+    assert vgr1_placement_redefinition.redefined_feature.qualified_name == \
+        "VacuumGripperSystem::VacuumGripper::VacuumGripperMachine::placementCoordinate"
+    assert vgr1_placement_redefinition.redefined_feature.reference_type == rt.AttributeUsageElement.__name__
+
+    vgr1_placement_value = vgr1_placement_redefinition.value
+    assert isinstance(vgr1_placement_value, rt.CompositeCustomValue)
+    assert vgr1_placement_value.type.reference_type.qualified_name == "Common::FactoryCoordinate"
+    assert [element.name for element in vgr1_placement_value.elements] == ["x", "y", "degrees"]
+    assert all(isinstance(element.value, rt.LiteralValue) for element in vgr1_placement_value.elements)
+    assert [element.value.el for element in vgr1_placement_value.elements] == ["15.0", "15.0", "0.0"]
+
+    # Test 9: Check state defs table — both the reused
+    # ConveyorBeltSimpleMission and the new VGRMissionWith2CB, in
+    # declaration order (VGRStates package precedes ConveyorBeltStates in
+    # source).
+    state_defs_table = sysml_state.lookup_table_state_defs
+    assert [reference.qualified_name for reference in state_defs_table.records] == [
+        "VGRStates::VGRMissionWith2CB", "ConveyorBeltStates::ConveyorBeltSimpleMission",
+    ]
+
+    # Test 10: VGRMissionWith2CB's formal parameters — three PART-typed
+    # (vgrOne/feederCB/transportCB) and two CUSTOM-typed (Position3D)
+    # in-parameters, a richer, mixed-type parameter list than
+    # ConveyorBeltNominalMission's single PART parameter
+    # (test_simple_conveyor_belt_simulation, Test 12).
+    vgr_mission_def = state_defs_table.get_reference("VGRStates::VGRMissionWith2CB").element_type
+    assert isinstance(vgr_mission_def, rt.StateDef)
+    assert vgr_mission_def.name == "VGRMissionWith2CB"
+
+    assert [parameter.name for parameter in vgr_mission_def.parameters] == [
+        "vgrOne", "feederCB", "transportCB", "pickFromFeederPosition", "placeToTransportPosition",
+    ]
+    assert all(parameter.direction == rt.ParamDirection.IN for parameter in vgr_mission_def.parameters)
+
+    vgr_one_param, feeder_cb_param, transport_cb_param, pick_pos_param, place_pos_param = vgr_mission_def.parameters
+
+    assert vgr_one_param.type.kind == rt.TypeKind.PART
+    assert vgr_one_param.type.reference_type.qualified_name == \
+        "VacuumGripperSystem::VacuumGripper::VacuumGripperMachine"
+    assert feeder_cb_param.type.kind == rt.TypeKind.PART
+    assert feeder_cb_param.type.reference_type.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"
+    assert transport_cb_param.type.kind == rt.TypeKind.PART
+    assert transport_cb_param.type.reference_type.qualified_name == \
+        "ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine"
+
+    assert pick_pos_param.type.kind == rt.TypeKind.CUSTOM
+    assert pick_pos_param.type.reference_type.qualified_name == \
+        "VacuumGripperSystem::VacuumGripperCommands::Position3D"
+    assert place_pos_param.type.kind == rt.TypeKind.CUSTOM
+    assert place_pos_param.type.reference_type.qualified_name == \
+        "VacuumGripperSystem::VacuumGripperCommands::Position3D"
+
+    # Test 11: VGRMissionWith2CB's substates — SafePosition, Idle,
+    # WaitForPickup, WaitForPlace — vs. ConveyorBeltNominalMission's
+    # 2-substate Idle/MovingToSensor list; and ConveyorBeltSimpleMission
+    # (this model's own conveyor belt state def, distinct from
+    # ConveyorBeltNominalMission) has its own 3-substate Start/
+    # WaitForPickup/Idle list.
+    assert [substate.name for substate in vgr_mission_def.substates] == [
+        "SafePosition", "Idle", "WaitForPickup", "WaitForPlace", "FullStop"
+    ]
+    assert all(isinstance(substate, rt.StateUsage) for substate in vgr_mission_def.substates)
+
+    cb_simple_mission_def = state_defs_table.get_reference(
+        "ConveyorBeltStates::ConveyorBeltSimpleMission").element_type
+    assert isinstance(cb_simple_mission_def, rt.StateDef)
+    assert [parameter.name for parameter in cb_simple_mission_def.parameters] == ["conveyorBelt"]
+    assert [substate.name for substate in cb_simple_mission_def.substates] == ["Start", "WaitForPickup", "Idle"]
+    assert all(isinstance(substate, rt.StateUsage) for substate in cb_simple_mission_def.substates)
