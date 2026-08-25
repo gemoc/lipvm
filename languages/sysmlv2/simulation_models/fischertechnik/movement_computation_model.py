@@ -17,6 +17,13 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKi
 # either constant changes.
 ARM_ENCODER_STEP_PER_TICK: float = 63.0
 
+# 1 degree per tick (MAX_ROT_ENCODER_VALUE / 360 = 2880.0 / 360 = 8.0,
+# vacuum_gripper.py) -- paces goToPosition()/move()/moveToSafePosition()'s
+# rotEncoder axis, same role ARM_ENCODER_STEP_PER_TICK plays for armEncoder.
+# Literal rather than computed here for the same circular-import reason as
+# ARM_ENCODER_STEP_PER_TICK above.
+ROT_ENCODER_STEP_PER_TICK: float = 8.0
+
 # Matches the gripper arm's own visual pace (ARM_ENCODER_STEP_PER_TICK
 # above works out to 0.1 model-size units/tick via arm_encoder_to_model_size)
 # so a belt token and the gripper's arm read as moving at the same speed
@@ -61,9 +68,19 @@ def arm_encoder_to_model_size(arm_encoder: float, max_arm_encoder_value: float, 
     """
     return arm_encoder / max_arm_encoder_value * max_arm_extension_length
 
-def rot_encoder_to_model_size():
-
-    pass
+def rot_encoder_to_degrees(rot_encoder: float, max_rot_encoder_value: float) -> float:
+    """Linear ticks -> degrees conversion: `rot_encoder` (0..
+    max_rot_encoder_value) maps proportionally onto 0..360 degrees -- how
+    far the arm has swiveled around the tower
+    (VacuumGripperVisualization.draw()). Takes max_rot_encoder_value as a
+    parameter rather than importing MAX_ROT_ENCODER_VALUE from
+    vacuum_gripper.py directly, same circular-import reasoning as
+    arm_encoder_to_model_size above. Previously named
+    rot_encoder_to_model_size -- renamed since a rotation isn't a "model
+    size"; nothing called it under the old name yet (it was still an
+    empty stub), so this is a pure rename, not a breaking change.
+    """
+    return rot_encoder / max_rot_encoder_value * 360.0
 
 def encoder_changes_per_tick(current: float, target: float, step: float) -> float:
     """Moves `current` at most `step` closer to `target`, clamped so it

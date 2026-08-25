@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -5,7 +6,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import ExecutionStatusKind, VacuumGripperCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import encoder_changes_per_tick, \
-    ARM_ENCODER_STEP_PER_TICK
+    ARM_ENCODER_STEP_PER_TICK, ROT_ENCODER_STEP_PER_TICK
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
@@ -139,10 +140,32 @@ class VacuumGripperMachine(PartSimulationModel):
         set the expected encoder values, set the value of currentCommand attribute, and executionStatus become MUST_CONTINUE.
         :param targetPosition:
         '''
-        pass
+        self._expectedArmEncoderValue = targetPosition.horizontal
+        self._expectedRotationEncoderValue = targetPosition.rot
+        self._currentCommand = VacuumGripperCommandKind.GO_TO_POSITION
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def move(self, startPosition: Position3D, endPosition: Position3D):
-        pass
+        '''
+        This method signifies a movement of the gripper's arm from a starting position to an end position.
+        If the current encoder values do not match a start position, it is assumed that the movement is canceled,
+        and raise a warning. Otherwise, the gripper's arm will be moved to the end position
+        :param startPosition: a set of encoder values that specify the starting position of the gripper's arm.
+        :param endPosition: a set of encoder values that specify the (target) end position of the gripper's arm
+        :return:
+        '''
+        if self._armEncoder != startPosition.horizontal or self._rotEncoder != startPosition.rot:
+            warnings.warn(
+                f"move() canceled: current position (armEncoder={self._armEncoder}, "
+                f"rotEncoder={self._rotEncoder}) does not match startPosition "
+                f"(horizontal={startPosition.horizontal}, rot={startPosition.rot})"
+            )
+            return
+
+        self._expectedArmEncoderValue = endPosition.horizontal
+        self._expectedRotationEncoderValue = endPosition.rot
+        self._currentCommand = VacuumGripperCommandKind.MOVE
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def pick(self, targetPosition: Position3D):
         '''
@@ -162,15 +185,17 @@ class VacuumGripperMachine(PartSimulationModel):
         Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to True.
         :return:
         """
-        pass
+        self._vacuumActValve = True
+        self._vacuumActCompressorOn = True
 
     def release(self):
         """
         This method signifies a release action, where an item is released at the current arm position described by the current encoder values.
-        Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to True.
+        Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to False.
         :return:
         """
-        pass
+        self._vacuumActValve = False
+        self._vacuumActCompressorOn = False
 
     def stop(self):
         """
@@ -188,7 +213,10 @@ class VacuumGripperMachine(PartSimulationModel):
         executionStatus attributes to None
         :return:
         """
-        pass
+        self._expectedArmEncoderValue = 0.0
+        self._expectedRotationEncoderValue = 0.0
+        self._currentCommand = VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def retractArm(self):
         """
@@ -216,9 +244,40 @@ class VacuumGripperMachine(PartSimulationModel):
     def tick(self) -> None:
         if self._currentCommand in [VacuumGripperCommandKind.RETRACT_ARM, VacuumGripperCommandKind.EXTEND_ARM]:
             self._advance_or_retract_arm()
+        elif self._currentCommand in [VacuumGripperCommandKind.GO_TO_POSITION, VacuumGripperCommandKind.MOVE]:
+            self._advance_go_to_position()
+        elif self._currentCommand == VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION:
+            self._advance_move_to_safe_position()
 
     def _advance_or_retract_arm(self):
         self._armEncoder = encoder_changes_per_tick(self._armEncoder, self._expectedArmEncoderValue,
                                                     ARM_ENCODER_STEP_PER_TICK)
         if self._armEncoder == self._expectedArmEncoderValue:
+            self.stop()
+
+    def _advance_arm_and_rotation(self) -> bool:
+        """Steps armEncoder/rotEncoder one tick each toward their expected
+        values; returns True once both have arrived. Shared by
+        goToPosition/move (stop once arrived) and moveToSafePosition
+        (also release the vacuum once arrived) -- both GO_TO_POSITION and
+        MOVE drive the exact same two axes toward whatever
+        expectedArmEncoderValue/expectedRotationEncoderValue currently
+        holds, the only difference between them being how those got set
+        (goToPosition() takes a target directly; move() validates against
+        startPosition first).
+        """
+        self._armEncoder = encoder_changes_per_tick(self._armEncoder, self._expectedArmEncoderValue,
+                                                      ARM_ENCODER_STEP_PER_TICK)
+        self._rotEncoder = encoder_changes_per_tick(self._rotEncoder, self._expectedRotationEncoderValue,
+                                                      ROT_ENCODER_STEP_PER_TICK)
+        return self._armEncoder == self._expectedArmEncoderValue and self._rotEncoder == self._expectedRotationEncoderValue
+
+    def _advance_go_to_position(self):
+        if self._advance_arm_and_rotation():
+            self.stop()
+
+    def _advance_move_to_safe_position(self):
+        if self._advance_arm_and_rotation():
+            self._vacuumActValve = False
+            self._vacuumActCompressorOn = False
             self.stop()

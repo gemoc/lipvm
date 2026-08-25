@@ -96,6 +96,16 @@ PALETTE_SWATCH_GAP = 8
 PALETTE_SELECTED_BORDER_COLOR = (20, 20, 20)
 PALETTE_UNSELECTED_BORDER_COLOR = (150, 150, 150)
 
+INPUT_FIELD_WIDTH = 70
+INPUT_FIELD_HEIGHT = 22
+INPUT_FIELD_LABEL_WIDTH = 90     # fixed label column before each box -- avoids measuring each label's own text width just to lay things out
+INPUT_FIELD_GROUP_GAP = 20       # horizontal gap between one label+box pair and the next, in the same row
+INPUT_FIELD_ROW_GAP = 8          # vertical gap between input-field rows
+INPUT_FIELD_BACKGROUND_COLOR = (255, 255, 255)
+INPUT_FIELD_BORDER_COLOR = (150, 150, 150)
+INPUT_FIELD_FOCUSED_BORDER_COLOR = (90, 90, 220)  # matches SPEED_SLIDER_HANDLE_COLOR -- same "this is the live control" accent
+INPUT_FIELD_TEXT_COLOR = (20, 20, 20)
+
 SPEED_SLIDER_WIDTH = 220         # px, track width -- comfortably inside PANEL_WIDTH's usable area
 SPEED_SLIDER_TRACK_HEIGHT = 6    # px
 SPEED_SLIDER_HANDLE_RADIUS = 8   # px
@@ -152,6 +162,23 @@ def _speed_slider_value_from_x(mouse_x: int, track_rect: pygame.Rect) -> int:
     frac = max(0.0, min(1.0, frac))
     value = TICKS_PER_STEP_MAX - frac * (TICKS_PER_STEP_MAX - TICKS_PER_STEP_MIN)
     return round(value)
+
+
+def _is_valid_numeric_input_char(char: str, current_text: str) -> bool:
+    """Whether typing `char` next is legal for a float-typed input field
+    already containing `current_text` -- digits always are; '.' only if
+    `current_text` doesn't already have one; '-' only as the very first
+    character (a bare `float("...")` call would reject a stray/repeated
+    '-' or a second '.' anyway, but rejecting them here means the field
+    never displays something that can't parse in the first place).
+    """
+    if char.isdigit():
+        return True
+    if char == "." and "." not in current_text:
+        return True
+    if char == "-" and current_text == "":
+        return True
+    return False
 
 class FischertechnikVisualization(SimulationVisualization):
     """Fischertechnik's SimulationVisualization (generic.py). `run()` is
@@ -325,7 +352,8 @@ class FischertechnikVisualization(SimulationVisualization):
 
     def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
                              label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                             on_place_token, ticks_per_step: int) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect]:
+                             on_place_token, ticks_per_step: int, field_values: dict, focused_field
+                             ) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect, list[tuple[str, pygame.Rect]]]:
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, a token-color palette, then each machine's live
         attributes and an optional row of buttons, one stacked block per
@@ -351,11 +379,12 @@ class FischertechnikVisualization(SimulationVisualization):
         VacuumGripperMachine) got registered.
 
         Returns the (rect, callback) pairs for every button just drawn
-        (palette swatches and placement buttons alike) alongside the speed
-        slider's own hit-rect, so the caller's event loop can hit-test all
-        of them the same way, computed here in the same pass as the
-        drawing so the clickable area can never drift out of sync with
-        what's on screen.
+        (palette swatches and placement buttons alike), the speed slider's
+        own hit-rect, and every input field's (field_key, hit_rect) pair
+        (see panel_input_fields(), generic.py) -- so the caller's event
+        loop can hit-test all of them the same way, computed here in the
+        same pass as the drawing so the clickable area can never drift out
+        of sync with what's on screen.
         """
         panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
         pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
@@ -376,6 +405,7 @@ class FischertechnikVisualization(SimulationVisualization):
         buttons = self._draw_color_palette(screen, x, y, selected_color, on_select_color)
         y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
 
+        input_fields: list[tuple[str, pygame.Rect]] = []
         for machine in machines:
             drawer = self._drawers[type(machine)]
             part_name = machine.name.split("::")[-1]
@@ -387,13 +417,18 @@ class FischertechnikVisualization(SimulationVisualization):
                 screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
                 y += PANEL_LINE_HEIGHT
 
-            button_row = drawer.panel_buttons(screen, x, y, font, mouse_pos, machine, on_place_token)
+            field_row = drawer.panel_input_fields(screen, x, y, font, machine, field_values, focused_field)
+            input_fields.extend(field_row)
+            if field_row:
+                y = max(rect.bottom for _, rect in field_row) + INPUT_FIELD_ROW_GAP
+
+            button_row = drawer.panel_buttons(screen, x, y, font, mouse_pos, machine, on_place_token, field_values)
             buttons.extend(button_row)
             if button_row:
                 y += PANEL_BUTTON_HEIGHT
             y += PANEL_MACHINE_GAP
 
-        return buttons, speed_slider_rect
+        return buttons, speed_slider_rect, input_fields
 
     def _draw_viewport(self, screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
         """The main factory-floor drawing (background, grid, every belt,
@@ -475,6 +510,9 @@ class FischertechnikVisualization(SimulationVisualization):
         dragging_speed_slider = False
         buttons: list[tuple[pygame.Rect, object]] = []
         speed_slider_rect: pygame.Rect | None = None
+        input_fields: list[tuple[str, pygame.Rect]] = []
+        field_values: dict[str, str] = {}
+        focused_field: str | None = None
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -483,7 +521,10 @@ class FischertechnikVisualization(SimulationVisualization):
                     if speed_slider_rect is not None and speed_slider_rect.collidepoint(event.pos):
                         dragging_speed_slider = True
                         model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
+                    elif any(rect.collidepoint(event.pos) for _, rect in input_fields):
+                        focused_field = next(key for key, rect in input_fields if rect.collidepoint(event.pos))
                     else:
+                        focused_field = None
                         for rect, callback in buttons:
                             if rect.collidepoint(event.pos):
                                 callback()
@@ -492,16 +533,26 @@ class FischertechnikVisualization(SimulationVisualization):
                     dragging_speed_slider = False
                 elif event.type == pygame.MOUSEMOTION and dragging_speed_slider:
                     model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
+                elif event.type == pygame.KEYDOWN and focused_field is not None:
+                    current = field_values.get(focused_field, "")
+                    if event.key == pygame.K_BACKSPACE:
+                        field_values[focused_field] = current[:-1]
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_TAB):
+                        focused_field = None
+                    elif event.unicode and _is_valid_numeric_input_char(event.unicode, current):
+                        field_values[focused_field] = current + event.unicode
 
             if started:
                 model.tick()
                 on_tick()
                 unowned_token_count = len(model.tokens_on(None))
-                buttons, speed_slider_rect = self._draw_machine_panel(
+                buttons, speed_slider_rect, input_fields = self._draw_machine_panel(
                     screen, model.machines, unowned_token_count, font, label_font,
-                    selected_color, handle_select_color, handle_place_token, model.ticks_per_step)
+                    selected_color, handle_select_color, handle_place_token, model.ticks_per_step,
+                    field_values, focused_field)
             else:
                 buttons = self._draw_start_panel(screen, font, label_font, handle_start)
+                input_fields = []
                 speed_slider_rect = None
 
             self._draw_viewport(screen, font, model)

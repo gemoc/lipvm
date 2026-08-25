@@ -48,7 +48,8 @@ class ConveyorBeltVisualization(MachineVisualization):
         ]
 
     def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                       mouse_pos: tuple[int, int], machine: ConveyorBeltMachine, on_place_token) -> list[tuple[pygame.Rect, object]]:
+                       mouse_pos: tuple[int, int], machine: ConveyorBeltMachine, on_place_token,
+                       field_values: dict) -> list[tuple[pygame.Rect, object]]:
         """"Pre-Feed"/"Feed"/"Swap"/"Post-Swap" spawn a token of the
         panel's currently-selected color, owned by `machine`, at
         `machine.pre_feed_position()`/`feed_position()`/`swap_position()`/
