@@ -97,7 +97,6 @@ def main() -> None:
 
     stop_event = threading.Event()
     started_event = threading.Event()
-    already_printed: set[str] = set()
 
     def on_start() -> None:
         """Start button's click handler. Just releases the interpreter
@@ -131,9 +130,6 @@ def main() -> None:
         while not channel.instantiate_queue.empty():
             command = channel.instantiate_queue.get_nowait()
             model.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
-            if command.qualified_name not in already_printed:
-                already_printed.add(command.qualified_name)
-                print(f"Instantiated {command.qualified_name} ({command.part_def_name})")
 
         while not channel.action_queue.empty():
             command = channel.action_queue.get_nowait()

@@ -105,6 +105,7 @@ class Factory(BaseSimulationModel):
             setattr(instance, attr_name, custom_attribute_registry[custom_class_name](**values))
 
         self.register_machine(instance)
+        print(f"Machine {part_def_name} with name {qualified_name} is Instantiated")
 
     def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
         """Looks up the machine and calls the named action on it with
