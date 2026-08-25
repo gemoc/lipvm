@@ -152,7 +152,7 @@ The 70px gap between those pixel values and the actual canvas edges
 (`0`/`940`) is the overhang margin described above.
 
 Note `VIEWPORT_SIZE[0]` (`940`) is the boundary of the drawing area, not the
-full pygame window — the side panel (`PANEL_WIDTH = 300`) starts immediately
+full pygame window — the side panel (`PANEL_WIDTH = 500`) starts immediately
 after it (`PANEL_X = VIEWPORT_SIZE[0]`), so it's not available for placing
 parts.
 

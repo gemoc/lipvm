@@ -52,7 +52,7 @@ def build_simulation(xmi_path: str, simulation_model_class: type[BaseSimulationM
 
     return vm, model
 
-def run_interpreter_loop(vm: VirtualMachine, model: BaseSimulationModel, xmi_path: str, stop_event: threading.Event,
+def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event,
                           started_event: threading.Event, tick_delay: float) -> None:
     """
     The actual behaviour of the interpreter loop, which will live in the Background thread.
@@ -62,7 +62,6 @@ def run_interpreter_loop(vm: VirtualMachine, model: BaseSimulationModel, xmi_pat
 
     vm: LipVM virtual machine which will interpret the SysML model
     model: the actual simulation model class to be used
-    xmi_path: Path to the SysML model to be loaded (format .xmi)
     stop_event: signals the loop to stop once set (e.g. when the visualization window closes)
     started_event: signals the interpreter thread to start, which is performed by the Main thread
     tick_delay: seconds to sleep between reactive passes
@@ -72,12 +71,12 @@ def run_interpreter_loop(vm: VirtualMachine, model: BaseSimulationModel, xmi_pat
     if stop_event.is_set():
         return
 
-    # first step: instantiates every Parts described in the SysML model
+    # First step: enqueues an InstantiateCommand per Part described in the SysML
+    # model (PartInstantiation.evaluate() -> SimulationBridge.instantiate(),
+    # fire-and-forget). on_tick(), on the pygame thread, is what actually drains
+    # these into `model` and prints each one as it happens -- this thread has no
+    # way to know when that drain is done without adding new synchronization.
     vm.step()
-    instantiated = model.build_snapshot()
-    print(f"Instantiated {len(instantiated)} part(s) from {xmi_path}:")
-    for qualified_name in instantiated:
-        print(f"  {qualified_name}")
 
     # Continue to execute LipVM virtual machine step until the stop signal is performed in the main thread
     while not stop_event.is_set():
@@ -98,6 +97,7 @@ def main() -> None:
 
     stop_event = threading.Event()
     started_event = threading.Event()
+    already_printed: set[str] = set()
 
     def on_start() -> None:
         """Start button's click handler. Just releases the interpreter
@@ -112,6 +112,18 @@ def main() -> None:
         first, so a part created this call already exists for the
         action-drain and snapshot-publish steps that follow), then
         publishes a fresh snapshot for the interpreter thread to read.
+
+        `read_events_and_execute()` (syntax.py) re-enqueues an
+        InstantiateCommand for every PartInstantiation on every reactive
+        tick, not just the first -- deliberately, so a part added later
+        (e.g. a HOTSWAP edit) gets picked up rather than never. Repeats
+        are idempotent on `model.instantiate_machine()`'s side (a no-op
+        past the first call for a given qualified_name), but the "was
+        this actually new" fact isn't visible from here without a
+        Factory-specific query, and `model` is meant to stay any
+        `BaseSimulationModel` -- so `already_printed` tracks it locally
+        instead, printing each part exactly once regardless of how many
+        more times its command gets redrained afterward.
         """
 
         channel: ThreadChannel = vm.state.channel
@@ -119,6 +131,9 @@ def main() -> None:
         while not channel.instantiate_queue.empty():
             command = channel.instantiate_queue.get_nowait()
             model.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
+            if command.qualified_name not in already_printed:
+                already_printed.add(command.qualified_name)
+                print(f"Instantiated {command.qualified_name} ({command.part_def_name})")
 
         while not channel.action_queue.empty():
             command = channel.action_queue.get_nowait()
@@ -127,7 +142,7 @@ def main() -> None:
         channel.latest_snapshot.publish(model.build_snapshot())
 
     interpreter_thread = threading.Thread(
-        target=run_interpreter_loop, args=(vm, model, args.xmi, stop_event, started_event, args.tick_delay),
+        target=run_interpreter_loop, args=(vm, stop_event, started_event, args.tick_delay),
         daemon=True,
     )
     interpreter_thread.start()

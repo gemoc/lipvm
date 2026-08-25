@@ -5,7 +5,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.vac
     DEFAULT_ARM_PIPE_LENGTH, MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE,
 )
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
-from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import SCALE, _to_screen
+from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import SCALE, _to_screen, TOKEN_OUTLINE_COLOR
 
 # Farthest the arm can ever reach from center (fixed pipe + full extension)
 # -- drives how big the local composite surface needs to be, since the arm
@@ -25,8 +25,10 @@ VGR_BASE_COLOR = (90, 90, 100)         # the foot -- base metal plate
 VGR_TOWER_COLOR = (55, 55, 65)         # the mast the arm pivots around/reaches out from
 VGR_ARM_PIPE_COLOR = (120, 120, 130)   # fixed pipe, center to DEFAULT_ARM_PIPE_LENGTH -- doesn't itself extend
 VGR_ARM_PIPE_WIDTH = 6                 # px
-VGR_GRIPPER_COLOR = (210, 150, 30)     # tip marker, at the end of the (currently zero-length) extendable segment
-VGR_GRIPPER_RADIUS = 5                 # px
+VGR_GRIPPER_COLOR = (255, 195, 20)     # tip marker, at the end of the (currently zero-length) extendable segment -- brighter/more saturated than before so it pops against the base plate's cool greys even at 1px clearance from its edge
+VGR_GRIPPER_OUTLINE_COLOR = TOKEN_OUTLINE_COLOR  # ring around the marker -- the marker sits mostly past the base plate's own edge, over the viewport's white BACKGROUND_COLOR/light GRID_LINE_COLOR, so it needs the same dark outline factory_visualization.py already uses to keep a light-colored shape visible against that background (a white ring would vanish there)
+VGR_GRIPPER_RADIUS = 6                 # px
+VGR_GRIPPER_OUTLINE_WIDTH = 2           # px
 
 
 class VacuumGripperVisualization(MachineVisualization):
@@ -76,6 +78,7 @@ class VacuumGripperVisualization(MachineVisualization):
         pipe_end = (center[0] + DEFAULT_ARM_PIPE_LENGTH * SCALE, center[1])
         pygame.draw.line(surface, VGR_ARM_PIPE_COLOR, center, pipe_end, width=VGR_ARM_PIPE_WIDTH)
         pygame.draw.circle(surface, VGR_GRIPPER_COLOR, pipe_end, VGR_GRIPPER_RADIUS)
+        pygame.draw.circle(surface, VGR_GRIPPER_OUTLINE_COLOR, pipe_end, VGR_GRIPPER_RADIUS, width=VGR_GRIPPER_OUTLINE_WIDTH)
 
         rotated = pygame.transform.rotate(surface, machine.placementCoordinate.degrees)
         px, py = _to_screen(machine.placementCoordinate)

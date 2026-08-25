@@ -59,7 +59,11 @@ def _floor_layout(model_range: float, scale: int, belt_width: int, belt_height: 
 
 VIEWPORT_SIZE, ORIGIN = _floor_layout(MODEL_RANGE, SCALE, BELT_WIDTH, BELT_HEIGHT)  # factory floor drawing area, excludes the attribute panel
 
-PANEL_WIDTH = 300
+PANEL_WIDTH = 500  # wide enough for the longest panel_lines() row seen so far
+                    # -- "currentCommand: VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION"
+                    # renders at ~461px (default SysFont, size 18); 300 clipped
+                    # even ConveyorBeltVisualization's shorter "currentCommand:
+                    # ConveyorCommandKind.MOVE_TO_SENSOR" (~376px)
 WINDOW_SIZE = (VIEWPORT_SIZE[0] + PANEL_WIDTH, VIEWPORT_SIZE[1])
 BACKGROUND_COLOR = (255, 255, 255)
 
@@ -274,10 +278,15 @@ class FischertechnikVisualization(SimulationVisualization):
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, a token-color palette, then each machine's live
         attributes and an optional row of buttons, one stacked block per
-        machine. Machines are labeled by their position within their own
-        kind (`ConveyorBeltVisualization.panel_label` = "Belt", so "Belt 1",
-        "Belt 2", ...) rather than a real name — `ConveyorBeltMachine`
-        doesn't carry one. placementCoordinate is deliberately omitted:
+        machine. Machines are labeled by their own SysML part name (e.g.
+        "Belt: cb1") -- `machine.name` (`PartSimulationModel`) holds the
+        qualified name `Factory.instantiate_machine()` assigned it (see
+        `PartInstantiation.evaluate()`, runtime.py); the leaf segment
+        after the last `::` is what the model itself calls the part
+        (`part cb1 : ...`), same split `PartInstantiation.evaluate()`
+        already does for `part_def_name`. `drawer.panel_label` (e.g.
+        "Belt") is kept as a kind prefix so the machine's type is still
+        visible at a glance. placementCoordinate is deliberately omitted:
         it's already conveyed by the machine's drawn position in the
         viewport.
 
@@ -312,12 +321,11 @@ class FischertechnikVisualization(SimulationVisualization):
         buttons = self._draw_color_palette(screen, x, y, selected_color, on_select_color)
         y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
 
-        kind_counts: dict[type, int] = {}
         for machine in machines:
             drawer = self._drawers[type(machine)]
-            kind_counts[type(machine)] = kind_counts.get(type(machine), 0) + 1
+            part_name = machine.name.split("::")[-1]
 
-            screen.blit(label_font.render(f"{drawer.panel_label} {kind_counts[type(machine)]}", True, PANEL_TEXT_COLOR), (x, y))
+            screen.blit(label_font.render(f"{drawer.panel_label}: {part_name}", True, PANEL_TEXT_COLOR), (x, y))
             y += PANEL_LINE_HEIGHT
 
             for line in drawer.panel_lines(machine):
