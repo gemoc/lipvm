@@ -451,6 +451,14 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
         bound = {}
         if action_def is not None:
             for parameter in action_def.parameters:
+                if parameter.direction == ParamDirection.OUT:
+                    # An `out` parameter's default_value is its initial
+                    # *output* value (e.g. Grip's `out attribute
+                    # vacuumActValve : Boolean = true`), not an argument
+                    # the callee should receive -- including it here would
+                    # pass it straight through to the Python method as an
+                    # unexpected keyword argument.
+                    continue
                 if parameter.default_value is not None:
                     bound[parameter.name] = parameter.default_value.evaluate(runtime, current)
         if origin_occurrence is not None:
