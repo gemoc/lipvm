@@ -3,33 +3,6 @@ import math
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind
 
-# Chosen so the arm extends/retracts by 0.01 model-size units per tick.
-# MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE (vacuum_gripper.py)
-# gives the encoder-units-per-model-unit ratio; 0.01 of that ratio is one
-# tick's step:
-#   step = 0.01 * (MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE)
-#        = 0.01 * (1890.0 / 3.0)
-#        = 0.01 * 630.0
-#        = 6.3
-# Hardcoded rather than computed from those two constants directly: both
-# live in vacuum_gripper.py, which already imports this module, so
-# importing them back here would be circular. Update this by hand if
-# either constant changes.
-ARM_ENCODER_STEP_PER_TICK: float = 6.3
-
-# 1 degree per tick (MAX_ROT_ENCODER_VALUE / 360 = 2880.0 / 360 = 8.0,
-# vacuum_gripper.py) -- paces goToPosition()/move()/moveToSafePosition()'s
-# rotEncoder axis, same role ARM_ENCODER_STEP_PER_TICK plays for armEncoder.
-# Literal rather than computed here for the same circular-import reason as
-# ARM_ENCODER_STEP_PER_TICK above.
-ROT_ENCODER_STEP_PER_TICK: float = 8.0
-
-# Matches the gripper arm's own visual pace (ARM_ENCODER_STEP_PER_TICK
-# above works out to 0.01 model-size units/tick via arm_encoder_to_model_size)
-# so a belt token and the gripper's arm read as moving at the same speed
-# on screen, instead of one covering ground faster than the other.
-CB_STEP_SIZE_PER_TICK: float = 0.01
-
 def rotate_offset(offset: float, degrees: int) -> tuple[float, float]:
     """(dx, dy) of a vector of length `offset` along local +x, rotated by
     `degrees` -- the shared primitive behind both a belt's fixed feed/swap
@@ -39,7 +12,7 @@ def rotate_offset(offset: float, degrees: int) -> tuple[float, float]:
     return offset * math.cos(theta), offset * math.sin(theta)
 
 
-def cb_step_position(current: FactoryCoordinate, degrees: int, direction: DirectionKind, step_size: float = CB_STEP_SIZE_PER_TICK) -> FactoryCoordinate:
+def cb_step_position(current: FactoryCoordinate, degrees: int, direction: DirectionKind, step_size: float) -> FactoryCoordinate:
     """One tick's worth of movement from `current`: `step_size` model
     units along the axis defined by `degrees` -- toward local +x for
     FORWARD, local -x for BACKWARD. Continuous (no rounding) -- a token's

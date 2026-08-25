@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position, CB_STEP_SIZE_PER_TICK
+from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # The belt's own physical housing, the length is 27.5cm and width is 6cm
@@ -21,6 +21,16 @@ END_OF_CB_TOLERANCE: float = 1.0
 # each end (END_OF_CB_TOLERANCE) -- was an independently guessed
 # placeholder (4) before those real measurements existed.
 FEED_TO_SWAP_LENGTH = CB_LENGTH - 2 * END_OF_CB_TOLERANCE
+
+# Largest step that evenly divides both CB_LENGTH and FEED_TO_SWAP_LENGTH
+# (math.gcd, scaled to/from integers -- `* 100`/`/ 100` assumes at most 2
+# decimal places of model-unit precision, i.e. 0.01 model units = 0.05cm
+# real, finer than a hand measurement warrants), then split into 10 ticks
+# -- the actual speed knob. Guarantees a token moving between any of the
+# belt's own structural points (pre_feed/feed/swap/post_swap) always
+# lands exactly on the next one, however CB_LENGTH/END_OF_CB_TOLERANCE
+# end up being remeasured, with no need to hand-verify divisibility.
+CB_STEP_SIZE_PER_TICK: float = math.gcd(round(CB_LENGTH * 100), round(FEED_TO_SWAP_LENGTH * 100)) / 100 / 10
 
 # A token within this distance of a sensor's coordinate counts as
 # "arrived" -- since cb_step_position() moves continuously now (no
@@ -274,7 +284,8 @@ class ConveyorBeltMachine(PartSimulationModel):
         arrived."
         """
         for token in self._factory.tokens_on(self):
-            new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
+            new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction,
+                                            CB_STEP_SIZE_PER_TICK)
             token.move_to(new_position)
             if not self.contains_position(new_position):
                 self._factory.transfer_token(token, None)

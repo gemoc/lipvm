@@ -61,6 +61,19 @@ class Factory(BaseSimulationModel):
     def tokens_on(self, machine):
         return [token for token, owner in self._owners.items() if owner is machine]
 
+    def machine_at(self, position):
+        """The first registered machine whose `contains_position(position)`
+        says yes, or `None` if no machine claims that spot. Polymorphic --
+        doesn't know or care which machine kinds actually have a
+        footprint (PartSimulationModel.contains_position() defaults to
+        False; ConveyorBeltMachine is the only current override) -- used
+        by a machine that needs to hand a token off to whatever
+        physically occupies a position it's dropping it at (e.g.
+        VacuumGripperMachine.release()), without that caller needing to
+        know about any other machine kind directly.
+        """
+        return next((machine for machine in self._machines.values() if machine.contains_position(position)), None)
+
     @property
     def tokens(self):
         return list(self._owners.keys())
