@@ -101,17 +101,14 @@ class VacuumGripperVisualization(MachineVisualization):
     def panel_input_fields(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
                             machine: VacuumGripperMachine, field_values: dict, focused_field
                             ) -> list[tuple[str, pygame.Rect]]:
-        """Two rows: "Target" (horizontal/rot -- used by goToPosition() and
-        doubles as move()'s endPosition) and "Move start" (horizontal/rot
-        -- move()'s startPosition only). One shared "target" pair rather
-        than 6 fully independent fields, since goToPosition and move's end
-        are the same underlying concept (where the arm should end up).
+        """One row: "Target" (horizontal/rot) -- the shared targetPosition
+        both pick() and place() take, read by their respective panel
+        buttons at click time.
         """
         fields = []
         row_y = y
         for row_label, keys in (
             ("Target", ("target_horizontal", "target_rot")),
-            ("Move start", ("move_start_horizontal", "move_start_rot")),
         ):
             field_x = x
             row_label_surface = font.render(f"{row_label}:", True, PANEL_TEXT_COLOR)
@@ -140,44 +137,39 @@ class VacuumGripperVisualization(MachineVisualization):
     def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
                        mouse_pos: tuple[int, int], machine: VacuumGripperMachine, on_place_token,
                        field_values: dict) -> list[tuple[pygame.Rect, object]]:
-        """"Go to Pos"/"Move"/"Safe Pos"/"Grip"/"Release" exercise
-        goToPosition()/move()/moveToSafePosition()/grip()/release()
-        directly, so the encoder tick math and vacuum-flag flips can be
-        checked by eye from the panel without a SysML scenario driving it.
-        goToPosition/move read their target(s) from `field_values` at
-        click time, not draw time -- panel_buttons() is rebuilt fresh
-        every frame, so each callback closure always captures whatever's
-        currently typed the moment it's actually clicked (same reasoning
-        ConveyorBeltVisualization's token-placement buttons already rely
-        on for the panel's selected color). `on_place_token` goes unused
-        here, kept only to match the shared
-        MachineVisualization.panel_buttons() signature.
+        """"Pick"/"Place"/"Safe Pos" exercise pick()/place()/
+        moveToSafePosition() directly, so the compound move-then-grip(),
+        move-then-release(), and safe-position sequences can be checked
+        by eye from the panel without a SysML scenario driving it.
+        pick()/place() read their shared targetPosition from
+        `field_values` at click time, not draw time -- panel_buttons()
+        is rebuilt fresh every frame, so each callback closure always
+        captures whatever's currently typed the moment it's actually
+        clicked (same reasoning ConveyorBeltVisualization's
+        token-placement buttons already rely on for the panel's selected
+        color). `on_place_token` goes unused here, kept only to match the
+        shared MachineVisualization.panel_buttons() signature.
         """
-        def handle_go_to_position():
-            machine.goToPosition(Position3D(
+        def handle_pick():
+            machine.pick(Position3D(
                 vertical=0.0,
                 horizontal=_parse_field(field_values, "target_horizontal"),
                 rot=_parse_field(field_values, "target_rot"),
             ))
 
-        def handle_move():
-            machine.move(
-                Position3D(vertical=0.0,
-                           horizontal=_parse_field(field_values, "move_start_horizontal"),
-                           rot=_parse_field(field_values, "move_start_rot")),
-                Position3D(vertical=0.0,
-                           horizontal=_parse_field(field_values, "target_horizontal"),
-                           rot=_parse_field(field_values, "target_rot")),
-            )
+        def handle_place():
+            machine.place(Position3D(
+                vertical=0.0,
+                horizontal=_parse_field(field_values, "target_horizontal"),
+                rot=_parse_field(field_values, "target_rot"),
+            ))
 
         buttons = []
         button_x = x
         for label, action in (
-            ("Go to Pos", handle_go_to_position),
-            ("Move", handle_move),
+            ("Pick", handle_pick),
+            ("Place", handle_place),
             ("Safe Pos", machine.moveToSafePosition),
-            ("Grip", machine.grip),
-            ("Release", machine.release),
         ):
             rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
             color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR

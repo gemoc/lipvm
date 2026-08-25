@@ -194,13 +194,29 @@ class VacuumGripperMachine(PartSimulationModel):
         '''
         This method signifies a compound movement, where a gripper's arm is moved to a particular position and
         then pick object that exists in this position. To describe this compound, it would use the goToPosition method
-        and then grip method.
+        and then grip method. Compound at the Python level even though the SysML model calls it as one atomic
+        perform-action: goToPosition() only sets the target, the actual arrival happens over several tick()
+        calls, so currentCommand is set to PICK (not GO_TO_POSITION) and _advance_pick() -- reusing the same
+        _advance_arm_and_rotation() goToPosition() itself dispatches through -- calls grip() only once both
+        axes have actually arrived.
         :param targetPosition:
         '''
-        pass
+        self._expectedArmEncoderValue = targetPosition.horizontal
+        self._expectedRotationEncoderValue = targetPosition.rot
+        self._currentCommand = VacuumGripperCommandKind.PICK
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def place(self, targetPosition: Position3D):
-        pass
+        '''
+        This method signifies a compound movement, where a gripper's arm is moved to a particular position and
+        then releases the object it's holding at that position. Mirrors pick() exactly, just calling release()
+        instead of grip() once the arm has actually arrived.
+        :param targetPosition:
+        '''
+        self._expectedArmEncoderValue = targetPosition.horizontal
+        self._expectedRotationEncoderValue = targetPosition.rot
+        self._currentCommand = VacuumGripperCommandKind.PLACE
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def _tip_position(self) -> FactoryCoordinate:
         return gripper_tip_position(
@@ -298,6 +314,10 @@ class VacuumGripperMachine(PartSimulationModel):
             self._advance_go_to_position()
         elif self._currentCommand == VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION:
             self._advance_move_to_safe_position()
+        elif self._currentCommand == VacuumGripperCommandKind.PICK:
+            self._advance_pick()
+        elif self._currentCommand == VacuumGripperCommandKind.PLACE:
+            self._advance_place()
         self._carry_held_token()
 
     def _carry_held_token(self):
@@ -324,13 +344,12 @@ class VacuumGripperMachine(PartSimulationModel):
     def _advance_arm_and_rotation(self) -> bool:
         """Steps armEncoder/rotEncoder one tick each toward their expected
         values; returns True once both have arrived. Shared by
-        goToPosition/move (stop once arrived) and moveToSafePosition
-        (also release the vacuum once arrived) -- both GO_TO_POSITION and
-        MOVE drive the exact same two axes toward whatever
-        expectedArmEncoderValue/expectedRotationEncoderValue currently
-        holds, the only difference between them being how those got set
-        (goToPosition() takes a target directly; move() validates against
-        startPosition first).
+        goToPosition/move (stop once arrived), moveToSafePosition (also
+        release the vacuum once arrived), and pick/place (also grip()/
+        release() once arrived) -- every one of these drives the exact
+        same two axes toward whatever expectedArmEncoderValue/
+        expectedRotationEncoderValue currently holds, the only difference
+        between them being how those got set and what happens on arrival.
         """
         self._armEncoder = encoder_changes_per_tick(self._armEncoder, self._expectedArmEncoderValue,
                                                       ARM_ENCODER_STEP_PER_TICK)
@@ -343,6 +362,16 @@ class VacuumGripperMachine(PartSimulationModel):
             self.stop()
 
     def _advance_move_to_safe_position(self):
+        if self._advance_arm_and_rotation():
+            self.release()
+            self.stop()
+
+    def _advance_pick(self):
+        if self._advance_arm_and_rotation():
+            self.grip()
+            self.stop()
+
+    def _advance_place(self):
         if self._advance_arm_and_rotation():
             self.release()
             self.stop()
