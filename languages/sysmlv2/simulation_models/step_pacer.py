@@ -10,6 +10,22 @@ class StepPacer:
         self._period = period
         self._counters = {}
 
+    @property
+    def period(self) -> int:
+        return self._period
+
+    @period.setter
+    def period(self, value: int) -> None:
+        """Changeable live (e.g. a speed slider) -- takes effect on each
+        key's next `is_due()` call. Doesn't touch `_counters`: a key
+        already partway toward the old period just measures the rest of
+        its wait against the new one, which can make its very next call
+        due a little earlier or later than a full fresh period would --
+        acceptable one-off jitter for a live speed change, not worth
+        resetting every in-flight counter over.
+        """
+        self._period = value
+
     def is_due(self, key) -> bool:
         elapsed = self._counters.get(key, 0) + 1
         if elapsed < self._period:

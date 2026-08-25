@@ -4,6 +4,8 @@ from typing import Optional
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate, Position3D
 from languages.sysmlv2.simulation_models.fischertechnik.enums import ExecutionStatusKind, VacuumGripperCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
+from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import encoder_changes_per_tick, \
+    ARM_ENCODER_STEP_PER_TICK
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
@@ -27,9 +29,8 @@ DEFAULT_ARM_PIPE_LENGTH: float = 2.6
 MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE: float = 3.0
 
 # The gripper's arm max encoder value (To fully extend the arm) which would be 1881
-# Round it up to 1880. However, when looking at the max extension length in terms of model size
-# Dividing 3.0 into 1880 is too much. Thus, I am using 240 for now
-MAX_ARM_ENCODER_VALUE: float = 1880.0
+# Round it up to 1890, so that it is easier to be divided by the current max arm extension length model.
+MAX_ARM_ENCODER_VALUE: float = 1890.0
 
 # There is also a maximum value for the rotation encoder value
 # Based on current data, the actual maximum encoder value is 2986 (for 360 degree)
@@ -202,11 +203,22 @@ class VacuumGripperMachine(PartSimulationModel):
 
         pass
 
-    def tick(self) -> None:
-        if self._currentCommand == VacuumGripperCommandKind.RETRACT_ARM:
-            self._advance_retract_arm()
+    def extendArm(self):
+        """
+        This method does not exist in the HMI command of Fischertechnik platform. The purpose of this method
+        is to show the arm can be extended.
+        :return:
+        """
+        self._expectedArmEncoderValue = MAX_ARM_ENCODER_VALUE
+        self._currentCommand = VacuumGripperCommandKind.EXTEND_ARM
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
-    def _advance_retract_arm(self):
-        self._armEncoder = _step_toward(self._armEncoder, self._expectedArmEncoderValue, ARM_ENCODER_STEP_PER_TICK)
+    def tick(self) -> None:
+        if self._currentCommand in [VacuumGripperCommandKind.RETRACT_ARM, VacuumGripperCommandKind.EXTEND_ARM]:
+            self._advance_or_retract_arm()
+
+    def _advance_or_retract_arm(self):
+        self._armEncoder = encoder_changes_per_tick(self._armEncoder, self._expectedArmEncoderValue,
+                                                    ARM_ENCODER_STEP_PER_TICK)
         if self._armEncoder == self._expectedArmEncoderValue:
             self.stop()

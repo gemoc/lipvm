@@ -30,6 +30,9 @@ class VacuumGripperCommandKind(Enum):
     MOVE_TO_SAFE_POSITION = 'MTSP'
     RETRACT_ARM = 'RA'
 
+    #The commands below are not exist in reality, just for demo purposes
+    EXTEND_ARM = 'EA'
+
 
 class TokenColorKind(Enum):
     BLUE = 0

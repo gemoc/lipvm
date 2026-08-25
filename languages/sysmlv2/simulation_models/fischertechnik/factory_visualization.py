@@ -17,6 +17,7 @@ import pygame
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
+from languages.sysmlv2.simulation_models.fischertechnik.factory import TICKS_PER_STEP_MIN, TICKS_PER_STEP_MAX
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import FULL_LENGTH
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
@@ -95,6 +96,13 @@ PALETTE_SWATCH_GAP = 8
 PALETTE_SELECTED_BORDER_COLOR = (20, 20, 20)
 PALETTE_UNSELECTED_BORDER_COLOR = (150, 150, 150)
 
+SPEED_SLIDER_WIDTH = 220         # px, track width -- comfortably inside PANEL_WIDTH's usable area
+SPEED_SLIDER_TRACK_HEIGHT = 6    # px
+SPEED_SLIDER_HANDLE_RADIUS = 8   # px
+SPEED_SLIDER_HIT_PADDING = 6     # px, grown around the visible track/handle so dragging isn't pixel-perfect
+SPEED_SLIDER_TRACK_COLOR = (200, 200, 200)
+SPEED_SLIDER_HANDLE_COLOR = (90, 90, 220)
+
 BELT_FRAME_COLOR = (60, 60, 60)      # guide rails, visible along the belt's long edges from above
 BELT_SURFACE_COLOR = (35, 35, 35)    # the belt's top surface, inset from the rails
 BELT_TREAD_COLOR = (70, 70, 70)      # tread ridges, running across the belt's direction of travel
@@ -128,6 +136,22 @@ def _to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
     px = ORIGIN[0] + coord.x * SCALE
     py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
     return int(px), int(py)
+
+
+def _speed_slider_value_from_x(mouse_x: int, track_rect: pygame.Rect) -> int:
+    """Inverse of the handle-position math in `_draw_speed_slider` --
+    given a mouse x position (from a click or drag over the slider),
+    returns the TICKS_PER_STEP value it corresponds to. Deliberately
+    inverted (left = TICKS_PER_STEP_MAX/slowest, right =
+    TICKS_PER_STEP_MIN/fastest): dragging right to go faster matches the
+    usual "more/right" intuition better than a raw ascending
+    left-to-right mapping would, given a lower TICKS_PER_STEP means a
+    *faster* simulation.
+    """
+    frac = (mouse_x - track_rect.left) / track_rect.width
+    frac = max(0.0, min(1.0, frac))
+    value = TICKS_PER_STEP_MAX - frac * (TICKS_PER_STEP_MAX - TICKS_PER_STEP_MIN)
+    return round(value)
 
 class FischertechnikVisualization(SimulationVisualization):
     """Fischertechnik's SimulationVisualization (generic.py). `run()` is
@@ -272,9 +296,36 @@ class FischertechnikVisualization(SimulationVisualization):
             swatch_x += PALETTE_SWATCH_SIZE + PALETTE_SWATCH_GAP
         return buttons
 
+    def _draw_speed_slider(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
+                            ticks_per_step: int) -> pygame.Rect:
+        """Draws a horizontal "Speed" slider: a label showing the current
+        TICKS_PER_STEP value, a track, and a draggable handle positioned
+        by it (via `_speed_slider_value_from_x`'s inverse mapping).
+        Doesn't take a callback or do any hit-testing itself -- `run()`'s
+        event loop owns dragging state (click-and-hold spans multiple
+        frames, unlike the one-shot buttons `panel_buttons()`/
+        `_draw_color_palette()` return), so this method only draws and
+        hands back the track's hit-rect (padded by
+        SPEED_SLIDER_HIT_PADDING so a drag doesn't need pixel-perfect
+        aim) for `run()` to test clicks/drags against.
+        """
+        label = font.render(f"Speed (TICKS_PER_STEP={ticks_per_step}):", True, PANEL_TEXT_COLOR)
+        screen.blit(label, (x, y))
+
+        track_y = y + PANEL_LINE_HEIGHT + SPEED_SLIDER_HANDLE_RADIUS
+        track_rect = pygame.Rect(x, track_y - SPEED_SLIDER_TRACK_HEIGHT // 2, SPEED_SLIDER_WIDTH, SPEED_SLIDER_TRACK_HEIGHT)
+        pygame.draw.rect(screen, SPEED_SLIDER_TRACK_COLOR, track_rect, border_radius=SPEED_SLIDER_TRACK_HEIGHT // 2)
+
+        frac = (TICKS_PER_STEP_MAX - ticks_per_step) / (TICKS_PER_STEP_MAX - TICKS_PER_STEP_MIN)
+        frac = max(0.0, min(1.0, frac))
+        handle_x = track_rect.left + frac * track_rect.width
+        pygame.draw.circle(screen, SPEED_SLIDER_HANDLE_COLOR, (int(handle_x), track_y), SPEED_SLIDER_HANDLE_RADIUS)
+
+        return track_rect.inflate(SPEED_SLIDER_HIT_PADDING * 2, SPEED_SLIDER_HANDLE_RADIUS * 2)
+
     def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
                              label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                             on_place_token) -> list[tuple[pygame.Rect, object]]:
+                             on_place_token, ticks_per_step: int) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect]:
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, a token-color palette, then each machine's live
         attributes and an optional row of buttons, one stacked block per
@@ -300,10 +351,11 @@ class FischertechnikVisualization(SimulationVisualization):
         VacuumGripperMachine) got registered.
 
         Returns the (rect, callback) pairs for every button just drawn
-        (palette swatches and placement buttons alike), so the caller's event
-        loop can hit-test all of them the same way, computed here in the same
-        pass as the drawing so the clickable area can never drift out of sync
-        with what's on screen.
+        (palette swatches and placement buttons alike) alongside the speed
+        slider's own hit-rect, so the caller's event loop can hit-test all
+        of them the same way, computed here in the same pass as the
+        drawing so the clickable area can never drift out of sync with
+        what's on screen.
         """
         panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
         pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
@@ -315,6 +367,9 @@ class FischertechnikVisualization(SimulationVisualization):
 
         screen.blit(font.render(f"Unowned tokens: {unowned_token_count}", True, PANEL_TEXT_COLOR), (x, y))
         y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
+
+        speed_slider_rect = self._draw_speed_slider(screen, x, y, font, ticks_per_step)
+        y += PANEL_LINE_HEIGHT + SPEED_SLIDER_HANDLE_RADIUS * 2 + PANEL_SUMMARY_GAP
 
         screen.blit(font.render("Token color to place:", True, PANEL_TEXT_COLOR), (x, y))
         y += PANEL_LINE_HEIGHT
@@ -338,7 +393,7 @@ class FischertechnikVisualization(SimulationVisualization):
                 y += PANEL_BUTTON_HEIGHT
             y += PANEL_MACHINE_GAP
 
-        return buttons
+        return buttons, speed_slider_rect
 
     def _draw_viewport(self, screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
         """The main factory-floor drawing (background, grid, every belt,
@@ -417,25 +472,37 @@ class FischertechnikVisualization(SimulationVisualization):
             model.spawn_token(token, machine)
 
         running = True
+        dragging_speed_slider = False
         buttons: list[tuple[pygame.Rect, object]] = []
+        speed_slider_rect: pygame.Rect | None = None
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    for rect, callback in buttons:
-                        if rect.collidepoint(event.pos):
-                            callback()
-                            break
+                    if speed_slider_rect is not None and speed_slider_rect.collidepoint(event.pos):
+                        dragging_speed_slider = True
+                        model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
+                    else:
+                        for rect, callback in buttons:
+                            if rect.collidepoint(event.pos):
+                                callback()
+                                break
+                elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    dragging_speed_slider = False
+                elif event.type == pygame.MOUSEMOTION and dragging_speed_slider:
+                    model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
 
             if started:
                 model.tick()
                 on_tick()
                 unowned_token_count = len(model.tokens_on(None))
-                buttons = self._draw_machine_panel(screen, model.machines, unowned_token_count, font, label_font,
-                                                    selected_color, handle_select_color, handle_place_token)
+                buttons, speed_slider_rect = self._draw_machine_panel(
+                    screen, model.machines, unowned_token_count, font, label_font,
+                    selected_color, handle_select_color, handle_place_token, model.ticks_per_step)
             else:
                 buttons = self._draw_start_panel(screen, font, label_font, handle_start)
+                speed_slider_rect = None
 
             self._draw_viewport(screen, font, model)
             pygame.display.flip()

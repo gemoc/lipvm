@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
+from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position, CB_STEP_SIZE_PER_TICK
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # Model-unit distance between a belt's feed and swap sensor positions --
@@ -15,6 +15,17 @@ FEED_TO_SWAP_LENGTH = 4
 # Model-unit distance across the belt's full ownable extent: FEED_TO_SWAP_LENGTH
 # In reality, let's say right now the full length is 30cm
 FULL_LENGTH = 6
+
+# A token within this distance of a sensor's coordinate counts as
+# "arrived" -- since cb_step_position() moves continuously now (no
+# per-step rounding), a token's position isn't guaranteed to land
+# exactly on the sensor's coordinate the way exact `==` would require,
+# even though CB_STEP_SIZE_PER_TICK evenly divides FEED_TO_SWAP_LENGTH/
+# FULL_LENGTH in exact arithmetic (float accumulation still drifts by a
+# tiny amount). Half a step-size is generous enough to absorb that drift
+# while still being far smaller than one step, so it can't cause a token
+# to register as "arrived" a whole step early.
+SENSOR_ARRIVAL_TOLERANCE = CB_STEP_SIZE_PER_TICK / 2
 
 
 @dataclass(frozen=True)
@@ -79,13 +90,15 @@ class ConveyorBeltMachine(PartSimulationModel):
     @property
     def conveyorSensFeed(self):
         feed = self.feed_position()
-        return any(token.position.x == feed.x and token.position.y == feed.y
+        return any(math.isclose(token.position.x, feed.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
+                   and math.isclose(token.position.y, feed.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
                    for token in self._factory.tokens_on(self))
 
     @property
     def conveyorSensSwap(self):
         swap = self.swap_position()
-        return any(token.position.x == swap.x and token.position.y == swap.y
+        return any(math.isclose(token.position.x, swap.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
+                   and math.isclose(token.position.y, swap.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
                    for token in self._factory.tokens_on(self))
 
     @property
@@ -111,8 +124,12 @@ class ConveyorBeltMachine(PartSimulationModel):
     def _end_position(self, local_x_offset: float) -> FactoryCoordinate:
         """Coordinate of a feed/swap end: local_x_offset along the belt's
         own unrotated x-axis, rotated by placementCoordinate.degrees around
-        its center. Rounded to the nearest grid cell since FactoryCoordinate
-        is integer-only -- exact for 0/90/180/270 degree rotations.
+        its center. Rounded to the nearest grid cell -- these are fixed
+        structural reference points (unlike a token's own continuously-
+        moving position, cb_step_position()), so keeping them clean whole
+        numbers is deliberate, not a FactoryCoordinate-wide constraint.
+        Exact (no rounding needed in principle) for 0/90/180/270 degree
+        rotations.
         """
         dx, dy = rotate_offset(local_x_offset, self._placementCoordinate.degrees)
         return FactoryCoordinate(
@@ -140,16 +157,19 @@ class ConveyorBeltMachine(PartSimulationModel):
         """
         return self._end_position(FULL_LENGTH / 2)
 
-    def _local_x_offset(self, position: FactoryCoordinate) -> int:
+    def _local_x_offset(self, position: FactoryCoordinate) -> float:
         """Inverse of `_end_position`: given an absolute coordinate,
         returns how far it sits from the belt's center along the belt's
-        own unrotated x-axis. Exact (no drift) for 0/90/180/270 degree
-        placements, same as `_end_position`.
+        own unrotated x-axis. Not rounded (unlike `_end_position`) --
+        used against a continuously-moving token's position (the
+        overshoot check in `_move_owned_tokens_one_step()`), where
+        snapping to a grid cell first would make the boundary check up to
+        half a model unit late or early.
         """
         theta = math.radians(self._placementCoordinate.degrees)
         dx = position.x - self._placementCoordinate.x
         dy = position.y - self._placementCoordinate.y
-        return round(dx * math.cos(theta) + dy * math.sin(theta))
+        return dx * math.cos(theta) + dy * math.sin(theta)
 
     def moveToSensor(self, direction):
         """Starts the belt moving toward whichever end sensor `direction`

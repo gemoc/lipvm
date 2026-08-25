@@ -7,6 +7,14 @@ from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 # render loop's default 60fps (FactoryVisualization.run()'s tick_rate).
 TICKS_PER_STEP = 30
 
+# Range for the live speed slider (factory_visualization.py) -- 1 is the
+# fastest this can ever go (a paced step every single Factory.tick()
+# call, the render loop's own per-frame ceiling); 90 is 3x slower than
+# the TICKS_PER_STEP default above, chosen as "clearly sluggish" without
+# being effectively frozen.
+TICKS_PER_STEP_MIN = 1
+TICKS_PER_STEP_MAX = 90
+
 
 class Factory(BaseSimulationModel):
     """Central registry of every machine and Token in the simulation, and
@@ -56,6 +64,20 @@ class Factory(BaseSimulationModel):
     @property
     def tokens(self):
         return list(self._owners.keys())
+
+    @property
+    def ticks_per_step(self) -> int:
+        """Live pacing period, shared by every machine (`tick()` below) --
+        backed by `self._pacer.period` (`StepPacer`), not a separate copy.
+        Exposed here rather than making callers reach into `self._pacer`
+        directly, since `_pacer` is otherwise an implementation detail of
+        how `tick()` paces itself.
+        """
+        return self._pacer.period
+
+    @ticks_per_step.setter
+    def ticks_per_step(self, value: int) -> None:
+        self._pacer.period = max(TICKS_PER_STEP_MIN, min(TICKS_PER_STEP_MAX, int(value)))
 
     def tick(self):
         """Advances every machine with an active command by one step,
