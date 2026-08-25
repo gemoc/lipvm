@@ -112,6 +112,17 @@ class PartSimulationModel(ABC):
         """This method will be called by the simulation for every tick."""
         raise NotImplementedError("Sub-class must implement this method.")
 
+    def contains_position(self, position) -> bool:
+        """Whether `position` falls within this machine's own ownable
+        footprint -- e.g. a ConveyorBeltMachine claims tokens landing
+        anywhere along its own physical extent. Default: no footprint --
+        most machine kinds don't passively own space (e.g.
+        VacuumGripperMachine only ever gains a token through its own
+        explicit grip() action, never by something merely being nearby),
+        so this only needs overriding by a machine kind that does.
+        """
+        return False
+
 class CustomAttributeModel(ABC):
     """Marker base for every simulated custom attribute's Python mirror
     (FactoryCoordinate, and any future custom attribute type). Purely a

@@ -18,7 +18,7 @@ import pygame
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import TICKS_PER_STEP_MIN, TICKS_PER_STEP_MAX
-from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import FULL_LENGTH
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import CB_LENGTH, CB_WIDTH
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import SimulationVisualization
@@ -32,14 +32,13 @@ MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODE
 # owned (see ConveyorBeltMachine.advance()) -- still visually sits on the
 # drawn belt, keeping the same 10px-per-side margin the original design
 # had just beyond FEED_TO_SWAP_LENGTH / 2 alone.
-BELT_WIDTH = FULL_LENGTH * SCALE + 20
+BELT_WIDTH = CB_LENGTH * SCALE + 20
 
 # Model-unit, cross-belt (perpendicular-to-travel) dimension -- purely a
 # rendering size, unlike FEED_TO_SWAP_LENGTH/FULL_LENGTH (conveyor_belt.py), which
 # also drive movement math. No simulation behavior depends on this value,
 # so it lives here rather than in conveyor_belt.py.
-BELT_CROSS_WIDTH = 2
-BELT_HEIGHT = BELT_CROSS_WIDTH * SCALE
+BELT_HEIGHT = CB_WIDTH * SCALE
 
 
 def _floor_layout(model_range: float, scale: int, belt_width: int, belt_height: int) -> tuple[tuple[int, int], tuple[int, int]]:

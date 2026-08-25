@@ -5,7 +5,7 @@ from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 # One visible hop every this many Factory.tick() calls -- 0.5s at the
 # render loop's default 60fps (FactoryVisualization.run()'s tick_rate).
-TICKS_PER_STEP = 30
+TICKS_PER_STEP = 5
 
 # Range for the live speed slider (factory_visualization.py) -- 1 is the
 # fastest this can ever go (a paced step every single Factory.tick()

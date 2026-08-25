@@ -7,21 +7,27 @@ from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position, CB_STEP_SIZE_PER_TICK
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
-# Model-unit distance between a belt's feed and swap sensor positions --
-# the span a token actually rides across, end to end.
-# In reality, let's say right now the full length is 24cm
-FEED_TO_SWAP_LENGTH = 4
+# The belt's own physical housing, the length is 27.5cm and width is 6cm
+# In model size, the length would be 5.5 and width is 1.1
+CB_LENGTH: float = 5.5
+CB_WIDTH: float = 1.1
 
-# Model-unit distance across the belt's full ownable extent: FEED_TO_SWAP_LENGTH
-# In reality, let's say right now the full length is 30cm
-FULL_LENGTH = 6
+#There is a tolerance gap of 5 cm on either end, where it is the placement for the sensor
+END_OF_CB_TOLERANCE: float = 1.0
+
+# Model-unit distance between a belt's feed and swap sensor positions --
+# the span a token actually rides across, end to end. Derived from the
+# belt's own physical length (CB_LENGTH) minus the sensor's inset from
+# each end (END_OF_CB_TOLERANCE) -- was an independently guessed
+# placeholder (4) before those real measurements existed.
+FEED_TO_SWAP_LENGTH = CB_LENGTH - 2 * END_OF_CB_TOLERANCE
 
 # A token within this distance of a sensor's coordinate counts as
 # "arrived" -- since cb_step_position() moves continuously now (no
 # per-step rounding), a token's position isn't guaranteed to land
 # exactly on the sensor's coordinate the way exact `==` would require,
 # even though CB_STEP_SIZE_PER_TICK evenly divides FEED_TO_SWAP_LENGTH/
-# FULL_LENGTH in exact arithmetic (float accumulation still drifts by a
+# CB_LENGTH in exact arithmetic (float accumulation still drifts by a
 # tiny amount). Half a step-size is generous enough to absorb that drift
 # while still being far smaller than one step, so it can't cause a token
 # to register as "arrived" a whole step early.
@@ -145,17 +151,17 @@ class ConveyorBeltMachine(PartSimulationModel):
         return self._end_position(FEED_TO_SWAP_LENGTH / 2)
 
     def pre_feed_position(self) -> FactoryCoordinate:
-        """One step before the feed end -- the FULL_LENGTH boundary on the
+        """One step before the feed end -- the CB_LENGTH boundary on the
         feed side: still ownable if a token sits here, but one step short of
         actually triggering conveyorSensFeed.
         """
-        return self._end_position(-FULL_LENGTH / 2)
+        return self._end_position(-CB_LENGTH / 2)
 
     def post_swap_position(self) -> FactoryCoordinate:
-        """One step past the swap end -- the FULL_LENGTH boundary on the
+        """One step past the swap end -- the CB_LENGTH boundary on the
         swap side, mirroring pre_feed_position().
         """
-        return self._end_position(FULL_LENGTH / 2)
+        return self._end_position(CB_LENGTH / 2)
 
     def _local_x_offset(self, position: FactoryCoordinate) -> float:
         """Inverse of `_end_position`: given an absolute coordinate,
@@ -170,6 +176,17 @@ class ConveyorBeltMachine(PartSimulationModel):
         dx = position.x - self._placementCoordinate.x
         dy = position.y - self._placementCoordinate.y
         return dx * math.cos(theta) + dy * math.sin(theta)
+
+    def _local_y_offset(self, position: FactoryCoordinate) -> float:
+        """Companion to `_local_x_offset`: how far `position` sits from
+        the belt's center along its own unrotated y-axis (perpendicular
+        to travel) -- same rotation, the other component. Used by
+        `contains_position()` for the belt's CB_WIDTH bound.
+        """
+        theta = math.radians(self._placementCoordinate.degrees)
+        dx = position.x - self._placementCoordinate.x
+        dy = position.y - self._placementCoordinate.y
+        return -dx * math.sin(theta) + dy * math.cos(theta)
 
     def moveToSensor(self, direction):
         """Starts the belt moving toward whichever end sensor `direction`
@@ -192,7 +209,7 @@ class ConveyorBeltMachine(PartSimulationModel):
         pushing the token off the belt's physical extent -- unlike
         moveToSensor, whose success condition is stopping exactly at the
         boundary, this one's success condition *is* leaving it (past
-        FULL_LENGTH / 2, same as MOVE_NB_STEPS's overshoot handling in
+        CB_LENGTH / 2, same as MOVE_NB_STEPS's overshoot handling in
         advance()). Only sets the command/direction
         -- the actual per-tick movement, overshoot-disowning, and
         completion check happen in advance()/Factory.tick().
@@ -231,10 +248,27 @@ class ConveyorBeltMachine(PartSimulationModel):
         elif self._currentCommand == ConveyorCommandKind.MOVE_OUT:
             self._advance_move_out()
 
+    def contains_position(self, position: FactoryCoordinate) -> bool:
+        """Whether `position` falls within this belt's own physical
+        footprint: along travel, as far out as post_swap_position()
+        itself sits (not a separately re-derived CB_LENGTH / 2 -- reusing
+        the same rounded reference point _end_position() already produces
+        means pre_feed_position()/post_swap_position() can never fall
+        just outside their own boundary, whatever CB_LENGTH happens to
+        be); across travel, within CB_WIDTH / 2 of center. Same length
+        check `_move_owned_tokens_one_step()` already used inline for its
+        disown condition, now the single source of truth for both that
+        and any future ownership-by-geometry query (e.g. a released token
+        landing on this belt).
+        """
+        within_length = abs(self._local_x_offset(position)) <= self._local_x_offset(self.post_swap_position())
+        within_width = abs(self._local_y_offset(position)) <= CB_WIDTH / 2
+        return within_length and within_width
+
     def _move_owned_tokens_one_step(self):
         """Moves every token this belt currently owns one step along
         `_direction`, disowning any that end up strictly past the belt's
-        physical ends (see FULL_LENGTH). Shared by every `_advance_*`
+        physical ends (see CB_LENGTH). Shared by every `_advance_*`
         method that can actually move a token -- MOVE_TO_SENSOR only calls
         this once its own pre-condition (below) has ruled out "already
         arrived."
@@ -242,7 +276,7 @@ class ConveyorBeltMachine(PartSimulationModel):
         for token in self._factory.tokens_on(self):
             new_position = cb_step_position(token.position, self._placementCoordinate.degrees, self._direction)
             token.move_to(new_position)
-            if abs(self._local_x_offset(new_position)) > FULL_LENGTH / 2:
+            if not self.contains_position(new_position):
                 self._factory.transfer_token(token, None)
 
     def _advance_move_to_sens(self):

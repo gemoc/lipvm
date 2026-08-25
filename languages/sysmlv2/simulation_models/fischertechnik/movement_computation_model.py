@@ -3,19 +3,19 @@ import math
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind
 
-# Chosen so the arm extends/retracts by 0.1 model-size units per tick.
+# Chosen so the arm extends/retracts by 0.01 model-size units per tick.
 # MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE (vacuum_gripper.py)
-# gives the encoder-units-per-model-unit ratio; 0.1 of that ratio is one
+# gives the encoder-units-per-model-unit ratio; 0.01 of that ratio is one
 # tick's step:
-#   step = 0.1 * (MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE)
-#        = 0.1 * (1890.0 / 3.0)
-#        = 0.1 * 630.0
-#        = 63.0
+#   step = 0.01 * (MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE)
+#        = 0.01 * (1890.0 / 3.0)
+#        = 0.01 * 630.0
+#        = 6.3
 # Hardcoded rather than computed from those two constants directly: both
 # live in vacuum_gripper.py, which already imports this module, so
 # importing them back here would be circular. Update this by hand if
 # either constant changes.
-ARM_ENCODER_STEP_PER_TICK: float = 63.0
+ARM_ENCODER_STEP_PER_TICK: float = 6.3
 
 # 1 degree per tick (MAX_ROT_ENCODER_VALUE / 360 = 2880.0 / 360 = 8.0,
 # vacuum_gripper.py) -- paces goToPosition()/move()/moveToSafePosition()'s
@@ -25,10 +25,10 @@ ARM_ENCODER_STEP_PER_TICK: float = 63.0
 ROT_ENCODER_STEP_PER_TICK: float = 8.0
 
 # Matches the gripper arm's own visual pace (ARM_ENCODER_STEP_PER_TICK
-# above works out to 0.1 model-size units/tick via arm_encoder_to_model_size)
+# above works out to 0.01 model-size units/tick via arm_encoder_to_model_size)
 # so a belt token and the gripper's arm read as moving at the same speed
-# on screen, instead of the token covering ground 10x faster.
-CB_STEP_SIZE_PER_TICK: float = 0.1
+# on screen, instead of one covering ground faster than the other.
+CB_STEP_SIZE_PER_TICK: float = 0.01
 
 def rotate_offset(offset: float, degrees: int) -> tuple[float, float]:
     """(dx, dy) of a vector of length `offset` along local +x, rotated by
@@ -81,6 +81,31 @@ def rot_encoder_to_degrees(rot_encoder: float, max_rot_encoder_value: float) -> 
     empty stub), so this is a pure rename, not a breaking change.
     """
     return rot_encoder / max_rot_encoder_value * 360.0
+
+def gripper_tip_position(placement: FactoryCoordinate, arm_encoder: float, rot_encoder: float,
+                          max_arm_encoder_value: float, max_arm_extension_length: float,
+                          max_rot_encoder_value: float, default_arm_pipe_length: float) -> FactoryCoordinate:
+    """Model-space FactoryCoordinate of the gripper's tip right now --
+    the same geometry VacuumGripperVisualization.draw() renders (fixed
+    pipe + live extension along local +x, swiveled by rotEncoder, then
+    carried by the machine's own placementCoordinate) -- computed fresh
+    here rather than read off a stored attribute, so grip()/release() can
+    never see it go stale relative to armEncoder/rotEncoder/
+    placementCoordinate. Same reasoning as ConveyorBeltMachine's
+    conveyorSensFeed/conveyorSensSwap being computed @property, not
+    cached fields, and the same rotate_offset() primitive
+    ConveyorBeltMachine._end_position() uses for its own fixed points.
+    Takes every max_*/default_arm_pipe_length value as a parameter rather
+    than importing it from vacuum_gripper.py directly, same
+    circular-import reasoning as arm_encoder_to_model_size/
+    rot_encoder_to_degrees above.
+    """
+    extension = arm_encoder_to_model_size(arm_encoder, max_arm_encoder_value, max_arm_extension_length)
+    local_x = default_arm_pipe_length + extension
+    degrees = placement.degrees + rot_encoder_to_degrees(rot_encoder, max_rot_encoder_value)
+    dx, dy = rotate_offset(local_x, degrees)
+    return FactoryCoordinate(placement.x + dx, placement.y + dy, degrees)
+
 
 def encoder_changes_per_tick(current: float, target: float, step: float) -> float:
     """Moves `current` at most `step` closer to `target`, clamped so it

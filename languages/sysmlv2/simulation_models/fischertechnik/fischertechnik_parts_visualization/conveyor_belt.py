@@ -18,7 +18,7 @@ class ConveyorBeltVisualization(MachineVisualization):
     their actual model-coordinate positions -- FEED_TO_SWAP_LENGTH / 2
     from center, not the edges of the drawn belt, since BELT_WIDTH is
     drawn wider than that to also cover the overshoot zone (see
-    FULL_LENGTH) -- in the belt's own unrotated left/right frame, as
+    CB_LENGTH) -- in the belt's own unrotated left/right frame, as
     opposed to a side-on silhouette, which would show the rollers as
     circular ends. Still a static picture (matches Milestone 1 scope).
 
@@ -53,9 +53,9 @@ class ConveyorBeltVisualization(MachineVisualization):
         """"Pre-Feed"/"Feed"/"Swap"/"Post-Swap" spawn a token of the
         panel's currently-selected color, owned by `machine`, at
         `machine.pre_feed_position()`/`feed_position()`/`swap_position()`/
-        `post_swap_position()` respectively -- the belt's own FULL_LENGTH
+        `post_swap_position()` respectively -- the belt's own CB_LENGTH
         boundary on each side plus its two sensors, not an arbitrary click
-        position (see conveyor_belt.py: FULL_LENGTH is already "one step"
+        position (see conveyor_belt.py: CB_LENGTH is already "one step"
         beyond the sensors in the model's own movement logic, reused here
         rather than inventing a new distance). The one manual control
         left now that guard evaluation/action dispatch are both wired up

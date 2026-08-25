@@ -1,3 +1,4 @@
+import math
 import warnings
 from dataclasses import dataclass
 from typing import Optional
@@ -6,7 +7,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import ExecutionStatusKind, VacuumGripperCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import encoder_changes_per_tick, \
-    ARM_ENCODER_STEP_PER_TICK, ROT_ENCODER_STEP_PER_TICK
+    gripper_tip_position, ARM_ENCODER_STEP_PER_TICK, ROT_ENCODER_STEP_PER_TICK
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
@@ -40,6 +41,15 @@ MAX_ARM_ENCODER_VALUE: float = 1890.0
 # For now, to show it in the model size, I will make it 8 encoder values for 1 degree. So in total, the maximum
 # encoder values for the model size is 8*360 = 2880
 MAX_ROT_ENCODER_VALUE: float = 2880.0
+
+# How close a Token's position must be to the gripper tip (each axis) to
+# count as "under" it for grip()/release() -- kept independent of
+# factory_visualization.py's TOKEN_RADIUS/SCALE (fischertechnik_parts/
+# stays visualization-agnostic, same boundary TODAYS-TASKS.md's
+# MachineVisualization split already established), so picked as a plain
+# model-unit value in the same ballpark as a token's own on-screen
+# footprint (TOKEN_RADIUS=8px / SCALE=20 = 0.4 model units).
+GRIP_TOLERANCE: float = 0.5
 
 @dataclass(frozen=True)
 class VacuumGripperMachineSnapshot:
@@ -179,23 +189,49 @@ class VacuumGripperMachine(PartSimulationModel):
     def place(self, targetPosition: Position3D):
         pass
 
+    def _tip_position(self) -> FactoryCoordinate:
+        return gripper_tip_position(
+            self._placementCoordinate, self._armEncoder, self._rotEncoder,
+            MAX_ARM_ENCODER_VALUE, MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE, MAX_ROT_ENCODER_VALUE,
+            DEFAULT_ARM_PIPE_LENGTH,
+        )
+
     def grip(self):
         """
         This method signifies a grip action, where an item is picked at the current arm position described by the current encoder values.
-        Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to True.
+        Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to True --
+        matches Grip's own `out attribute ... = true` defaults in the SysML model (vgr-cb-true-simulation.xmi),
+        set unconditionally regardless of whether anything was actually found to pick up.
+        If a Token currently sits under the gripper tip (whichever machine currently owns it, e.g. a belt),
+        ownership also transfers to this machine -- the actual physical "pick up". No-op on the token side
+        (flags still flip) if nothing is within GRIP_TOLERANCE of the tip.
         :return:
         """
         self._vacuumActValve = True
         self._vacuumActCompressorOn = True
 
+        tip = self._tip_position()
+        for token in self._factory.tokens:
+            if math.isclose(token.position.x, tip.x, abs_tol=GRIP_TOLERANCE) and \
+                    math.isclose(token.position.y, tip.y, abs_tol=GRIP_TOLERANCE):
+                self._factory.transfer_token(token, self)
+                break
+
     def release(self):
         """
         This method signifies a release action, where an item is released at the current arm position described by the current encoder values.
         Such an action described by setting the vacuumActValve and vacuumActCompressorOn attributes to False.
+        Any Token currently held by this machine is dropped at the gripper tip's current position and
+        becomes unowned -- mirrors ConveyorBeltMachine's own disown pattern (_move_owned_tokens_one_step()).
         :return:
         """
         self._vacuumActValve = False
         self._vacuumActCompressorOn = False
+
+        tip = self._tip_position()
+        for token in self._factory.tokens_on(self):
+            token.move_to(tip)
+            self._factory.transfer_token(token, None)
 
     def stop(self):
         """
@@ -248,6 +284,22 @@ class VacuumGripperMachine(PartSimulationModel):
             self._advance_go_to_position()
         elif self._currentCommand == VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION:
             self._advance_move_to_safe_position()
+        self._carry_held_token()
+
+    def _carry_held_token(self):
+        """Keeps any Token currently held by this machine glued to the
+        gripper tip -- called unconditionally at the end of every tick()
+        (after whichever _advance_* just moved the encoders this tick),
+        so a held token tracks the tip through RETRACT_ARM/EXTEND_ARM
+        (armEncoder only) and GO_TO_POSITION/MOVE/MOVE_TO_SAFE_POSITION
+        (both axes) alike, without each of those needing its own copy of
+        this logic. Mirrors ConveyorBeltMachine's own
+        _move_owned_tokens_one_step(), just against the tip position
+        instead of a belt step.
+        """
+        tip = self._tip_position()
+        for token in self._factory.tokens_on(self):
+            token.move_to(tip)
 
     def _advance_or_retract_arm(self):
         self._armEncoder = encoder_changes_per_tick(self._armEncoder, self._expectedArmEncoderValue,
@@ -278,6 +330,5 @@ class VacuumGripperMachine(PartSimulationModel):
 
     def _advance_move_to_safe_position(self):
         if self._advance_arm_and_rotation():
-            self._vacuumActValve = False
-            self._vacuumActCompressorOn = False
+            self.release()
             self.stop()
