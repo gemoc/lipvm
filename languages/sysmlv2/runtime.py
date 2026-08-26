@@ -518,22 +518,34 @@ class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
     """
     pass
 
+class EventOccurrence(RuntimeStateElement, metaclass=MetaEClass):
+    event_type = EReference(eType=ItemDef, lower=1, upper=1, containment=False)
+    source = EReference(eType=Reference, lower=0, upper=1, containment=True)
+
 class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
 
     signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=True)
+    via = EReference(eType=Reference, lower=0, upper=1, containment=True)
 
-    def evaluate(self, item: "ItemDef") -> bool:
-        """Returns whether `item` (a pending ItemDef popped off
-        ExecutableStateUsage.pending, see _check_and_fire()) is the signal
-        this trigger fires on — the only thing a signal trigger's firing
-        depends on, so this is all _match_transition() needs from it,
-        mirroring TransitionTriggerByWhenCondition.evaluate() one class
-        over (that one takes runtime/current instead of item, since a
-        when-condition's firing depends on live attribute state rather
-        than an incoming item -- each trigger kind's evaluate() takes
-        whatever it actually needs, not a shared signature).
-        """
-        return self.signal_origin.qualified_name == item.qualified_name
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage",
+                 event_occurrence: "EventOccurrence") -> bool:
+
+        # If the events captured by the executable state do not match the guard, immediate false
+        if self.signal_origin.qualified_name != event_occurrence.event_type.qualified_name:
+            return False
+
+        # Events match the guard, and this event is broadcasted without any medium (via), then it is automatically True
+        if self.via is None:
+            return True
+
+        # Otherwise, check if the event occurrence is malformed, i.e., the event is without any owning part
+        # If yes, then it is automatically False
+        if event_occurrence.source is None:
+            return False
+
+        # If no, then continue to evaluate
+        bound_part = ReferenceValue(el=self.via).evaluate(runtime, current)
+        return bound_part is not None and bound_part.qualified_name == event_occurrence.source.qualified_name
 
 class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 
@@ -709,9 +721,9 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # Which of `type.substates` is presently active.
     current = EReference(eType=StateUsage, lower=0, upper=1, containment=False)
 
-    # FIFO mailbox: items received while this instance was in some state,
+    # FIFO mailbox: events received while this instance was in some state,
     # not yet matched against a transition and consumed.
-    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False, unique=False)
+    pending = EReference(eType=EventOccurrence, lower=0, upper=-1, containment=False, unique=False)
 
     @operation(is_step=True)
     def evaluate(self, runtime: RuntimeState):
@@ -783,7 +795,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         """
 
         # Treat the pending attribute as a queue, take the first element and remove it from the queue
-        processed_item: Optional[ItemDef] = None
+        processed_item: Optional[EventOccurrence] = None
         if current_context.pending:
             processed_item = current_context.pending[0]
             current_context.pending.remove(processed_item)
@@ -800,7 +812,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
             if isinstance(trigger, TransitionTriggerBySignal):
-                if processed_item is not None and trigger.evaluate(processed_item):
+                if processed_item is not None and trigger.evaluate(runtime_state, current_context, processed_item):
                     return transition
             elif isinstance(trigger, TransitionTriggerByWhenCondition):
                 if not snapshot_captured:
@@ -812,7 +824,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         if processed_item is not None:
             logger.warning(
                 "%s: dropping pending item %s — no transition out of %s matches it",
-                self.qualified_name, processed_item.qualified_name, self.current.qualified_name)
+                self.qualified_name, processed_item.event_type.qualified_name, self.current.qualified_name)
 
         return None
 

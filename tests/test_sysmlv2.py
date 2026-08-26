@@ -582,7 +582,7 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
 
     # When: an IdleTrans signal arrives while in Idle.
     idle_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::IdleTrans").element_type
-    main_usage.pending.append(idle_trans)
+    main_usage.pending.append(rt.EventOccurrence(event_type=idle_trans))
 
     # Step 3
     vm.step()
@@ -598,7 +598,7 @@ def test_simple_sysmlv2_example_with_behaviour(capsys):
 
     # When: a NextTrans signal arrives while in Next.
     next_trans = sysml_state.lookup_table_item_defs.get_reference("SimpleSimulationPackage::NextTrans").element_type
-    main_usage.pending.append(next_trans)
+    main_usage.pending.append(rt.EventOccurrence(event_type=next_trans))
 
     # Step 4
     vm.step()

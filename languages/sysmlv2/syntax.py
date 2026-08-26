@@ -959,27 +959,15 @@ endif
 
     def read_events_and_execute(self, runtime, executable_stats):
 
-        # Re-checked every reactive tick, not just once upfront -- idempotent
-        # via SimulationBridge.instantiate() (fire-and-forget; the owning
-        # thread's drain step is itself idempotent, see
-        # Factory.instantiate_machine()), so this is a no-op for parts
-        # already instantiated. Doing it here rather than once in evaluate()
-        # means a PartInstantiation added later (e.g. by a HOTSWAP edit to a
-        # running program) gets picked up on the next tick instead of never.
-        #
-        # Skipped entirely if no channel is configured on this RuntimeState
-        # -- not every scenario cares about simulation behavior (e.g.
-        # test_simple_conveyor_belt_simulation only checks parsed model
-        # structure, never touches Factory), so this shouldn't be a hard
-        # requirement for every vm.step() call. RuntimeState.__getattr__
-        # raises when the name isn't found in `runtime.elements`, so
-        # actually attempting the access is the reliable way to check "is
-        # one configured."
-
+        # Part instantiation (parsed from SysML model and to be performed by the simulation model) and
+        # event occurrences (produced by the simulation model and to be evaluated according to the SysML model)
+        # are constantly checked for every VM step
         if runtime.channel is not None:
             part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
             for an_instantiation in part_instantiation_elements:
                 an_instantiation.evaluate(runtime)
+
+            drain_event_queue(runtime.channel, runtime.sysml.lookup_table_item_defs, executable_stats)
 
         return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
 
@@ -1015,6 +1003,50 @@ def executable_state_usages(lookup_table_executable_state_usages):
 def part_instantiations(lookup_table_part_instantiations):
     return [record.element_type
             for record in lookup_table_part_instantiations.records]
+
+def drain_event_queue(channel, item_defs_table, executable_stats) -> None:
+    """Drains `channel.event_queue` (EventCommand instances, see
+    facade_proxy.py) and broadcasts each one into every currently-running
+    ExecutableStateUsage's own `pending` mailbox -- not just the first
+    match, since more than one usage (e.g. two independent missions) may
+    each have their own transition waiting on the same event type, and
+    with no real concurrency between them, each needs its own chance to
+    evaluate its own guards against it before the event is gone. Whether a
+    given usage actually reacts to it is entirely up to its own
+    TransitionTriggerBySignal.evaluate() check (and the existing
+    drop-and-log fallback for a pending item nothing matches) -- this
+    function doesn't pre-filter who receives it.
+
+    command.item_name is a bare declared name (e.g.
+    "CBCommandSuccessEventMessage"), resolved here against
+    `item_defs_table` via get_reference_by_name() -- mirrors how
+    on_tick() used to do this same resolution on the simulation side
+    before it moved here (see EVENT-QUEUE-DESIGN.md).
+
+    command.source_qualified_name (the emitting part's qualified name, or
+    None for a broadcast event) is wrapped into a Reference and carried
+    on the EventOccurrence's own `source` field, so a `via`-qualified
+    TransitionTriggerBySignal can later tell which part an event actually
+    came from -- same reference_type tag _resolve_feature_reference()
+    already uses for a PartUsage referent.
+    """
+    while not channel.event_queue.empty():
+        command = channel.event_queue.get_nowait()
+        record = item_defs_table.get_reference_by_name(command.item_name)
+        if record is None:
+            logger.warning(
+                "event %r: no ItemDef with this declared name -- skipping",
+                command.item_name)
+            continue
+        source = None
+        if command.source_qualified_name is not None:
+            source = rt.Reference(
+                qualified_name=command.source_qualified_name,
+                reference_type=rt.PartInstantiation.__name__,
+            )
+        occurrence = rt.EventOccurrence(event_type=record.element_type, source=source)
+        for usage in executable_stats:
+            usage.pending.append(occurrence)
 
 class DerivedRelatedelement(EDerivedCollection):
     pass
@@ -6161,6 +6193,24 @@ owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
                 return bound
         return None
 
+    def _via_reference(self):
+        """Returns a Reference to the formal part parameter named by this
+        AcceptActionUsage's `via` clause (e.g. `accept StopEventMessage via
+        conveyorBelt` -> conveyorBelt), or None for a broadcast trigger
+        with no receiver at all (e.g. bare `accept StopEventMessage`).
+
+        A second, distinct ParameterMembership from the one _signal_type()
+        reads: that one's bound via a FeatureTyping (the item type), this
+        one's bound via a FeatureValue -> FeatureReferenceExpression (the
+        receiving part) -- so distinguished by which shape is actually
+        bound to it, not by ordinal position.
+        """
+        for parameter in _owned_by_kind(self, ParameterMembership):
+            bound = _bound_value(parameter)
+            if isinstance(bound, FeatureReferenceExpression):
+                return _resolve_feature_reference(bound)
+        return None
+
     def to_trigger(self):
         """Builds a TransitionTrigger from this AcceptActionUsage's trigger
         parameter: TransitionTriggerBySignal for a plain signal-typed
@@ -6174,7 +6224,10 @@ owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
         if when_condition is not None:
             condition_node = _expression_operands(when_condition)[0]
             return rt.TransitionTriggerByWhenCondition(condition=_build_expression(condition_node))
-        return rt.TransitionTriggerBySignal(signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__))
+        return rt.TransitionTriggerBySignal(
+            signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__),
+            via=self._via_reference(),
+        )
 
 
 class DerivedAction(EDerivedCollection):
