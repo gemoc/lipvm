@@ -33,7 +33,6 @@ class VacuumGripperCommandKind(Enum):
     #The commands below are not exist in reality, just for demo purposes
     EXTEND_ARM = 'EA'
 
-
 class TokenColorKind(Enum):
     BLUE = 0
     WHITE = 1

@@ -1,6 +1,7 @@
 import math
 import warnings
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate, Position3D
@@ -64,6 +65,12 @@ ARM_ENCODER_STEP_PER_TICK: float = 0.05 * (MAX_ARM_ENCODER_VALUE / MAX_ARM_EXTEN
 # ARM_ENCODER_STEP_PER_TICK above.
 ROT_ENCODER_STEP_PER_TICK: float = (MAX_ROT_ENCODER_VALUE / 360) / 2
 
+# Collection of event messages that can be emitted by the Vacuum Gripper.
+# Look at the SysML models, package VacuumGripperMessages
+class VGREventMessages(Enum):
+
+    COMMAND_SUCCESS = 'VGRCommandSuccessEventMessage'
+
 @dataclass(frozen=True)
 class VacuumGripperMachineSnapshot:
     currentCommand: Optional[VacuumGripperCommandKind]
@@ -92,7 +99,7 @@ class VacuumGripperMachine(PartSimulationModel):
 
         self._factory = factory
 
-        self._currentCommand: Optional[VacuumGripperCommandKind] = None
+        self._currentCommand: Optional[VacuumGripperCommandKind] = VacuumGripperCommandKind.STOP
         self._executionStatus: Optional[ExecutionStatusKind] = None
 
         self._verticalEncoder: float= 0.0
@@ -118,6 +125,13 @@ class VacuumGripperMachine(PartSimulationModel):
     @property
     def currentCommand(self):
         return self._currentCommand
+
+    def is_idle(self) -> bool:
+        """STOP is this machine's own idle sentinel (not None -- see
+        __init__/stop()), same override ConveyorBeltMachine needs for the
+        same reason.
+        """
+        return self._currentCommand == VacuumGripperCommandKind.STOP
 
     @property
     def executionStatus(self):
@@ -265,12 +279,17 @@ class VacuumGripperMachine(PartSimulationModel):
 
     def stop(self):
         """
-        This method stops any action performed by the gripper. Basically, just set the value of currentCommand and
-        executionStatus attributes to None
+        This method stops any action performed by the gripper. Basically, just set the value of currentCommand
+        back to STOP (this machine's own idle sentinel) and executionStatus to None, then reports the command as
+        successfully completed to the Factory.
         :return:
         """
-        self._currentCommand = None
+        self._currentCommand = VacuumGripperCommandKind.STOP
         self._executionStatus = None
+        self.emit_event_to_factory(VGREventMessages.COMMAND_SUCCESS)
+
+    def emit_event_to_factory(self, event: VGREventMessages):
+        self._factory.record_event(event.value, self.name)
 
     def moveToSafePosition(self):
         """
@@ -294,8 +313,15 @@ class VacuumGripperMachine(PartSimulationModel):
         self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def setup(self):
-
-        pass
+        """
+        Since in the current implementation, we are unsure what is the difference between setup and moveToSafePosition,
+        we will just make the behaviour similar
+        :return:
+        """
+        self._expectedArmEncoderValue = 0.0
+        self._expectedRotationEncoderValue = 0.0
+        self._currentCommand = VacuumGripperCommandKind.SETUP
+        self._executionStatus = ExecutionStatusKind.MUST_CONTINUE
 
     def extendArm(self):
         """
@@ -312,7 +338,7 @@ class VacuumGripperMachine(PartSimulationModel):
             self._advance_or_retract_arm()
         elif self._currentCommand in [VacuumGripperCommandKind.GO_TO_POSITION, VacuumGripperCommandKind.MOVE]:
             self._advance_go_to_position()
-        elif self._currentCommand == VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION:
+        elif self._currentCommand in [VacuumGripperCommandKind.MOVE_TO_SAFE_POSITION, VacuumGripperCommandKind.SETUP]:
             self._advance_move_to_safe_position()
         elif self._currentCommand == VacuumGripperCommandKind.PICK:
             self._advance_pick()

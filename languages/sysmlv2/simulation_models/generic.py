@@ -115,10 +115,12 @@ class PartSimulationModel(ABC):
             **{field.name: getattr(self, field.name) for field in dataclasses.fields(self.snapshot_type)}
         )
 
+    @abstractmethod
     def tick(self) -> None:
         """This method will be called by the simulation for every tick."""
         raise NotImplementedError("Sub-class must implement this method.")
 
+    @abstractmethod
     def is_idle(self) -> bool:
         """Whether this machine has no active command to advance --
         Factory.tick() uses this to skip dispatching idle machines, so
@@ -128,7 +130,7 @@ class PartSimulationModel(ABC):
         `currentCommand is None`, since that's every machine kind's
         sentinel today except ConveyorBeltMachine, which overrides this.
         """
-        return self.currentCommand is None
+        raise NotImplementedError("Subclass need to implement this")
 
     def contains_position(self, position) -> bool:
         """Whether `position` falls within this machine's own ownable
