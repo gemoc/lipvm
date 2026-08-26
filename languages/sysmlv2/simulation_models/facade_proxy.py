@@ -53,13 +53,16 @@ class EventCommand:
     simulation side finished producing, to be delivered into the
     interpreter's ExecutableStateUsage mailboxes (see EVENT-QUEUE-DESIGN.md).
 
-    item_qualified_name: the ItemDef's qualified name (e.g.
-        "VacuumGripperSystem::VacuumGripperMessages::VGRCommandSuccessEventMessage")
+    item_name: the ItemDef's bare declared name (e.g.
+        "VGRCommandSuccessEventMessage"), not a qualified one -- the
+        simulation side has no access to the parsed SysML model to resolve
+        one itself, so resolution to a qualified name happens later, on
+        the interpreter thread (see LookupTable.get_reference_by_name()).
     source_qualified_name: the emitting part's qualified name (e.g.
         "Main::vgr1"), or None for a broadcast event with no specific origin
         (e.g. StopEventMessage).
     """
-    item_qualified_name: str
+    item_name: str
     source_qualified_name: str | None = None
 
 
@@ -139,7 +142,7 @@ class SimulationBridge:
         channel.action_queue.put(ActionCommand(qualified_name, action_name, args))
 
     @staticmethod
-    def emit_event(channel: ThreadChannel, item_qualified_name: str, source_qualified_name: str | None = None):
+    def emit_event(channel: ThreadChannel, item_name: str, source_qualified_name: str | None = None):
         """Enqueues an `EventCommand` -- fire-and-forget, the reverse
         direction from `instantiate`/`call_action`. The owning thread
         (simulation side) calls this once per tick with whatever it
@@ -148,7 +151,7 @@ class SimulationBridge:
         running `ExecutableStateUsage`'s `pending` mailbox (see
         EVENT-QUEUE-DESIGN.md).
         """
-        channel.event_queue.put(EventCommand(item_qualified_name, source_qualified_name))
+        channel.event_queue.put(EventCommand(item_name, source_qualified_name))
 
     @staticmethod
     def read_attribute_from_snapshot(snapshot, qualified_name: str, attribute_name: str):

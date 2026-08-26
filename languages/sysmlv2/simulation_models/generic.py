@@ -1,5 +1,7 @@
 import dataclasses
 from abc import ABC, abstractmethod
+from typing import Tuple, Optional
+
 
 class BaseSimulationModel(ABC):
     """Shared base for a whole simulation domain (Fischertechnik's
@@ -37,6 +39,11 @@ class BaseSimulationModel(ABC):
 
         :return: dict of qualified_name -> that part's snapshot
         """
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def drain_events(self) -> list[Tuple[str, Optional[str]]]:
+        """"""
         raise NotImplementedError("Sub-class must implement this method.")
 
     @abstractmethod

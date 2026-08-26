@@ -1,3 +1,5 @@
+from typing import Tuple, Optional
+
 from languages.sysmlv2.simulation_models.step_pacer import StepPacer
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import CustomAttributeModel, PartSimulationModel, BaseSimulationModel
@@ -36,7 +38,7 @@ class Factory(BaseSimulationModel):
         self._machines = {}
         self._owners = {}
         self._pacer = StepPacer(TICKS_PER_STEP)
-        self._events = []
+        self._events: list[Tuple[str, Optional[str]]] = []
 
     def register_machine(self, machine):
         if machine.name is None:
@@ -172,7 +174,7 @@ class Factory(BaseSimulationModel):
         """
         self._events.append((item_name, source_qualified_name))
 
-    def drain_events(self) -> list:
+    def drain_events(self) -> list[Tuple[str, Optional[str]]]:
         """Returns every event recorded since the last drain, and clears
         the list -- same return-and-clear shape as any other queue-like
         drain in this codebase. Deliberately doesn't import anything from

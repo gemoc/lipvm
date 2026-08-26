@@ -22,7 +22,7 @@ import time
 
 from core.language import Scenario
 from core.vm import VirtualMachine
-from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
+from languages.sysmlv2.simulation_models.facade_proxy import SimulationBridge, ThreadChannel
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
 from languages.sysmlv2.simulation_models.generic import BaseSimulationModel, SimulationVisualization
@@ -134,6 +134,9 @@ def main() -> None:
         while not channel.action_queue.empty():
             command = channel.action_queue.get_nowait()
             model.execute_action(command.qualified_name, command.action_name, command.args)
+
+        for item_name, source_qualified_name in model.drain_events():
+            SimulationBridge.emit_event(channel, item_name, source_qualified_name)
 
         channel.latest_snapshot.publish(model.build_snapshot())
 
