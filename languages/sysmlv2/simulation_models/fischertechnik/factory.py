@@ -36,6 +36,7 @@ class Factory(BaseSimulationModel):
         self._machines = {}
         self._owners = {}
         self._pacer = StepPacer(TICKS_PER_STEP)
+        self._events = []
 
     def register_machine(self, machine):
         if machine.name is None:
@@ -102,10 +103,10 @@ class Factory(BaseSimulationModel):
         that's entirely delegated to machine.advance().
         """
         for machine in self._machines.values():
-            if machine.currentCommand is None or not self._pacer.is_due(machine):
+            if machine.is_idle() or not self._pacer.is_due(machine):
                 continue
             machine.tick()
-            if machine.currentCommand is None:
+            if machine.is_idle():
                 self._pacer.reset(machine)
 
     def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
@@ -152,6 +153,37 @@ class Factory(BaseSimulationModel):
         main_lipvm_dtsimulation.py's `on_tick`), not Factory's.
         """
         getattr(self.get_machine(qualified_name), action_name)(**args)
+
+    def record_event(self, item_name: str, source_qualified_name: str = None) -> None:
+        """Called by a machine at the exact point it knows an event should
+        be reported back to the interpreter (e.g. a command finished, or
+        was stopped) -- appends to a plain list, not a queue: unlike the
+        interpreter-facing ThreadChannel queues, both this and
+        drain_events() only ever run on the pygame thread (inside
+        tick()/on_tick()), so there's no cross-thread concern here.
+
+        item_name is the ItemDef's bare declared name (e.g.
+        "CBCommandSuccessEventMessage"), never a qualified one -- Factory
+        has no access to the parsed SysML model to resolve one itself (see
+        instantiate_machine()'s identical bare-name convention on the
+        reverse direction). source_qualified_name is this machine's own
+        qualified name for a targeted event, or None for a broadcast event
+        with no specific origin.
+        """
+        self._events.append((item_name, source_qualified_name))
+
+    def drain_events(self) -> list:
+        """Returns every event recorded since the last drain, and clears
+        the list -- same return-and-clear shape as any other queue-like
+        drain in this codebase. Deliberately doesn't import anything from
+        facade_proxy.py or resolve item_name to a qualified name itself --
+        same framework-agnostic boundary tick()/execute_action()/
+        build_snapshot() already draw for themselves; doing that
+        resolution and crossing into the interpreter-facing channel is the
+        caller's concern (see main_lipvm_dtsimulation.py's `on_tick`).
+        """
+        events, self._events = self._events, []
+        return events
 
     def build_snapshot(self) -> dict:
         """Pure query: one immutable snapshot of every registered machine's

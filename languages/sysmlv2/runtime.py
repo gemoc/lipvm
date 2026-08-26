@@ -286,6 +286,40 @@ class LookupTable(EObject, metaclass=MetaEClass):
                 return b
         return None
 
+    def get_reference_by_name(self, name):
+        """Resolves a record by its element's plain declared `name` (e.g.
+        "VGRCommandSuccessEventMessage") rather than its full `qualified_name`
+        -- for callers that only ever know a bare declared name, mirroring
+        PartInstantiation.evaluate()'s own part_def_name derivation
+        (`self.part_def_origin.qualified_name.split("::")[-1]`) in reverse:
+        that resolves a qualified name down to a bare one for the simulation
+        side; this resolves a bare name back up to whichever qualified_name
+        this model actually declared it under.
+
+        Nothing in the SysML metamodel actually guarantees declared names
+        are unique across packages -- two different ItemDefinitions in two
+        different packages could both be named e.g. "StopEventMessage".
+        Silently returning the first match found would be worse than
+        raising: it wouldn't fail loudly, it would just resolve to whichever
+        one happened to come first in `records`, misrouting an event to the
+        wrong ItemDef without anything ever noticing. So this collects every
+        match and raises if there's more than one, rather than guessing --
+        same "raise with a detailed message instead of guessing" precedent
+        ReferenceValue.evaluate() already sets for its own ambiguous/
+        unresolved branches. Confirmed empirically unambiguous for both real
+        models today (every ItemDefinition's declaredName is unique across
+        the whole model), but that's a fact about the current models, not
+        something this method can assume going forward.
+        """
+        matches = [b for b in self.records if b.element_type.name == name]
+        if len(matches) > 1:
+            raise LookupError(
+                f"Ambiguous declared name {name!r}: {len(matches)} records share it "
+                f"({sorted(b.qualified_name for b in matches)}) -- "
+                f"get_reference_by_name() needs a unique declared name to resolve against."
+            )
+        return matches[0] if matches else None
+
     def has_reference(self, qualified_name):
         return self.get_reference(qualified_name) is not None
 

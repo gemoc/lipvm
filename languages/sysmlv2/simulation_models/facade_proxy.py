@@ -47,6 +47,22 @@ class ActionCommand:
     args: dict
 
 
+@dataclass(frozen=True)
+class EventCommand:
+    """Fire-and-forget command flowing the other way: an event the
+    simulation side finished producing, to be delivered into the
+    interpreter's ExecutableStateUsage mailboxes (see EVENT-QUEUE-DESIGN.md).
+
+    item_qualified_name: the ItemDef's qualified name (e.g.
+        "VacuumGripperSystem::VacuumGripperMessages::VGRCommandSuccessEventMessage")
+    source_qualified_name: the emitting part's qualified name (e.g.
+        "Main::vgr1"), or None for a broadcast event with no specific origin
+        (e.g. StopEventMessage).
+    """
+    item_qualified_name: str
+    source_qualified_name: str | None = None
+
+
 class SimulationSnapshot:
     """Single-value "topic" one thread publishes to and any number of
     others read from -- always holds just the latest value, no backlog (a
@@ -82,6 +98,7 @@ class ThreadChannel(RuntimeStateElement):
     self.latest_snapshot: the latest SimulationSnapshot published by the Simulation Model and its visualization
     self.action_queue: a queue of actions to be executed by the Simulation model and its visualization
     self.instantiate_queue: a queue of parts to be instantiated in the Simulation model and its visualization
+    self.event_queue: a queue of events produced by the Simulation model, to be delivered to the interpreter
     """
 
     def __init__(self, **kwargs):
@@ -89,6 +106,7 @@ class ThreadChannel(RuntimeStateElement):
         self.latest_snapshot = SimulationSnapshot()
         self.action_queue = queue.Queue()
         self.instantiate_queue = queue.Queue()
+        self.event_queue = queue.Queue()
 
 class SimulationBridge:
     """Static utility surface for whatever simulation domain is plugged in
@@ -119,6 +137,18 @@ class SimulationBridge:
         thread that ever calls a method on a machine.
         """
         channel.action_queue.put(ActionCommand(qualified_name, action_name, args))
+
+    @staticmethod
+    def emit_event(channel: ThreadChannel, item_qualified_name: str, source_qualified_name: str | None = None):
+        """Enqueues an `EventCommand` -- fire-and-forget, the reverse
+        direction from `instantiate`/`call_action`. The owning thread
+        (simulation side) calls this once per tick with whatever it
+        collected via `Factory.drain_events()`; the interpreter thread
+        drains `channel.event_queue` and delivers each one into every
+        running `ExecutableStateUsage`'s `pending` mailbox (see
+        EVENT-QUEUE-DESIGN.md).
+        """
+        channel.event_queue.put(EventCommand(item_qualified_name, source_qualified_name))
 
     @staticmethod
     def read_attribute_from_snapshot(snapshot, qualified_name: str, attribute_name: str):

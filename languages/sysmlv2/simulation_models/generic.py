@@ -112,6 +112,17 @@ class PartSimulationModel(ABC):
         """This method will be called by the simulation for every tick."""
         raise NotImplementedError("Sub-class must implement this method.")
 
+    def is_idle(self) -> bool:
+        """Whether this machine has no active command to advance --
+        Factory.tick() uses this to skip dispatching idle machines, so
+        each machine kind's own idle sentinel (None, a dedicated command
+        enum member, ...) stays its own business without Factory needing
+        to import any machine-kind-specific enum to check it. Default:
+        `currentCommand is None`, since that's every machine kind's
+        sentinel today except ConveyorBeltMachine, which overrides this.
+        """
+        return self.currentCommand is None
+
     def contains_position(self, position) -> bool:
         """Whether `position` falls within this machine's own ownable
         footprint -- e.g. a ConveyorBeltMachine claims tokens landing

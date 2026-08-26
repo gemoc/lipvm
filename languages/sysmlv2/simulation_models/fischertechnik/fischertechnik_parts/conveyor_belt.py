@@ -1,6 +1,8 @@
 import math
 from dataclasses import dataclass
+from enum import Enum
 
+from languages.sysmlv2.simulation_models.fischertechnik import factory
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
@@ -43,6 +45,15 @@ CB_STEP_SIZE_PER_TICK: float = math.gcd(round(CB_LENGTH * 100), round(FEED_TO_SW
 # to register as "arrived" a whole step early.
 SENSOR_ARRIVAL_TOLERANCE = CB_STEP_SIZE_PER_TICK / 2
 
+#Collection of event message that can be emitted by Conveyor Belt
+# Look at the SysML models, package ConveyorBeltMessages
+class CBEventMessages(Enum):
+
+    FEED_FREE_EVENT = 'FeedFreeEventMessage'
+    SWAP_BUSY_EVENT = 'SwapBusyEventMessage'
+    COMMAND_SUCCESS = 'CBCommandSuccessEventMessage'
+    STOP_EVENT = 'StopEventMessage'
+    START_EVENT = 'StartEventMessage'
 
 @dataclass(frozen=True)
 class ConveyorBeltMachineSnapshot:
@@ -72,7 +83,7 @@ class ConveyorBeltMachineSnapshot:
     conveyorSensFeed: bool
     conveyorSensSwap: bool
     conveyorSensImpulse: int
-    currentCommand: ConveyorCommandKind | None
+    currentCommand: ConveyorCommandKind
     direction: DirectionKind
     currentStepCount: int
     targetStepCount: int
@@ -87,7 +98,7 @@ class ConveyorBeltMachine(PartSimulationModel):
 
         self._factory = factory
 
-        self._currentCommand: ConveyorCommandKind = None
+        self._currentCommand: ConveyorCommandKind = ConveyorCommandKind.STOP
         self._direction: DirectionKind = DirectionKind.FORWARD
         self._currentStepCount : int = 0
         self._targetStepCount : int = 0
@@ -124,6 +135,13 @@ class ConveyorBeltMachine(PartSimulationModel):
     @property
     def currentCommand(self):
         return self._currentCommand
+
+    def is_idle(self) -> bool:
+        """STOP is this machine's own idle sentinel (not None -- see
+        __init__/stop()), so it needs its own override of the base
+        PartSimulationModel.is_idle() default.
+        """
+        return self._currentCommand == ConveyorCommandKind.STOP
 
     @property
     def direction(self):
@@ -245,8 +263,8 @@ class ConveyorBeltMachine(PartSimulationModel):
         `currentCommand`, each encapsulating its own pre-condition (if
         any), the actual movement, and its own post-condition (if any) --
         see each method's docstring for its specific contract. No branch
-        matches (and nothing happens) if `currentCommand` is None, though
-        Factory.tick() already only calls this when it isn't.
+        matches STOP (this belt's idle sentinel -- see is_idle()), though
+        Factory.tick() already only calls this when the machine isn't idle.
 
         Called by Factory.tick(), already paced to the right cadence by
         the time this runs.
@@ -274,6 +292,18 @@ class ConveyorBeltMachine(PartSimulationModel):
         within_length = abs(self._local_x_offset(position)) <= self._local_x_offset(self.post_swap_position())
         within_width = abs(self._local_y_offset(position)) <= CB_WIDTH / 2
         return within_length and within_width
+
+    def record_step(self):
+        self._currentStepCount += 1
+
+    def stop(self):
+        self._currentCommand = ConveyorCommandKind.STOP
+        self._currentStepCount = 0
+        self._targetStepCount = 0
+        self.emit_event_to_factory(CBEventMessages.COMMAND_SUCCESS)
+
+    def statusRequest(self):
+        pass
 
     def _move_owned_tokens_one_step(self):
         """Moves every token this belt currently owns one step along
@@ -325,13 +355,5 @@ class ConveyorBeltMachine(PartSimulationModel):
         if self._currentStepCount >= self._targetStepCount:
             self.stop()
 
-    def record_step(self):
-        self._currentStepCount += 1
-
-    def stop(self):
-        self._currentCommand = None
-        self._currentStepCount = 0
-        self._targetStepCount = 0
-
-    def statusRequest(self):
-        pass
+    def emit_event_to_factory(self, event: CBEventMessages):
+        self._factory.record_event(event.value, self.name)
