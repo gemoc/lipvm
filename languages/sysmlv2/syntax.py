@@ -318,10 +318,27 @@ def _bound_arguments(element):
     940.0; ... }), a composite value built from those — see
     _resolved_value(). The call-site counterpart to _populate_parameters,
     which builds the formal Parameter declarations instead.
+
+    A bound in-parameter's own usage-site node (e.g. vgrMission's
+    pickFromFeederPosition) carries no FeatureTyping of its own -- only the
+    matching formal parameter declared on `element`'s own type (e.g.
+    VGRMissionWith2CB's `in pickFromFeederPosition: Position3D;`) does. So
+    for each feature here, the matching formal parameter (by name) is
+    looked up via the same _formal_parameters() helper _populate_parameters
+    already uses, and its type passed down as _resolved_value()'s
+    fallback_type_node -- inert for a plain FeatureValue-bound argument
+    (only consulted in _resolved_value()'s composite-value branch), but
+    what CompositeCustomValue.evaluate() needs to resolve which custom
+    attribute class to construct.
     """
+    behavior = _feature_type(element)
+    formal_params = _formal_parameters(behavior) if behavior is not None else []
+
     arguments = []
     for feature in _owned_by_kind(element, FeatureMembership):
-        value = _resolved_value(feature, qualified_name(feature))
+        matching_formal = next((p for p in formal_params if p.declaredName == feature.declaredName), None)
+        fallback_type_node = _feature_type(matching_formal) if matching_formal is not None else None
+        value = _resolved_value(feature, qualified_name(feature), fallback_type_node)
         if value is not None:
             arguments.append(rt.Argument(
                 name=feature.declaredName,

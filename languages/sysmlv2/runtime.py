@@ -11,7 +11,7 @@ from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVER
     _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError, SimulationSnapshot, SimulationBridge
-from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
+from languages.sysmlv2.simulation_models.generic import ActionSimulationModel, CustomAttributeModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 logger = logging.getLogger(__name__)
@@ -886,6 +886,37 @@ class CompositeCustomValue(Value):
     # sub-fields (x, y) carry their own names — an element's own `value` may
     # itself be a CompositeCustomValue, for further nesting.
     elements = EReference(eType=Argument, lower=0, upper=-1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+            SimulationSnapshot = None):
+        """Resolves `type`'s bare class name against the same
+        scan_for_subclasses(CustomAttributeModel) registry
+        Factory.instantiate_machine() already uses on the simulation side
+        (same "EnumerationUsage" precedent ReferenceValue.evaluate() already
+        sets for reaching into a different registry, scan_for_subclasses(Enum)
+        -- runtime.py:173), and constructs the actual object right here.
+
+        Unlike _custom_attribute_value() (used only by PartInstantiation.
+        evaluate()'s async instantiate-queue attrs, which deliberately stays
+        a plain (class_name, values) tuple so the *far* side resolves the
+        class), this needs to return a real, already-constructed object:
+        it flows through ActualAction.evaluate()'s `bound` dict straight
+        into SimulationBridge.call_action() -> Factory.execute_action(),
+        which is a bare `getattr(machine, action_name)(**args)` pass-through
+        with no resolution step of its own -- whatever's bound has to
+        already be the real thing by the time it gets there.
+
+        Each element's own value is resolved via its own evaluate() call,
+        not assumed to be a flat LiteralValue the way _custom_attribute_value()
+        does -- so a nested CompositeCustomValue element resolves correctly
+        too, via ordinary recursion, not because this was special-cased for it.
+        """
+        class_name = self.type.reference_type.qualified_name.split("::")[-1]
+        values = {
+            element.name: element.value.evaluate(runtime, current, snapshot_from_bridge)
+            for element in self.elements
+        }
+        return scan_for_subclasses(CustomAttributeModel)[class_name](**values)
 
 class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
     """A usage-site attribute override (SysML's `:>>` redefinition), e.g.

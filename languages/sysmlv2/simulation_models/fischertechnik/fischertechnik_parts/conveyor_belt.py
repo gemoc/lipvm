@@ -268,13 +268,29 @@ class ConveyorBeltMachine(PartSimulationModel):
 
         Called by Factory.tick(), already paced to the right cadence by
         the time this runs.
+
+        Sensor edge events (FeedFreeEvent/SwapBusyEvent) are checked
+        before/after the dispatch, right here rather than inside any one
+        _advance_* method -- these are plain local variables, not
+        persisted instance state, so this only catches a transition
+        caused by this tick's own dispatch (not e.g. a token placed on a
+        sensor from outside this belt's own command, like the manual
+        token-placement panel or another machine's grip()/release()).
         """
+        swap_was_busy = self.conveyorSensSwap
+        feed_was_occupied = self.conveyorSensFeed
+
         if self._currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR:
             self._advance_move_to_sens()
         elif self._currentCommand == ConveyorCommandKind.MOVE_NB_STEPS:
             self._advance_move_nb_steps()
         elif self._currentCommand == ConveyorCommandKind.MOVE_OUT:
             self._advance_move_out()
+
+        if self.conveyorSensSwap and not swap_was_busy:
+            self.emit_event_to_factory(CBEventMessages.SWAP_BUSY_EVENT)
+        if feed_was_occupied and not self.conveyorSensFeed:
+            self.emit_event_to_factory(CBEventMessages.FEED_FREE_EVENT)
 
     def contains_position(self, position: FactoryCoordinate) -> bool:
         """Whether `position` falls within this belt's own physical
