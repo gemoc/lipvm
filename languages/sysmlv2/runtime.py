@@ -1,54 +1,28 @@
-import functools
-import importlib
-import inspect
 import logging
-import pkgutil
 from collections import deque
-from typing import List, Optional
+from enum import Enum
+from typing import Optional
 
 from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
-from core.operation import operation, Operation
+from core.operation import operation
+from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
+    _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
-from languages.sysmlv2 import simulation_models
-from languages.sysmlv2.simulation_models.generic import ActionSimulationModel
+from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError, SimulationSnapshot, SimulationBridge
+from languages.sysmlv2.simulation_models.generic import ActionSimulationModel, CustomAttributeModel
+from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 logger = logging.getLogger(__name__)
 
-@functools.lru_cache(maxsize=1)
 def _simulation_model_registry() -> dict:
     """Maps each concrete ActionSimulationModel subclass's name (e.g. "Print")
-    to the class itself, discovered by scanning every module in the
-    simulation_models package. Computed once per process and cached, since
-    the scan/import work has no reason to repeat across ActualAction.evaluate
-    calls or across RuntimeState instances.
+    to the class itself. Thin wrapper around the shared, reusable
+    simulation_models scanner (also used for PartSimulationModel lookups) --
+    see scan_for_subclasses for the caching/scanning details.
     """
-    registry = {}
-    for _, module_name, _ in pkgutil.iter_modules(simulation_models.__path__, simulation_models.__name__ + "."):
-        module = importlib.import_module(module_name)
-        for class_name, klass in inspect.getmembers(module, inspect.isclass):
-            if issubclass(klass, ActionSimulationModel) and klass is not ActionSimulationModel:
-                registry[class_name] = klass
-    return registry
-
-# Plain pyecore EEnums, not Python enum.Enum subclasses — EAttribute(eType=...)
-# requires an EClassifier (EEnum), which a Python Enum class isn't.
-TypeKind = EEnum('TypeKind', literals=['SCALAR', 'PART', 'ITEM', 'ACTION', 'CUSTOM', 'ENUM', 'UNKNOWN'])
-
-ParamDirection = EEnum('ParamDirection', literals=['IN', 'OUT', 'INOUT'])
-
-ScalarType = EEnum('ScalarType', literals=['NONE', 'BOOLEAN', 'INTEGER', 'REAL', 'STRING'])
-
-# Only the scalar names ScalarValues.json actually declares are mapped;
-# names outside this set (e.g. Rational, Natural, Complex) still get a
-# SCALAR TypeRef, just with scalar_type left unset.
-_SCALAR_TYPE_BY_NAME = {
-    'Boolean': ScalarType.BOOLEAN,
-    'String': ScalarType.STRING,
-    'Integer': ScalarType.INTEGER,
-    'Real': ScalarType.REAL,
-}
+    return scan_for_subclasses(ActionSimulationModel)
 
 class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     """Runtime registry entry for a named SysML Definition.
@@ -76,24 +50,38 @@ class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
     contained_values = EAttribute(eType=EString, lower=1, upper=-1)
 
 class Reference(ElementDefinition, metaclass=MetaEClass):
+
+    '''
+    An element representing a reference to another runtime state elements.
+    It uses the qualified_name attribute as the main identifier to locate the original element
+    '''
     reference_type = EAttribute(eType=EString, lower=1, upper=1)
 
 class Value(RuntimeStateElement, metaclass=MetaEClass):
     # An abstract class to specify a value
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+            SimulationSnapshot = None):
         """Resolves this Value to its actual runtime result — e.g. a
         literal's own payload, a dereferenced Reference, or (for
-        AttributeReference/BinaryExpression once they override this) a
-        looked-up/computed result. Decorated with @operation, so calling
-        this captures the call as an Operation rather than running the
-        body immediately; the VM steps through it later.
+        AttributeReference/BinaryExpression) a looked-up/computed result.
+        Deliberately NOT @operation-decorated (unlike ActualAction.evaluate()/
+        Transition.evaluate()/etc., which the VM steps through): a Value
+        tree is a pure, side-effect-free read/computation with nothing to
+        interleave mid-evaluation, so it runs eagerly to a plain Python
+        value in one call — no Operation chain for a caller to drain.
 
-        Placeholder only. Left unimplemented — including on every
-        subclass — until the broader execution/resolution pipeline is
-        built (see memory: todo-actualaction-resolution-pipeline, which
-        this is now part of).
+        `current` is the scope used to resolve this Value when it is being
+        evaluated. It can be mandatory (e.g., for resolving
+        AttributeReference to resolve a formal parameter) or optional (e.g., LiteralValue) depending
+        on the subclasses.
+
+        `snapshot_from_bridge` is the values from Simulation, particularly important if
+        some values refer to the attribute of Parts that are mutated by the Simulation model. For values that are
+        unrelated with the attributes of a part, they will not use this.
+
+        Placeholder only on this base class. See memory: todo-actualaction-resolution-pipeline
+        for the broader execution/resolution pipeline this is part of.
         """
         raise NotImplementedError('Value.evaluate() not yet implemented')
 
@@ -101,12 +89,118 @@ class LiteralValue(Value):
     el = EAttribute(eType=EString, lower=1, upper=1)
     scalar_type = EAttribute(eType=ScalarType, lower=0, upper=1)
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
-        return self.el
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
+        """Converts `el` (always a string, per _literal_value()'s str(node.value)
+        encoding in syntax.py) back to the Python type `scalar_type` names --
+        not the raw string -- so a BinaryExpression comparing this against a
+        live attribute's actual Python value (e.g. a real bool from
+        AttributeReference.evaluate()) compares like-for-like instead of
+        `True == "True"` (always False). _LITERAL_PYTHON_CONVERTERS is
+        defined later in this module (shared with _custom_attribute_value())
+        but resolved at call time, so the forward reference is safe.
+        """
+        return _LITERAL_PYTHON_CONVERTERS.get(self.scalar_type, str)(self.el)
+
+
+# Maps a Reference's reference_type tag to the SysmlRuntimeState lookup
+# table it's registered in -- only for reference_type tags confirmed by
+# grepping syntax.py's _build_reference()/_resolve_feature_reference() call
+# sites (so this doesn't claim to cover a tag nothing actually assigns).
+# "Parameter" is deliberately absent: a formal parameter isn't registered
+# in any global table at all -- it only has a concrete value relative to
+# one specific running ExecutableStateUsage, so it can't be resolved this
+# way regardless (see the context-based fallback below).
+_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE = {
+    "PartInstantiation": "lookup_table_part_instantiations",
+    "PartDef": "lookup_table_part_defs",
+    "ActionDef": "lookup_table_action_defs",
+    "ItemDef": "lookup_table_item_defs",
+    "StateDef": "lookup_table_state_defs",
+    "CustomAttributeDefinition": "lookup_table_attribute_defs",
+}
 
 class ReferenceValue(Value):
     el = EReference(eType=Reference, lower=1, upper=1, containment=False)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
+        """Resolves `el` (a bare Reference) by its `reference_type` tag --
+        different kinds of reference need genuinely different resolution
+
+        - "EnumerationUsage" (e.g. direction=DirectionKind::FORWARD, an
+          action-argument binding) resolves all the way to the actual
+          Python enum member, since that's what a caller like
+          ActualAction.evaluate() needs to hand to a real method call
+          (e.g. machine.moveToSensor(direction=DirectionKind.FORWARD)).
+          scan_for_subclasses(Enum) is the same registry mechanism already
+          used for PartSimulationModel/ActionSimulationModel/
+          CustomAttributeModel, just scanning for Enum subclasses instead
+          -- reused as-is rather than adding new machinery, and called
+          directly here (not routed through the bridge), matching how
+          ActionSimulationModel dispatch already works.
+        - "Parameter" (e.g. conveyorBelt, a formal parameter name) is, by
+          construction, only meaningful relative to whichever
+          ExecutableStateUsage is currently evaluating it -- a formal
+          parameter's own qualified name (e.g. "...::conveyorBelt") is
+          never itself a lookup key in any global table. So this branch
+          is selected purely by `reference_type` -- whether `current` is
+          usable is a separate question, handled *inside* the branch, not
+          a precondition for entering it (otherwise a missing `current`
+          would silently fall through to the unrelated catch-all below,
+          reporting the wrong cause). It resolves against
+          `current.arguments`, the same lookup AttributeReference.evaluate()
+          currently duplicates inline for its own `target`. Raises
+          (with the specific reason -- no `current` at all, vs. `current`
+          present but nothing bound under this name -- embedded in the
+          message) rather than silently handing back the bare qualified
+          name, which a caller (e.g. BinaryExpression) could otherwise
+          compare against as if it were a real value.
+        - Anything else, with a registered lookup table (today, just
+          "PartInstantiation", e.g. conveyorBelt=cb1 -- confirmed by
+          walking both real models, nothing else shows up) resolves to
+          the actual registry record itself (e.g. the PartInstantiation),
+          not just its qualified name -- these are absolute, globally
+          registered names (cb1 is declared directly under package Main),
+          so a flat table lookup is correct and doesn't depend on which
+          instance is asking. Anything with neither a table entry nor
+          "Parameter"/"EnumerationUsage" (none observed today) raises,
+          naming the unrecognized reference_type and what's actually
+          handled, for the same reason.
+        """
+        if self.el.reference_type == "EnumerationUsage":
+            *_, enum_name, member_name = self.el.qualified_name.split("::")
+            enum_class = scan_for_subclasses(Enum)[enum_name]
+            return enum_class[member_name]
+
+        if self.el.reference_type == "Parameter":
+            if current is None:
+                raise RuntimeError(
+                    f"Cannot resolve parameter reference '{self.el.qualified_name}': "
+                    f"evaluate() was called with current=None, but a Parameter reference "
+                    f"can only be resolved against a running ExecutableStateUsage's own "
+                    f"bound arguments."
+                )
+            param_name = self.el.qualified_name.split("::")[-1]
+            binding = next((argument for argument in current.arguments if argument.name == param_name), None)
+            if binding is None:
+                raise LookupError(
+                    f"No argument named '{param_name}' bound on '{current.qualified_name}' "
+                    f"(available: {sorted(argument.name for argument in current.arguments)}) -- "
+                    f"cannot resolve parameter reference '{self.el.qualified_name}'."
+                )
+            return binding.value.evaluate(runtime, current, snapshot_from_bridge)
+
+        table_name = _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE.get(self.el.reference_type)
+        if table_name is not None:
+            record = getattr(runtime.sysml, table_name).get_reference(self.el.qualified_name)
+            return record.element_type if record is not None else None
+
+        raise LookupError(
+            f"No resolution rule for reference_type '{self.el.reference_type}' "
+            f"(qualified_name='{self.el.qualified_name}') -- handled types: "
+            f"'EnumerationUsage', 'Parameter', {sorted(_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE)}."
+        )
 
 class AttributeReference(Value):
     """Reads an attribute's current value off whatever's bound to a formal
@@ -122,6 +216,35 @@ class AttributeReference(Value):
     """
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
     attribute = EReference(eType=Reference, lower=0, upper=1, containment=False)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
+        """Resolves `target` (the formal parameter, e.g. `conveyorBelt`) by
+        wrapping it in a transient ReferenceValue and delegating to its own
+        evaluate() -- `target` carries the same "Parameter" reference_type
+        ReferenceValue already knows how to resolve against `current.arguments`
+        (with the same informative errors on failure), so this no longer
+        duplicates that lookup inline.
+
+        Only reads `attribute` off the resolved value through the bridge if
+        it actually resolved to a PartInstantiation -- the one case that
+        genuinely has a live simulation counterpart to read an attribute
+        from. Every model today binds `target` to a part (e.g.
+        conveyorBelt=cb1), so this is what actually happens in practice,
+        but nothing enforces a formal parameter must be bound to a part
+        specifically -- if it resolved to something else (e.g. a plain
+        scalar bound to that parameter instead), there's no "instance" to
+        read an attribute off of, so the resolved value itself, whatever
+        it is, is simply returned as-is rather than crashing on
+        `.qualified_name` (which only a PartInstantiation actually has).
+        """
+        resolved = ReferenceValue(el=self.target).evaluate(runtime, current)
+        if not isinstance(resolved, PartInstantiation):
+            raise NotImplementedError('Currently, only handling a case where attribute reference involves'
+                                      'Part Instantiation. Please handle it first before continuing.')
+        attribute_name = self.attribute.qualified_name.split("::")[-1]
+        return SimulationBridge.read_attribute_from_snapshot(
+            snapshot_from_bridge, resolved.qualified_name, attribute_name)
 
 class BinaryExpression(Value):
     """A binary operation over two sub-values (e.g. `conveyorBelt.
@@ -140,6 +263,17 @@ class BinaryExpression(Value):
     left = EReference(eType=Value, lower=1, upper=1, containment=True)
     right = EReference(eType=Value, lower=1, upper=1, containment=True)
 
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+        SimulationSnapshot = None):
+        """Plain recursive calls -- `current` passed to both sub-evaluations
+        unchanged (not re-resolved here), so an AttributeReference nested
+        anywhere in left/right still resolves against the same running
+        instance this whole expression is being evaluated for.
+        """
+        left = self.left.evaluate(runtime, current, snapshot_from_bridge)
+        right = self.right.evaluate(runtime, current, snapshot_from_bridge)
+        return _BINARY_OPERATORS[self.operator](left, right)
+
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
 
@@ -151,6 +285,40 @@ class LookupTable(EObject, metaclass=MetaEClass):
             if b.qualified_name == qualified_name:
                 return b
         return None
+
+    def get_reference_by_name(self, name):
+        """Resolves a record by its element's plain declared `name` (e.g.
+        "VGRCommandSuccessEventMessage") rather than its full `qualified_name`
+        -- for callers that only ever know a bare declared name, mirroring
+        PartInstantiation.evaluate()'s own part_def_name derivation
+        (`self.part_def_origin.qualified_name.split("::")[-1]`) in reverse:
+        that resolves a qualified name down to a bare one for the simulation
+        side; this resolves a bare name back up to whichever qualified_name
+        this model actually declared it under.
+
+        Nothing in the SysML metamodel actually guarantees declared names
+        are unique across packages -- two different ItemDefinitions in two
+        different packages could both be named e.g. "StopEventMessage".
+        Silently returning the first match found would be worse than
+        raising: it wouldn't fail loudly, it would just resolve to whichever
+        one happened to come first in `records`, misrouting an event to the
+        wrong ItemDef without anything ever noticing. So this collects every
+        match and raises if there's more than one, rather than guessing --
+        same "raise with a detailed message instead of guessing" precedent
+        ReferenceValue.evaluate() already sets for its own ambiguous/
+        unresolved branches. Confirmed empirically unambiguous for both real
+        models today (every ItemDefinition's declaredName is unique across
+        the whole model), but that's a fact about the current models, not
+        something this method can assume going forward.
+        """
+        matches = [b for b in self.records if b.element_type.name == name]
+        if len(matches) > 1:
+            raise LookupError(
+                f"Ambiguous declared name {name!r}: {len(matches)} records share it "
+                f"({sorted(b.qualified_name for b in matches)}) -- "
+                f"get_reference_by_name() needs a unique declared name to resolve against."
+            )
+        return matches[0] if matches else None
 
     def has_reference(self, qualified_name):
         return self.get_reference(qualified_name) is not None
@@ -226,36 +394,114 @@ class ActualAction(ElementDefinition, metaclass=MetaEClass):
     # action_def — it's left as a bare Reference, not resolved here.
     target = EReference(eType=Reference, lower=0, upper=1, containment=False)
 
-    @operation
-    def evaluate(self, runtime: RuntimeState):
-        """Resolves action_def and binds each argument's Value, then performs
-        the call by dispatching to the ActionSimulationModel subclass (under
-        languages/sysmlv2/simulation_models) whose class name matches the
-        resolved ActionDef's name (e.g. "Print").
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
+        """Plain eager call, matching every other runtime record's evaluate()
+        except ExecutableStateUsage's own (the one genuine VM-step boundary,
+        see its docstring) -- @operation used to decorate this method, but
+        nothing ever drained it lazily: ExecutableStateUsage's own reactive
+        pass always called .execute() on the result immediately, in the same
+        breath it was built, so the decorator bought only an extra
+        build-then-immediately-unwrap indirection, not real steppability.
+        Removed for the same reason BinaryExpression's own lazy left=/right=
+        sub-operations were simplified back to plain recursive calls (see
+        Value's own docstring) -- this codebase's one deliberate decision is
+        that only ExecutableStateUsage.evaluate() is a real step; everything
+        it triggers (entry/exit actions, transition effects, part
+        instantiation) runs eagerly as an ordinary sub-call.
 
-        Argument values are resolved eagerly (via .execute()) rather than
-        staying deferred: LiteralValue, the only subclass implemented so
-        far, is pure static data with nothing left to hot-swap, so nothing
-        is lost by not threading it through the Operation chain. This will
-        need revisiting once ReferenceValue/AttributeReference (which read
-        live runtime state) are implemented.
+        Resolves action_def and binds each argument's Value, then performs
+        the call. Two shapes, per `target`:
+
+        - `target is None` (a direct action, e.g. `pEntry` performing
+          `Print`): dispatches to the ActionSimulationModel subclass (under
+          languages/sysmlv2/simulation_models) whose class name matches the
+          resolved ActionDef's own name (e.g. "Print") -- unchanged from
+          before.
+        - `target is not None` (a chained action, e.g. `do conveyorBelt.
+          moveToSensor`): resolves `target` (a "Parameter" reference, e.g.
+          conveyorBelt) via ReferenceValue -- same resolution
+          AttributeReference.evaluate() uses -- to the concrete
+          PartInstantiation this is actually being performed on, then calls
+          the real method through `SimulationBridge.call_action()`
+          using `self.name` (e.g. "moveToSensor", the perform-action's own
+          declared name -- NOT action_def.name, "MoveToSensor", which is
+          the ActionDefinition's name and not what's callable on the
+          PartSimulationModel).
+
+        Argument values are resolved eagerly, via a plain Value.evaluate()
+        call (no longer @operation-decorated -- see Value's own docstring).
+
+        For the chained shape, bound arguments are merged from three layers,
+        lowest priority first so a later layer's dict update wins ties:
+        1. The resolved ActionDef's own formal-parameter defaults (e.g. a
+           default on MoveToSensor's `direction` parameter, if any model
+           ever declares one -- none do today).
+        2. The PartDef-contained occurrence's own bound arguments (e.g. if
+           ConveyorBeltMachine's own `perform action moveToSensor :
+           MoveToSensor { ... }` declaration bound something itself --
+           no model does today, but the mechanism doesn't assume it won't).
+        3. This specific call site's own bound arguments (e.g.
+           `direction=DirectionKind::FORWARD` directly on `do conveyorBelt.
+           moveToSensor` -- the only layer any current model actually uses).
         """
-        action_def_record = (
-            runtime.sysml.lookup_table_action_defs.get_reference(self.action_def.qualified_name)
-            if self.action_def is not None else None
-        )
+        if self.action_def is None:
+            # An empty ActualAction (e.g. a bare `entry;` with no body) --
+            # see ActionUsage.to_actual_action()'s base case, which builds
+            # exactly this shape on purpose. Nothing to dispatch to.
+            return
+
+        action_def_record = runtime.sysml.lookup_table_action_defs.get_reference(self.action_def.qualified_name)
         action_def = action_def_record.element_type if action_def_record is not None else None
         name = action_def.name if action_def is not None else None
 
-        bound = {argument.name: argument.value.evaluate(runtime).execute() for argument in self.arguments}
+        if self.target is None:
+            bound = {argument.name: argument.value.evaluate(runtime, current) for argument in self.arguments}
+            registry = _simulation_model_registry()
+            if name not in registry:
+                raise LookupError(
+                    f"No ActionSimulationModel subclass named '{name}' found in simulation_models "
+                    f"(available: {sorted(registry)})"
+                )
+            registry[name](**bound).evaluate()
+            return
 
-        registry = _simulation_model_registry()
-        if name not in registry:
-            raise LookupError(
-                f"No ActionSimulationModel subclass named '{name}' found in simulation_models "
-                f"(available: {sorted(registry)})"
+        part_instantiation = ReferenceValue(el=self.target).evaluate(runtime, current)
+        if not isinstance(part_instantiation, PartInstantiation):
+            raise NotImplementedError(
+                f"'{self.qualified_name}' is performed through '{self.target.qualified_name}', which "
+                f"resolved to a {type(part_instantiation).__name__!r}, not a PartInstantiation -- "
+                f"dispatching a chained action to anything other than a live part isn't handled yet."
             )
-        registry[name](**bound).evaluate()
+
+        part_def_record = runtime.sysml.lookup_table_part_defs.get_reference(
+            part_instantiation.part_def_origin.qualified_name)
+        part_def = part_def_record.element_type if part_def_record is not None else None
+        origin_occurrence = next(
+            (perform_action for perform_action in part_def.contained_perform_actions
+             if perform_action.qualified_name == self.qualified_name),
+            None,
+        ) if part_def is not None else None
+
+        bound = {}
+        if action_def is not None:
+            for parameter in action_def.parameters:
+                if parameter.direction == ParamDirection.OUT:
+                    # An `out` parameter's default_value is its initial
+                    # *output* value (e.g. Grip's `out attribute
+                    # vacuumActValve : Boolean = true`), not an argument
+                    # the callee should receive -- including it here would
+                    # pass it straight through to the Python method as an
+                    # unexpected keyword argument.
+                    continue
+                if parameter.default_value is not None:
+                    bound[parameter.name] = parameter.default_value.evaluate(runtime, current)
+        if origin_occurrence is not None:
+            for argument in origin_occurrence.arguments:
+                bound[argument.name] = argument.value.evaluate(runtime, current)
+        for argument in self.arguments:
+            bound[argument.name] = argument.value.evaluate(runtime, current)
+
+        SimulationBridge.call_action(runtime.channel, part_instantiation.qualified_name, self.name, **bound)
 
 class ItemDef(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for an ItemDefinition (a message/event type)."""
@@ -272,13 +518,61 @@ class TransitionTrigger(RuntimeStateElement, metaclass=MetaEClass):
     """
     pass
 
+class EventOccurrence(RuntimeStateElement, metaclass=MetaEClass):
+    event_type = EReference(eType=ItemDef, lower=1, upper=1, containment=False)
+    source = EReference(eType=Reference, lower=0, upper=1, containment=True)
+
 class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
 
     signal_origin = EReference(eType=Reference, lower=0, upper=1, containment=True)
+    via = EReference(eType=Reference, lower=0, upper=1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage",
+                 event_occurrence: "EventOccurrence") -> bool:
+
+        # If the events captured by the executable state do not match the guard, immediate false
+        if self.signal_origin.qualified_name != event_occurrence.event_type.qualified_name:
+            return False
+
+        # Events match the guard, and this event is broadcasted without any medium (via), then it is automatically True
+        if self.via is None:
+            return True
+
+        # Otherwise, check if the event occurrence is malformed, i.e., the event is without any owning part
+        # If yes, then it is automatically False
+        if event_occurrence.source is None:
+            return False
+
+        # If no, then continue to evaluate
+        bound_part = ReferenceValue(el=self.via).evaluate(runtime, current)
+        return bound_part is not None and bound_part.qualified_name == event_occurrence.source.qualified_name
 
 class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 
     condition = EReference(eType=Value, lower=0, upper=1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage", latest_simulation_snapshot:
+    SimulationSnapshot) -> bool:
+        """Evaluates `condition` to a plain bool, right now -- Value.evaluate()
+        is a plain eager call (not @operation-decorated), so this needs no
+        Operation-chain draining, just a bool() around whatever it returns.
+        Kept as its own method (mirroring _match_transition()'s own
+        plain-eager style one level up) since it's consumed as an
+        immediate yes/no by whoever decides whether to fire a transition.
+
+        `PartNotReadyError` (facade_proxy.py) means a nested
+        `AttributeReference` asked about a part the owning thread hasn't
+        finished instantiating/publishing yet -- an ordinary startup race,
+        not a real failure (see that exception's docstring). Treated the
+        same as any other not-yet-satisfied condition: this trigger just
+        doesn't fire this tick, and gets re-checked the next one, same as
+        it would for a guard that's legitimately false for any other
+        reason.
+        """
+        try:
+            return bool(self.condition.evaluate(runtime, current, latest_simulation_snapshot))
+        except PartNotReadyError:
+            return False
 
 class TransitionGuard(RuntimeStateElement, metaclass=MetaEClass):
 
@@ -318,10 +612,10 @@ class Transition(RuntimeStateElement, metaclass=MetaEClass):
     def set_effect(self, actual_action):
         self.effect = actual_action
 
-    def evaluate(self, runtime: RuntimeState):
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None):
 
         if self.effect is not None:
-            return self.effect.evaluate(runtime)
+            return self.effect.evaluate(runtime, current)
 
 class StateUsage(ElementDefinition, metaclass=MetaEClass):
     """Runtime registry entry for a StateDef's own nested substate (e.g.
@@ -427,14 +721,21 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
     # Which of `type.substates` is presently active.
     current = EReference(eType=StateUsage, lower=0, upper=1, containment=False)
 
-    # FIFO mailbox: items received while this instance was in some state,
+    # FIFO mailbox: events received while this instance was in some state,
     # not yet matched against a transition and consumed.
-    pending = EReference(eType=ItemDef, lower=0, upper=-1, containment=False, unique=False)
+    pending = EReference(eType=EventOccurrence, lower=0, upper=-1, containment=False, unique=False)
 
     @operation(is_step=True)
     def evaluate(self, runtime: RuntimeState):
-
-        op_to_be_executed: List[Operation] = []
+        """The one genuine VM-step boundary in this whole reactive pipeline
+        -- `is_step=True` is what makes VirtualMachine.step() stop right
+        before the *next* ExecutableStateUsage's own evaluate(), so one
+        step corresponds to exactly one instance's reactive pass. Everything
+        this method triggers below (entry/exit actions, transition effects,
+        part instantiation) runs as an ordinary eager sub-call, not a
+        separately-stepped Operation -- see ActualAction.evaluate()'s own
+        docstring for why that used to be otherwise and no longer is.
+        """
 
         #Step 1: Only start executing this ExecutableStateUsage if the StateDef is resolved, otherwise just return None
         record_referenced_state_def: Record = runtime.sysml.lookup_table_state_defs.get_reference(
@@ -446,57 +747,85 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         if original_state_def is None:
             return None
 
-        # Step 2: Execute the default entry action and transition
-        # Only if the current state is still none, otherwise go straight for the usual behavior
+        # Step 2: Run the default entry action and transition, only if the
+        # current state is still none, otherwise go straight for the usual behavior
         if self.current is None:
-            # This would later be removed once we resolve the confusion about how to
-            # Decompose the FSM into smaller operations
-            entry_behaviour: List[Operation] = self._run_entry_behaviour(runtime, original_state_def)
-            op_to_be_executed.extend(entry_behaviour)
+            self._run_entry_behaviour(runtime, original_state_def)
 
-        #Step 3: Execute one transition, if it is possible
-        fire_transition_side_effects: List[Operation] = self._check_and_fire(runtime, original_state_def)
-        op_to_be_executed.extend(fire_transition_side_effects)
-
-        #Since we are not yet relying on the actual operation annotation, we can just execute them now
-        for an_op in op_to_be_executed:
-            if an_op is not None:
-                an_op.execute()
+        # Step 3: Fire one transition, if one matches
+        self._check_and_fire(runtime, original_state_def)
 
     def _run_entry_behaviour(self, runtime: RuntimeState, original_state_def: StateDef):
 
-        op_to_be_executed: List[Operation] = []
-
-        #Step 1: Execute the entry action
+        #Step 1: Run the entry action
         if original_state_def.entry_action is not None:
-            op_to_be_executed.append(original_state_def.entry_action.evaluate(runtime))
+            original_state_def.entry_action.evaluate(runtime, self)
 
-        #Step 2, start the transition
-        # The behavior for this transition is encapsulated, just to mimic the Operation pattern
+        #Step 2: start the transition
         transition = original_state_def.default_transition
         if transition is not None:
-            op_to_be_executed.append(Operation(self.set_new_current,
-                             args=(original_state_def.get_substate(transition.target.qualified_name),)))
+            target_state = original_state_def.get_substate(transition.target.qualified_name)
+            self.current = target_state
 
-        return op_to_be_executed
+            #Step 3: run the entry action of the newly-entered substate itself (e.g. Start's own
+            # `entry conveyorBelt.moveToSensor {...}`) -- distinct from original_state_def.entry_action
+            # above (the StateDef's own top-level entry, e.g. ConveyorBeltComplexMissionTwo's bare
+            # `entry;`). Previously only _fire_transition() ran a target substate's entry -- meaning
+            # the very first transition (StateDef default -> its first substate, handled here instead)
+            # silently skipped it. Run after self.current is reassigned, not before, so it fires
+            # only once self.current genuinely reflects target_state, matching _fire_transition()'s
+            # own ordering for every later transition.
+            if target_state.entry is not None:
+                target_state.entry.evaluate(runtime, self)
 
-    def set_new_current(self, new_state_candidate: StateDef):
-
-        self.current = new_state_candidate
-
-    def _match_transition(self, item):
-        """Returns the transition out of `current` whose trigger matches
-        `item`'s signal, if any. None both when no contained_transition has
-        a TransitionTriggerBySignal (e.g. a TransitionTriggerByWhenCondition,
-        which doesn't consult `pending` at all) and when none of them match
-        `item`.
+    def _find_matching_transition(self, runtime_state: RuntimeState, current_context: "ExecutableStateUsage"):
+        """Returns the first transition out of `current` whose trigger
+        actually fires, checking TransitionTriggerBySignal against
+        `processed_item` and TransitionTriggerByWhenCondition against live
+        attribute state -- keeps scanning past a transition whose trigger
+        doesn't match (rather than giving up after the first one checked),
+        since a state can have more than one outgoing transition (e.g.
+        Continue has both a when-condition and a signal transition).
+        `processed_item` is None whenever `pending` is empty -- expected
+        now that _check_and_fire() runs every tick regardless of pending
+        (so when-condition transitions get checked on their own, not just
+        when a signal happens to also be waiting). A TransitionTriggerBySignal
+        can never fire without an incoming item, so it's skipped entirely
+        in that case rather than evaluated against None.
         """
+
+        # Treat the pending attribute as a queue, take the first element and remove it from the queue
+        processed_item: Optional[EventOccurrence] = None
+        if current_context.pending:
+            processed_item = current_context.pending[0]
+            current_context.pending.remove(processed_item)
+
+        # Captured lazily, on the first TransitionTriggerByWhenCondition
+        # actually reached below -- not unconditionally up front -- so a
+        # state whose transitions are all plain signal triggers never touches
+        # the channel at all. Every when-condition guard checked in
+        # this pass still shares the exact same snapshot object once
+        # captured, same guarantee as before.
+        latest_simulation_snapshot: Optional[SimulationSnapshot] = None
+        snapshot_captured = False
+
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
-            if not isinstance(trigger, TransitionTriggerBySignal):
-                continue
-            if trigger.signal_origin.qualified_name == item.qualified_name:
-                return transition
+            if isinstance(trigger, TransitionTriggerBySignal):
+                if processed_item is not None and trigger.evaluate(runtime_state, current_context, processed_item):
+                    return transition
+            elif isinstance(trigger, TransitionTriggerByWhenCondition):
+                if not snapshot_captured:
+                    latest_simulation_snapshot = runtime_state.channel.latest_snapshot.read()
+                    snapshot_captured = True
+                if trigger.evaluate(runtime_state, current_context, latest_simulation_snapshot):
+                    return transition
+
+        if processed_item is not None:
+            logger.warning(
+                "%s: dropping pending item %s — no transition out of %s matches it",
+                self.qualified_name, processed_item.event_type.qualified_name, self.current.qualified_name)
+
         return None
 
     def _check_and_fire(self, runtime: RuntimeState, original_state_def: StateDef):
@@ -508,49 +837,31 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         to accumulate forever, since nothing will ever consume it once
         `current` has moved past the state that could have.
         """
+        if self.current is None:
+            return
 
-        if self.current is None or len(self.pending) == 0:
-            return []
-
-        # Treat the pending attribute as a queue, take the first element and remove it from the queue
-        processed_item: ItemDef = self.pending[0]
-        self.pending.remove(processed_item)
-
-        transition = self._match_transition(processed_item)
+        transition = self._find_matching_transition(runtime, self)
         if transition is not None:
-            op_to_be_executed: List[Operation] = self._fire_transition(runtime, transition, original_state_def)
-            return op_to_be_executed
-
-        logger.warning(
-            "%s: dropping pending item %s — no transition out of %s matches it",
-            self.qualified_name, processed_item.qualified_name, self.current.qualified_name)
-
-        return []
+            self._fire_transition(runtime, transition, original_state_def)
 
     def _fire_transition(self, runtime: RuntimeState, designated_transition: Transition, original_state_def: StateDef):
 
-        op_to_be_executed: List[Operation] = []
         current_state_usage: StateUsage = self.current
 
-        #Step 2 execute exit action of the current StateUsage
+        #Step 1: run the exit action of the current StateUsage
         if current_state_usage.exit is not None:
-            exit_action: Operation = current_state_usage.exit.evaluate(runtime)
-            op_to_be_executed.append(exit_action)
+            current_state_usage.exit.evaluate(runtime, self)
 
-        #Step 3 execute the transition effect
-        transition_effect: Operation = designated_transition.evaluate(runtime)
-        op_to_be_executed.append(transition_effect)
+        #Step 2: run the transition effect
+        designated_transition.evaluate(runtime, self)
 
-        #Step 4 change the current pointer to a new StateUsage
+        #Step 3: change the current pointer to the new StateUsage
         target_state: StateUsage = original_state_def.get_substate(designated_transition.target.qualified_name)
         self.current = target_state
 
-        #Step 5 execute the entry action of the newly appointed StateUsage
+        #Step 4: run the entry action of the newly appointed StateUsage
         if target_state.entry is not None:
-            entry_action_of_new_current: Operation = target_state.entry.evaluate(runtime)
-            op_to_be_executed.append(entry_action_of_new_current)
-
-        return op_to_be_executed
+            target_state.entry.evaluate(runtime, self)
 
 class PartDef(ElementDefinition, metaclass=MetaEClass):
 
@@ -576,6 +887,37 @@ class CompositeCustomValue(Value):
     # itself be a CompositeCustomValue, for further nesting.
     elements = EReference(eType=Argument, lower=0, upper=-1, containment=True)
 
+    def evaluate(self, runtime: RuntimeState, current: "ExecutableStateUsage" = None, snapshot_from_bridge:
+            SimulationSnapshot = None):
+        """Resolves `type`'s bare class name against the same
+        scan_for_subclasses(CustomAttributeModel) registry
+        Factory.instantiate_machine() already uses on the simulation side
+        (same "EnumerationUsage" precedent ReferenceValue.evaluate() already
+        sets for reaching into a different registry, scan_for_subclasses(Enum)
+        -- runtime.py:173), and constructs the actual object right here.
+
+        Unlike _custom_attribute_value() (used only by PartInstantiation.
+        evaluate()'s async instantiate-queue attrs, which deliberately stays
+        a plain (class_name, values) tuple so the *far* side resolves the
+        class), this needs to return a real, already-constructed object:
+        it flows through ActualAction.evaluate()'s `bound` dict straight
+        into SimulationBridge.call_action() -> Factory.execute_action(),
+        which is a bare `getattr(machine, action_name)(**args)` pass-through
+        with no resolution step of its own -- whatever's bound has to
+        already be the real thing by the time it gets there.
+
+        Each element's own value is resolved via its own evaluate() call,
+        not assumed to be a flat LiteralValue the way _custom_attribute_value()
+        does -- so a nested CompositeCustomValue element resolves correctly
+        too, via ordinary recursion, not because this was special-cased for it.
+        """
+        class_name = self.type.reference_type.qualified_name.split("::")[-1]
+        values = {
+            element.name: element.value.evaluate(runtime, current, snapshot_from_bridge)
+            for element in self.elements
+        }
+        return scan_for_subclasses(CustomAttributeModel)[class_name](**values)
+
 class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
     """A usage-site attribute override (SysML's `:>>` redefinition), e.g.
     cb1's `attribute :>> placementCoordinate { attribute :>> x = 10.0; ... }`.
@@ -599,6 +941,25 @@ class AttributeRedefinition(ElementDefinition, metaclass=MetaEClass):
     # for a composite one (e.g. placementCoordinate's own `{x, y}`).
     value = EReference(eType=Value, lower=0, upper=1, containment=True)
 
+def _custom_attribute_value(value: "CompositeCustomValue"):
+    """Converts a CompositeCustomValue (e.g. placementCoordinate's
+    {x: 10.0, y: 0.0, degrees: 0.0}) into (class_name, values) -- generic
+    over which custom attribute type this is, not just FactoryCoordinate,
+    so a second custom attribute needs no changes on this side. class_name
+    is the bare name of the CustomAttributeDefinition this value is typed
+    by (e.g. "FactoryCoordinate"); resolving it to the matching Python
+    class (via scan_for_subclasses(CustomAttributeModel)) and constructing
+    it from `values` is left to whoever consumes this (currently only
+    FischertechnikBridge.instantiate()), same deferred-resolution
+    convention used everywhere else in this module.
+    """
+    class_name = value.type.reference_type.qualified_name.split("::")[-1]
+    values = {
+        element.name: _LITERAL_PYTHON_CONVERTERS.get(element.value.scalar_type, str)(element.value.el)
+        for element in value.elements
+    }
+    return class_name, values
+
 class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
 
     # Reference to the PartDef this usage is typed by
@@ -607,6 +968,37 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
     # This usage's own attribute redefinitions (e.g. cb1's placementCoordinate
     # override).
     attribute_redefinitions = EReference(eType=AttributeRedefinition, lower=0, upper=-1, containment=True)
+
+    def evaluate(self, runtime: RuntimeState):
+        """Ensures this usage's live simulation counterpart exists, via
+        SimulationBridge -- idempotency is entirely the bridge's
+        concern (backed by Factory's own machine registry, keyed by name),
+        not something PartInstantiation tracks itself; no field is stored
+        on self. Later code (e.g. ActualAction/AttributeReference)
+        resolves its target to a PartInstantiation and calls the bridge
+        directly with self.qualified_name, rather than routing through
+        this method again.
+
+        Handles any redefinition whose value is a CompositeCustomValue
+        (e.g. cb1's placementCoordinate) generically -- not just
+        "placementCoordinate" by name -- so a second custom attribute
+        needs no changes here. A plain-scalar redefinition (e.g. a bare
+        `attribute :>> someInt = 5;`, no model has one today) is still
+        left unhandled, matching the previous narrowness; only composite
+        ones are simulation-bridge concerns. Passes plain values to the
+        bridge (not the raw AttributeRedefinition/CompositeCustomValue AST
+        nodes), so the simulation side never needs to understand SysML's
+        shapes either -- only which Python class (see
+        FischertechnikBridge.instantiate()) mirrors the custom type named.
+        """
+        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
+
+        attrs = {}
+        for redefinition in self.attribute_redefinitions:
+            if isinstance(redefinition.value, CompositeCustomValue):
+                attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
+
+        SimulationBridge.instantiate(runtime.channel, self.qualified_name, part_def_name, **attrs)
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 

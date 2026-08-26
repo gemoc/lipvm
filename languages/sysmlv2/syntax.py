@@ -12,6 +12,7 @@ from core.operation import operation
 # its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
+from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
@@ -309,19 +310,42 @@ def _populate_parameters(record, behavior):
 
 def _bound_arguments(element):
     """Builds an Argument for each of `element`'s owned features that has a
-    bound value (e.g. msg="Entry" on a PerformActionUsage, conveyorBelt=cb1
-    on a StateUsage) — the call-site counterpart to _populate_parameters,
+    resolved value — either a plain bound value (e.g. msg="Entry" on a
+    PerformActionUsage, conveyorBelt=cb1 on a StateUsage) or, since a
+    ReferenceUsage in-parameter can also be bound by nesting `:>>`
+    sub-attribute redefinitions directly under it instead of a FeatureValue
+    (e.g. vgrMission's pickFromFeederPosition { attribute :>> vertical =
+    940.0; ... }), a composite value built from those — see
+    _resolved_value(). The call-site counterpart to _populate_parameters,
     which builds the formal Parameter declarations instead.
+
+    A bound in-parameter's own usage-site node (e.g. vgrMission's
+    pickFromFeederPosition) carries no FeatureTyping of its own -- only the
+    matching formal parameter declared on `element`'s own type (e.g.
+    VGRMissionWith2CB's `in pickFromFeederPosition: Position3D;`) does. So
+    for each feature here, the matching formal parameter (by name) is
+    looked up via the same _formal_parameters() helper _populate_parameters
+    already uses, and its type passed down as _resolved_value()'s
+    fallback_type_node -- inert for a plain FeatureValue-bound argument
+    (only consulted in _resolved_value()'s composite-value branch), but
+    what CompositeCustomValue.evaluate() needs to resolve which custom
+    attribute class to construct.
     """
-    return [
-        rt.Argument(
-            name=feature.declaredName,
-            qualified_name=qualified_name(feature),
-            value=_to_runtime_value(_bound_value(feature)),
-        )
-        for feature in _owned_by_kind(element, FeatureMembership)
-        if _bound_value(feature) is not None
-    ]
+    behavior = _feature_type(element)
+    formal_params = _formal_parameters(behavior) if behavior is not None else []
+
+    arguments = []
+    for feature in _owned_by_kind(element, FeatureMembership):
+        matching_formal = next((p for p in formal_params if p.declaredName == feature.declaredName), None)
+        fallback_type_node = _feature_type(matching_formal) if matching_formal is not None else None
+        value = _resolved_value(feature, qualified_name(feature), fallback_type_node)
+        if value is not None:
+            arguments.append(rt.Argument(
+                name=feature.declaredName,
+                qualified_name=qualified_name(feature),
+                value=value,
+            ))
+    return arguments
 
 
 def _owned_attribute_redefinitions(element, owner_qualified_name):
@@ -338,6 +362,35 @@ def _owned_attribute_redefinitions(element, owner_qualified_name):
         for feature in _owned_by_kind(element, FeatureMembership)
         if isinstance(feature, AttributeUsage) and _redefined_feature(feature) is not None
     ]
+
+
+def _resolved_value(feature, feature_qualified_name, fallback_type_node=None):
+    """Builds the Value for `feature`: a CompositeCustomValue if `feature`
+    owns nested AttributeUsage redefinitions (e.g. placementCoordinate's
+    x/y, or a ReferenceUsage in-parameter bound via nested vertical/
+    horizontal/rot redefinitions instead of a FeatureValue), otherwise the
+    plain value bound via feature's own FeatureValue — or None if neither
+    applies.
+
+    `fallback_type_node` covers the case where `feature` carries no
+    FeatureTyping of its own (true for both an anonymous `:>>` redefinition
+    and a bound in-parameter like pickFromFeederPosition, whose type only
+    lives on the formal parameter it fulfills) — callers that have a node
+    to fall back to (e.g. to_redefinition()'s `redefined`) pass it in;
+    callers that don't (e.g. _bound_arguments()) leave the resulting
+    CompositeCustomValue.type as None, deferring resolution to whoever
+    consumes it later, same convention used everywhere else in this module.
+    """
+    nested_redefinitions = _owned_attribute_redefinitions(feature, feature_qualified_name)
+    if nested_redefinitions:
+        return rt.CompositeCustomValue(
+            type=_build_type_ref(_feature_type(feature) or fallback_type_node),
+            elements=[
+                rt.Argument(name=r.name, qualified_name=r.qualified_name, value=r.value)
+                for r in nested_redefinitions
+            ],
+        )
+    return _to_runtime_value(_bound_value(feature))
 
 
 def _build_type_ref(type_node):
@@ -921,114 +974,96 @@ endif
 """
         raise NotImplementedError('operation visibleMemberships(...) not yet implemented')
 
-    def read_events_and_execute(self, runtime, pending_file, item_defs_table, usages_by_name, executable_stats):
+    def read_events_and_execute(self, runtime, executable_stats):
 
-        sync_pending_items(pending_file, item_defs_table, usages_by_name)
+        # Part instantiation (parsed from SysML model and to be performed by the simulation model) and
+        # event occurrences (produced by the simulation model and to be evaluated according to the SysML model)
+        # are constantly checked for every VM step
+        if runtime.channel is not None:
+            part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
+            for an_instantiation in part_instantiation_elements:
+                an_instantiation.evaluate(runtime)
+
+            drain_event_queue(runtime.channel, runtime.sysml.lookup_table_item_defs, executable_stats)
 
         return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
 
-    @operation
     def evaluate(self, runtime: RuntimeState):
 
         # A single SysmlRuntimeState, one LookupTable per Definition kind
         # (initialized in its own __init__), doubles as both the registry
         # built up by the visit() walk below and the structure the rest of
-        # the AST resolves against. visit() is plain/eager (unlike evaluate()
-        # itself, deferred and stepped by the VM via @operation) — see
-        # Element.visit()'s docstring for why the two stay separate.
-        # Additionally, the actual execution now is delegated to the pre-populated runtime elements
+        # the AST resolves against. Additionally, the actual execution now is
+        # delegated to the pre-populated runtime elements
         sysml_state = rt.SysmlRuntimeState(name="sysml")
         self.visit(sysml_state)
         runtime.elements.append(sysml_state)
 
-       
-        item_defs_table = runtime.sysml.lookup_table_item_defs
-        pending_file = "pending_test_scratch.txt"
+        #Initialization for Bridge to the simulation
+        runtime.elements.append(ThreadChannel(name="channel"))
 
         executable_stats = executable_state_usages(runtime.sysml.lookup_table_executable_state_usages)
         if not executable_stats:
             print("No ExecutableStateUsage found in this model; nothing to run.")
             return
 
-        usages_by_name = {}
-        for usage in executable_stats:
-            usages_by_name.setdefault(usage.name, []).append(usage)
-
         return lazy_while(
-            lambda runtime, event_file, table, usages, stats: self.read_events_and_execute(runtime, event_file, table, usages, stats), 
+            lambda runtime, stats: self.read_events_and_execute(runtime, stats),
             Operation(lambda: True), 
-            args=(runtime, pending_file, item_defs_table, usages_by_name, executable_stats)
+            args=(runtime, executable_stats)
         )
-
-        #return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), Operation(lambda: True), args=(runtime,))
-        # while True:
-        #     if pending_file is not None:
-        #         
-        #     for a_state_usage in executable_stats:
-        #         a_state_usage.evaluate(runtime)
 
 def executable_state_usages(lookup_table_executable_state_usages):
     return [record.element_type
             for record in lookup_table_executable_state_usages.records]
 
-def sync_pending_items(pending_file: str, item_defs_table, usages_by_name: dict) -> None:
-    """Reads the whole of `pending_file` — one entry per line, formatted
-    `<name-of-the-executable-state-usage>.<qualified-name-of-the-item-def>`
-    (blank lines and lines starting with '#' ignored) — appends each
-    resolved ItemDef to the named ExecutableStateUsage's `pending` mailbox
-    in file order, then truncates the file.
+def part_instantiations(lookup_table_part_instantiations):
+    return [record.element_type
+            for record in lookup_table_part_instantiations.records]
 
-    Meant to be called once per reactive-loop tick rather than once at
-    startup: since every line present gets consumed and the file is emptied
-    afterwards, a later scan only ever sees lines appended since the last
-    one, which is what makes `pending_file` usable as a live interface
-    while the simulation is running rather than a one-shot seed.
+def drain_event_queue(channel, item_defs_table, executable_stats) -> None:
+    """Drains `channel.event_queue` (EventCommand instances, see
+    facade_proxy.py) and broadcasts each one into every currently-running
+    ExecutableStateUsage's own `pending` mailbox -- not just the first
+    match, since more than one usage (e.g. two independent missions) may
+    each have their own transition waiting on the same event type, and
+    with no real concurrency between them, each needs its own chance to
+    evaluate its own guards against it before the event is gone. Whether a
+    given usage actually reacts to it is entirely up to its own
+    TransitionTriggerBySignal.evaluate() check (and the existing
+    drop-and-log fallback for a pending item nothing matches) -- this
+    function doesn't pre-filter who receives it.
 
-    The usage side is its plain declared `name` (e.g. "main"), not its
-    qualified_name — qualified names use "::" as their separator, never ".",
-    so splitting each line on the first "." unambiguously separates the two
-    halves.
+    command.item_name is a bare declared name (e.g.
+    "CBCommandSuccessEventMessage"), resolved here against
+    `item_defs_table` via get_reference_by_name() -- mirrors how
+    on_tick() used to do this same resolution on the simulation side
+    before it moved here (see EVENT-QUEUE-DESIGN.md).
 
-    A malformed or unresolvable line is logged and dropped rather than
-    raised: this runs inside the long-lived reactive loop now, so one bad
-    line appended later shouldn't take the whole simulation down.
+    command.source_qualified_name (the emitting part's qualified name, or
+    None for a broadcast event) is wrapped into a Reference and carried
+    on the EventOccurrence's own `source` field, so a `via`-qualified
+    TransitionTriggerBySignal can later tell which part an event actually
+    came from -- same reference_type tag _resolve_feature_reference()
+    already uses for a PartUsage referent.
     """
-    with open(pending_file, encoding="utf-8") as f:
-        content = f.read()
-
-    if not content.strip():
-        return
-
-    for lineno, raw_line in enumerate(content.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "." not in line:
-            logger.warning(
-                "%s:%d: expected '<usage-name>.<item-def-qualified-name>', got %r — skipping",
-                pending_file, lineno, raw_line)
-            continue
-        usage_name, item_qualified_name = line.split(".", 1)
-
-        matching_usages = usages_by_name.get(usage_name)
-        if not matching_usages:
-            logger.warning(
-                "%s:%d: unknown executable state usage '%s' — skipping",
-                pending_file, lineno, usage_name)
-            continue
-
-        record = item_defs_table.get_reference(item_qualified_name)
+    while not channel.event_queue.empty():
+        command = channel.event_queue.get_nowait()
+        record = item_defs_table.get_reference_by_name(command.item_name)
         if record is None:
             logger.warning(
-                "%s:%d: unknown item def '%s' — skipping",
-                pending_file, lineno, item_qualified_name)
+                "event %r: no ItemDef with this declared name -- skipping",
+                command.item_name)
             continue
-
-        for usage in matching_usages:
-            usage.pending.append(record.element_type)
-
-    with open(pending_file, "w", encoding="utf-8"):
-        pass
+        source = None
+        if command.source_qualified_name is not None:
+            source = rt.Reference(
+                qualified_name=command.source_qualified_name,
+                reference_type=rt.PartInstantiation.__name__,
+            )
+        occurrence = rt.EventOccurrence(event_type=record.element_type, source=source)
+        for usage in executable_stats:
+            usage.pending.append(occurrence)
 
 class DerivedRelatedelement(EDerivedCollection):
     pass
@@ -4201,21 +4236,11 @@ specializesFromLibrary('Base::dataValues')"""
         name = redefined.declaredName
         redefinition_qualified_name = f"{owner_qualified_name}::{name}"
 
-        nested_redefinitions = _owned_attribute_redefinitions(self, redefinition_qualified_name)
-        if nested_redefinitions:
-            # self rarely carries its own FeatureTyping — a redefinition's
-            # type is normally inherited from the feature it redefines
-            # (e.g. placementCoordinate's override has no FeatureTyping of
-            # its own, only redefined's does), so fall back to redefined's.
-            value = rt.CompositeCustomValue(
-                type=_build_type_ref(_feature_type(self) or _feature_type(redefined)),
-                elements=[
-                    rt.Argument(name=r.name, qualified_name=r.qualified_name, value=r.value)
-                    for r in nested_redefinitions
-                ],
-            )
-        else:
-            value = _to_runtime_value(_bound_value(self))
+        # self rarely carries its own FeatureTyping — a redefinition's type
+        # is normally inherited from the feature it redefines (e.g.
+        # placementCoordinate's override has no FeatureTyping of its own,
+        # only redefined's does), so fall back to redefined's.
+        value = _resolved_value(self, redefinition_qualified_name, fallback_type_node=_feature_type(redefined))
 
         return rt.AttributeRedefinition(
             name=name,
@@ -6185,6 +6210,24 @@ owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
                 return bound
         return None
 
+    def _via_reference(self):
+        """Returns a Reference to the formal part parameter named by this
+        AcceptActionUsage's `via` clause (e.g. `accept StopEventMessage via
+        conveyorBelt` -> conveyorBelt), or None for a broadcast trigger
+        with no receiver at all (e.g. bare `accept StopEventMessage`).
+
+        A second, distinct ParameterMembership from the one _signal_type()
+        reads: that one's bound via a FeatureTyping (the item type), this
+        one's bound via a FeatureValue -> FeatureReferenceExpression (the
+        receiving part) -- so distinguished by which shape is actually
+        bound to it, not by ordinal position.
+        """
+        for parameter in _owned_by_kind(self, ParameterMembership):
+            bound = _bound_value(parameter)
+            if isinstance(bound, FeatureReferenceExpression):
+                return _resolve_feature_reference(bound)
+        return None
+
     def to_trigger(self):
         """Builds a TransitionTrigger from this AcceptActionUsage's trigger
         parameter: TransitionTriggerBySignal for a plain signal-typed
@@ -6198,7 +6241,10 @@ owningType.oclAsType(TransitionUsage).triggerAction->includes(self)"""
         if when_condition is not None:
             condition_node = _expression_operands(when_condition)[0]
             return rt.TransitionTriggerByWhenCondition(condition=_build_expression(condition_node))
-        return rt.TransitionTriggerBySignal(signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__))
+        return rt.TransitionTriggerBySignal(
+            signal_origin=_build_reference(self._signal_type(), rt.ItemDef.__name__),
+            via=self._via_reference(),
+        )
 
 
 class DerivedAction(EDerivedCollection):
