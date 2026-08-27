@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenProducerCommandKind, TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.token_depo import TokenDepoMessages
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset
 from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
@@ -27,6 +29,12 @@ class TokenProducerMachineSnapshot:
     currentCommand: Optional[TokenProducerCommandKind]
     lastUsedTokenColor: Optional[TokenColorKind]
     placementCoordinate: FactoryCoordinate
+    platformSens: bool
+
+class TokenProducerMessages(Enum):
+    SUCCESS_MESSAGE = 'TokenProducerSuccessEventMessage'
+    PLATFORM_BUSY = 'TokenPlatformBusyEventMessage'
+    PLATFORM_EMPTY = 'TokenPlatformFreeEventMessage'
 
 class TokenProducerMachine(PartSimulationModel):
 
@@ -35,10 +43,19 @@ class TokenProducerMachine(PartSimulationModel):
     def __init__(self, factory: Factory):
 
         super().__init__()
-
+        self._factory = Factory
         self._currentCommand: TokenProducerCommandKind = TokenProducerCommandKind.STOP
         self._lastUsedTokenColor: Optional[TokenColorKind] = None
         self._placementCoordinate: FactoryCoordinate = None
+        self._platformSens: bool = False
+
+    @property
+    def platformSens(self):
+        return self._platformSens
+
+    @platformSens.setter
+    def platformSens(self, value):
+        self._platformSens = value
 
     @property
     def placementCoordinate(self):
@@ -77,6 +94,41 @@ class TokenProducerMachine(PartSimulationModel):
         """
         return self._currentCommand == TokenProducerCommandKind.STOP
 
+    def emitToken(self, desiredColor: TokenColorKind):
+
+        """
+        This method allow a token to be produced according to the desired color.
+        The produced token will be placed on the platform
+        :param desiredColor: The produced token's color
+        :return:
+        """
+
+        pass
+
+    def randomEmitToken(self):
+        """
+        This method allow a token to be produced, albeit the token's color is determined
+        randomly. The produced token will be placed on the platform
+        :return:
+        """
+        pass
+
+    def emptyPlatform(self):
+        """
+        Drop the token that is currently placed in the platform
+        :return:
+        """
+        pass
+
+    def stop(self):
+        """
+        Stop the token producer machine
+        :return:
+        """
+        pass
+
+        self.emit_event_to_factory(TokenDepoMessages.COMMAND_SUCCESS)
+
     def tick(self) -> None:
         """No behavior wired up yet -- see this module's own "dummy
         machine" comment. Still required: PartSimulationModel.tick() is
@@ -84,4 +136,7 @@ class TokenProducerMachine(PartSimulationModel):
         instantiated.
         """
         pass
+
+    def emit_event_to_factory(self, event: TokenDepoMessages):
+        self._factory.record_event(event.value, self.name)
 

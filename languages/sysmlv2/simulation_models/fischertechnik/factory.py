@@ -61,6 +61,16 @@ class Factory(BaseSimulationModel):
     def owner_of(self, token: Token):
         return self._owners.get(token)
 
+    def remove_token(self, token: Token) -> None:
+        """Deletes a token from the world entirely -- e.g.
+        TokenDepoMachine.storeToken() absorbing one into its internal
+        tokenCount, where it's no longer a physical entity anyone should
+        still see or query. Unlike transfer_token (which only ever
+        changes who owns a token, never dropping it from self._owners),
+        this is the one place a token actually stops existing.
+        """
+        self._owners.pop(token, None)
+
     def tokens_on(self, machine):
         return [token for token, owner in self._owners.items() if owner is machine]
 
