@@ -86,8 +86,8 @@ def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("sysml", help=f"Path to the .sysml model to run")
-    parser.add_argument("--tick-delay", type=float, default=0.25,
-                         help="Seconds between interpreter reactive passes (default: 0.25)")
+    parser.add_argument("--tick-delay", type=float, default=0.02,
+                         help="Seconds between interpreter reactive passes (default: 0.02)")
     parser.add_argument("--simulation-model", choices=sorted(REGISTERED_SIMULATION_MODELS),
                         help="Which simulation domain to run", required=True)
     args = parser.parse_args()
