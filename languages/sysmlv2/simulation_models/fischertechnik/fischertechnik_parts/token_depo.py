@@ -54,11 +54,6 @@ class TokenDepoMachine(FischertechnikMachine):
         self._tokenCount: int = 0
         self._placementCoordinate: FactoryCoordinate = None
 
-        # The receiverSens value as of the end of the last tick() --
-        # see is_idle()/tick()'s own docstrings for why this has to be
-        # persisted across calls rather than captured fresh each time.
-        self._was_receiver_busy: bool = False
-
     @property
     def placementCoordinate(self):
         return self._placementCoordinate
@@ -82,10 +77,7 @@ class TokenDepoMachine(FischertechnikMachine):
     def _token_at_receiver(self) -> Optional[Token]:
         """The Token currently owned by this machine that sits at
         receiver_position() (within RECEIVER_ARRIVAL_TOLERANCE), or None
-        if the receiver is empty. `tokens_on(self)` rather than
-        `factory.tokens` -- a token merely passing nearby without this
-        machine owning it doesn't count, same ownership-gated shape as
-        ConveyorBeltMachine.conveyorSensFeed/conveyorSensSwap.
+        if the receiver is empty.
         """
         receiver = self.receiver_position()
         for token in self._factory.tokens_on(self):
@@ -97,9 +89,7 @@ class TokenDepoMachine(FischertechnikMachine):
     def receiver_position(self) -> FactoryCoordinate:
         """Coordinate of the platform where a token is placed to be
         stored -- TOKEN_RECEIVER_OFFSET model units along the machine's
-        own local +x axis, rotated by placementCoordinate.degrees. Same
-        fixed-reference-point shape as ConveyorBeltMachine._end_position()'s
-        feed_position()/swap_position().
+        own local +x axis, rotated by placementCoordinate.degrees.
         """
         dx, dy = rotate_offset(TOKEN_RECEIVER_OFFSET, self._placementCoordinate.degrees)
         return FactoryCoordinate(
@@ -109,18 +99,8 @@ class TokenDepoMachine(FischertechnikMachine):
         )
 
     def is_idle(self) -> bool:
-        """Always False -- deliberately not the CB/VGR-style "STOP means
-        nothing to advance" sentinel. This machine's receiver has to be
-        watched every tick even when no storeToken/emptyReceiver command
-        is running, since a token can land on it from outside (the
-        panel's Place button, or another machine's action) at any time,
-        and 'accept ReceiverBusyEventMessage via tokenDepoInstance' means
-        only this machine's own tick() noticing that can ever report it
-        -- nothing else is allowed to emit an event "via tokenDepoInstance"
-        on this machine's behalf. Factory.tick() (factory.py) uses
-        is_idle() to decide whether to call tick() at all, so returning
-        False here is what keeps this machine ticking (at the same paced
-        cadence as every other machine) even while at rest.
+        """Always False, because this machine must be monitored every tick, especially
+        to ensure we can check whether there is a token or not
         """
         return False
 
@@ -129,11 +109,6 @@ class TokenDepoMachine(FischertechnikMachine):
         This method allows the token that is currently placed in the receiver platform
         to be stored inside the machine. If there is no token in the receiver, then this
         method will do nothing.
-
-        Only sets currentCommand -- like ConveyorBeltMachine.moveToSensor()/
-        VacuumGripperMachine.pick(), the actual work (and its own "was
-        there even a token to store" check) happens in tick()'s
-        _advance_store_token(), not here.
         :return:
         """
         self._currentCommand = TokenDepoCommandKind.STORE_TOKEN
@@ -142,9 +117,6 @@ class TokenDepoMachine(FischertechnikMachine):
         """
         This method ejects the token that is currently placed in the receiver platform. If
         there is no token in the receiver, then this method will do nothing.
-
-        Only sets currentCommand -- see storeToken()'s docstring; the
-        actual ejection happens in tick()'s _advance_empty_receiver().
         :return:
         """
         self._currentCommand = TokenDepoCommandKind.EMPTY_RECEIVER
@@ -160,31 +132,23 @@ class TokenDepoMachine(FischertechnikMachine):
     def tick(self) -> None:
         """Dispatches to whichever _advance_* method matches
         currentCommand (a no-op when it's STOP -- there's nothing to
-        advance), then checks receiverSens for an edge transition against
-        _was_receiver_busy (not a locally-captured "before" value --
-        see is_idle()'s docstring: unlike ConveyorBeltMachine, whose own
-        movement causes its sensor transition *inside* one tick() call,
-        a token can land on this machine's receiver from outside, between
-        ticks, so the "before" side of the edge has to survive across
-        calls to be compared against here).
+        advance), then checks receiverSens for an edge transition via
+        FischertechnikMachine._sensor_edge().
         """
         if self._currentCommand == TokenDepoCommandKind.STORE_TOKEN:
             self._advance_store_token()
         elif self._currentCommand == TokenDepoCommandKind.EMPTY_RECEIVER:
             self._advance_empty_receiver()
 
-        busy_now = self.receiverSens
-        if busy_now and not self._was_receiver_busy:
+        edge = self._sensor_edge('receiverSens', self.receiverSens)
+        if edge is True:
             self.emit_event_to_factory(TokenDepoMessages.RECEIVER_BUSY)
-        elif self._was_receiver_busy and not busy_now:
+        elif edge is False:
             self.emit_event_to_factory(TokenDepoMessages.RECEIVER_EMPTY)
-        self._was_receiver_busy = busy_now
 
     def _advance_store_token(self):
         """No-op (beyond stopping) if the receiver's empty -- otherwise
         absorbs the token into tokenCount and removes it from the world.
-        Reporting the receiver as free again is tick()'s own edge-check
-        job now, not this method's -- see tick()'s docstring.
         """
         token = self._token_at_receiver()
         if token is not None:
@@ -194,14 +158,10 @@ class TokenDepoMachine(FischertechnikMachine):
 
     def _advance_empty_receiver(self):
         """No-op (beyond stopping) if the receiver's empty -- otherwise
-        ejects the token to whatever machine's footprint the receiver
-        lines up with (same drop pattern as
-        VacuumGripperMachine.release()). Reporting the receiver as free
-        again is tick()'s own edge-check job now -- see tick()'s
-        docstring.
+        ejects the token from the simulation altogether.
         """
         token = self._token_at_receiver()
         if token is not None:
-            self._factory.transfer_token(token, self._factory.machine_at(token.position))
+            self._factory.remove_token(token)
         self.stop()
 
