@@ -6,8 +6,8 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenProducerCommandKind, TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.token_depo import TokenDepoMessages
+from languages.sysmlv2.simulation_models.fischertechnik.machine import FischertechnikMachine
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset
-from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # This is a dummy machine. Thus, we can make our own model size
 TOKEN_PROD_BASE_LENGTH = 3
@@ -36,14 +36,13 @@ class TokenProducerMessages(Enum):
     PLATFORM_BUSY = 'TokenPlatformBusyEventMessage'
     PLATFORM_EMPTY = 'TokenPlatformFreeEventMessage'
 
-class TokenProducerMachine(PartSimulationModel):
+class TokenProducerMachine(FischertechnikMachine):
 
     snapshot_type = TokenProducerMachineSnapshot
 
     def __init__(self, factory: Factory):
 
-        super().__init__()
-        self._factory = Factory
+        super().__init__(factory)
         self._currentCommand: TokenProducerCommandKind = TokenProducerCommandKind.STOP
         self._lastUsedTokenColor: Optional[TokenColorKind] = None
         self._placementCoordinate: FactoryCoordinate = None
@@ -136,7 +135,4 @@ class TokenProducerMachine(PartSimulationModel):
         instantiated.
         """
         pass
-
-    def emit_event_to_factory(self, event: TokenDepoMessages):
-        self._factory.record_event(event.value, self.name)
 

@@ -6,9 +6,9 @@ from typing import Optional
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenDepoCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
+from languages.sysmlv2.simulation_models.fischertechnik.machine import FischertechnikMachine
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
-from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # This is a dummy machine. Thus, we can make our own model size
 TOKEN_DEPO_BASE_LENGTH = 3
@@ -43,14 +43,13 @@ class TokenDepoMachineSnapshot:
     receiverSens: bool
     placementCoordinate: FactoryCoordinate
 
-class TokenDepoMachine(PartSimulationModel):
+class TokenDepoMachine(FischertechnikMachine):
 
     snapshot_type = TokenDepoMachineSnapshot
 
     def __init__(self, factory: Factory):
-        super().__init__()
+        super().__init__(factory)
 
-        self._factory = factory
         self._currentCommand: TokenDepoCommandKind = TokenDepoCommandKind.STOP
         self._tokenCount: int = 0
         self._placementCoordinate: FactoryCoordinate = None
@@ -157,9 +156,6 @@ class TokenDepoMachine(PartSimulationModel):
         """
         self._currentCommand = TokenDepoCommandKind.STOP
         self.emit_event_to_factory(TokenDepoMessages.COMMAND_SUCCESS)
-
-    def emit_event_to_factory(self, event: TokenDepoMessages):
-        self._factory.record_event(event.value, self.name)
 
     def tick(self) -> None:
         """Dispatches to whichever _advance_* method matches
