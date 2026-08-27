@@ -9,7 +9,6 @@ rendering-library object, so they remain usable (and testable)
 independent of whether a display is even available.
 """
 
-import itertools
 import math
 import os
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # this file can get imported just for class discovery (see registry.py), not necessarily to actually render -- suppress pygame's own import-time banner so it doesn't pollute stdout for callers who never asked for it
@@ -79,7 +78,10 @@ PANEL_SUMMARY_GAP = 14           # extra vertical gap after the factory-wide sum
 
 PANEL_BUTTON_TEXT_COLOR = (20, 20, 20)
 
-PANEL_BUTTON_WIDTH = 60          # one of the 4 token-placement buttons per belt
+PANEL_BUTTON_WIDTH = 100         # wide enough for the longest current label, "Random Emit"
+                                  # (TokenProducerVisualization), at ~78px rendered plus padding --
+                                  # the only remaining panel_buttons() user now that CB/VGR no
+                                  # longer have any
 PANEL_BUTTON_HEIGHT = 22
 PANEL_BUTTON_GAP = 6             # horizontal gap between buttons in the same row
 PANEL_BUTTON_COLOR = (210, 210, 210)
@@ -179,6 +181,34 @@ def _is_valid_numeric_input_char(char: str, current_text: str) -> bool:
         return True
     return False
 
+
+def draw_color_palette(screen: pygame.Surface, x: int, y: int, selected_color: TokenColorKind,
+                        on_select_color) -> list[tuple[pygame.Rect, object]]:
+    """Draws one swatch per `TokenColorKind`, in a row starting at `(x, y)`,
+    with a heavier border around whichever one is `selected_color`. Each
+    swatch's callback just reports its own color back to `on_select_color`
+    -- the caller owns what "selected" actually means, this function only
+    renders the current value and reports clicks.
+
+    Module-level (not a `FischertechnikVisualization` method) so any
+    per-machine `MachineVisualization` drawer can call it directly --
+    currently only `TokenProducerVisualization`, whose "Emit Token"
+    button needs a color to emit, same "import a shared helper from here"
+    pattern `_to_screen`/`SCALE`/etc. already use across
+    fischertechnik_parts_visualization/*.py.
+    """
+    buttons = []
+    swatch_x = x
+    for color in TokenColorKind:
+        rect = pygame.Rect(swatch_x, y, PALETTE_SWATCH_SIZE, PALETTE_SWATCH_SIZE)
+        pygame.draw.rect(screen, TOKEN_COLORS[color], rect, border_radius=4)
+        is_selected = color == selected_color
+        border_color = PALETTE_SELECTED_BORDER_COLOR if is_selected else PALETTE_UNSELECTED_BORDER_COLOR
+        pygame.draw.rect(screen, border_color, rect, width=3 if is_selected else 1, border_radius=4)
+        buttons.append((rect, lambda c=color: on_select_color(c)))
+        swatch_x += PALETTE_SWATCH_SIZE + PALETTE_SWATCH_GAP
+    return buttons
+
 class FischertechnikVisualization(SimulationVisualization):
     """Fischertechnik's SimulationVisualization (generic.py). `run()` is
     the only method ever called from outside this class -- every other
@@ -187,7 +217,7 @@ class FischertechnikVisualization(SimulationVisualization):
     class instead of being split between free functions and a thin
     wrapper around them.
 
-    `run()`'s own local state (`started`/`selected_color`/`next_token_id`)
+    `run()`'s own local state (`started`/`selected_color`)
     and its nested closures (`handle_start`/`handle_select_color`/
     `handle_place_token`) deliberately stay as plain locals/closures, not
     instance attributes -- they're fresh every call today (each `run()`
@@ -301,27 +331,6 @@ class FischertechnikVisualization(SimulationVisualization):
 
         return [(rect, on_start_click)]
 
-    def _draw_color_palette(self, screen: pygame.Surface, x: int, y: int, selected_color: TokenColorKind,
-                             on_select_color) -> list[tuple[pygame.Rect, object]]:
-        """Draws one swatch per `TokenColorKind`, in a row starting at `(x, y)`,
-        with a heavier border around whichever one is `selected_color`. Each
-        swatch's callback just reports its own color back to `on_select_color`
-        -- the caller owns what "selected" actually means (`run()`'s own
-        `selected_color` state), this method only renders the current value
-        and reports clicks.
-        """
-        buttons = []
-        swatch_x = x
-        for color in TokenColorKind:
-            rect = pygame.Rect(swatch_x, y, PALETTE_SWATCH_SIZE, PALETTE_SWATCH_SIZE)
-            pygame.draw.rect(screen, TOKEN_COLORS[color], rect, border_radius=4)
-            is_selected = color == selected_color
-            border_color = PALETTE_SELECTED_BORDER_COLOR if is_selected else PALETTE_UNSELECTED_BORDER_COLOR
-            pygame.draw.rect(screen, border_color, rect, width=3 if is_selected else 1, border_radius=4)
-            buttons.append((rect, lambda c=color: on_select_color(c)))
-            swatch_x += PALETTE_SWATCH_SIZE + PALETTE_SWATCH_GAP
-        return buttons
-
     def _draw_speed_slider(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
                             ticks_per_step: int) -> pygame.Rect:
         """Draws a horizontal "Speed" slider: a label showing the current
@@ -330,7 +339,7 @@ class FischertechnikVisualization(SimulationVisualization):
         Doesn't take a callback or do any hit-testing itself -- `run()`'s
         event loop owns dragging state (click-and-hold spans multiple
         frames, unlike the one-shot buttons `panel_buttons()`/
-        `_draw_color_palette()` return), so this method only draws and
+        `draw_color_palette()` return), so this method only draws and
         hands back the track's hit-rect (padded by
         SPEED_SLIDER_HIT_PADDING so a drag doesn't need pixel-perfect
         aim) for `run()` to test clicks/drags against.
@@ -351,14 +360,14 @@ class FischertechnikVisualization(SimulationVisualization):
 
     def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
                              label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                             on_place_token, ticks_per_step: int, field_values: dict, focused_field
+                             ticks_per_step: int, field_values: dict, focused_field
                              ) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect, list[tuple[str, pygame.Rect]]]:
         """Draws a side panel to the right of the viewport: a factory-wide
-        summary line, a token-color palette, then each machine's live
-        attributes and an optional row of buttons, one stacked block per
-        machine. Machines are labeled by their own SysML part name (e.g.
-        "Belt: cb1") -- `machine.name` (`PartSimulationModel`) holds the
-        qualified name `Factory.instantiate_machine()` assigned it (see
+        summary line, then each machine's live attributes and an optional
+        row of buttons, one stacked block per machine. Machines are
+        labeled by their own SysML part name (e.g. "Belt: cb1") --
+        `machine.name` (`PartSimulationModel`) holds the qualified name
+        `Factory.instantiate_machine()` assigned it (see
         `PartInstantiation.evaluate()`, runtime.py); the leaf segment
         after the last `::` is what the model itself calls the part
         (`part cb1 : ...`), same split `PartInstantiation.evaluate()`
@@ -375,15 +384,19 @@ class FischertechnikVisualization(SimulationVisualization):
         machine was a ConveyorBeltMachine (`machine.conveyorSensFeed`,
         `machine.pre_feed_position()`, ...), which would raise
         `AttributeError` the moment a different machine kind (e.g.
-        VacuumGripperMachine) got registered.
+        VacuumGripperMachine) got registered. `selected_color`/
+        `on_select_color` are threaded down to each drawer's own
+        `panel_buttons()` rather than drawing a shared palette here --
+        currently only `TokenProducerVisualization` uses them (its own
+        color picker, scoped right above its Emit Token/Random Emit
+        buttons, drawn via `draw_color_palette()`).
 
-        Returns the (rect, callback) pairs for every button just drawn
-        (palette swatches and placement buttons alike), the speed slider's
-        own hit-rect, and every input field's (field_key, hit_rect) pair
-        (see panel_input_fields(), generic.py) -- so the caller's event
-        loop can hit-test all of them the same way, computed here in the
-        same pass as the drawing so the clickable area can never drift out
-        of sync with what's on screen.
+        Returns the (rect, callback) pairs for every button just drawn,
+        the speed slider's own hit-rect, and every input field's
+        (field_key, hit_rect) pair (see panel_input_fields(), generic.py)
+        -- so the caller's event loop can hit-test all of them the same
+        way, computed here in the same pass as the drawing so the
+        clickable area can never drift out of sync with what's on screen.
         """
         panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
         pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
@@ -399,11 +412,7 @@ class FischertechnikVisualization(SimulationVisualization):
         speed_slider_rect = self._draw_speed_slider(screen, x, y, font, ticks_per_step)
         y += PANEL_LINE_HEIGHT + SPEED_SLIDER_HANDLE_RADIUS * 2 + PANEL_SUMMARY_GAP
 
-        screen.blit(font.render("Token color to place:", True, PANEL_TEXT_COLOR), (x, y))
-        y += PANEL_LINE_HEIGHT
-        buttons = self._draw_color_palette(screen, x, y, selected_color, on_select_color)
-        y += PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
-
+        buttons: list[tuple[pygame.Rect, object]] = []
         input_fields: list[tuple[str, pygame.Rect]] = []
         for machine in machines:
             drawer = self._drawers[type(machine)]
@@ -421,10 +430,16 @@ class FischertechnikVisualization(SimulationVisualization):
             if field_row:
                 y = max(rect.bottom for _, rect in field_row) + INPUT_FIELD_ROW_GAP
 
-            button_row = drawer.panel_buttons(screen, x, y, font, mouse_pos, machine, on_place_token, field_values)
+            button_row = drawer.panel_buttons(screen, x, y, font, mouse_pos, machine, selected_color, on_select_color, field_values)
             buttons.extend(button_row)
             if button_row:
-                y += PANEL_BUTTON_HEIGHT
+                # Derived from the actual drawn rects' bottoms (like
+                # field_row's own height above), not a fixed
+                # PANEL_BUTTON_HEIGHT constant -- lets a drawer lay out
+                # more than one row (e.g. TokenProducerVisualization's own
+                # color picker above its action buttons) without this
+                # method needing to know its layout in advance.
+                y = max(rect.bottom for rect, _ in button_row)
             y += PANEL_MACHINE_GAP
 
         return buttons, speed_slider_rect, input_fields
@@ -490,7 +505,6 @@ class FischertechnikVisualization(SimulationVisualization):
 
         started = False
         selected_color = TokenColorKind.BLUE
-        next_token_id = itertools.count(1)
 
         def handle_start():
             nonlocal started
@@ -500,10 +514,6 @@ class FischertechnikVisualization(SimulationVisualization):
         def handle_select_color(color: TokenColorKind) -> None:
             nonlocal selected_color
             selected_color = color
-
-        def handle_place_token(machine, position: FactoryCoordinate) -> None:
-            token = Token(f"T{next(next_token_id)}", position, selected_color)
-            model.spawn_token(token, machine)
 
         running = True
         dragging_speed_slider = False
@@ -547,7 +557,7 @@ class FischertechnikVisualization(SimulationVisualization):
                 unowned_token_count = len(model.tokens_on(None))
                 buttons, speed_slider_rect, input_fields = self._draw_machine_panel(
                     screen, model.machines, unowned_token_count, font, label_font,
-                    selected_color, handle_select_color, handle_place_token, model.ticks_per_step,
+                    selected_color, handle_select_color, model.ticks_per_step,
                     field_values, focused_field)
             else:
                 buttons = self._draw_start_panel(screen, font, label_font, handle_start)

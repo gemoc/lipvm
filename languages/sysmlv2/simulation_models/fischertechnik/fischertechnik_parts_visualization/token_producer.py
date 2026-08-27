@@ -1,13 +1,15 @@
 import pygame
 
+from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.token_producer import (
     TokenProducerMachine, TOKEN_PROD_BASE_LENGTH, TOKEN_PROD_BASE_WIDTH,
     TOKEN_PLATFORM_LENGTH, TOKEN_PLATFORM_WIDTH, TOKEN_PLATFORM_OFFSET,
 )
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import (
-    SCALE, _to_screen, TOKEN_OUTLINE_COLOR,
-    PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT, PANEL_BUTTON_COLOR,
+    SCALE, _to_screen, TOKEN_OUTLINE_COLOR, PANEL_TEXT_COLOR, PANEL_LINE_HEIGHT, PANEL_SUMMARY_GAP,
+    PALETTE_SWATCH_SIZE, draw_color_palette,
+    PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT, PANEL_BUTTON_GAP, PANEL_BUTTON_COLOR,
     PANEL_BUTTON_HOVER_COLOR, PANEL_BUTTON_TEXT_COLOR,
 )
 
@@ -38,9 +40,12 @@ class TokenProducerVisualization(MachineVisualization):
     the surface's own center) then rotated as a whole and blitted
     centered on the machine's actual placementCoordinate -- same "rotate
     the composite, then center-blit" trick ConveyorBeltVisualization/
-    VacuumGripperVisualization already use. Still a static picture --
-    TokenProducerMachine has no tick()/behavior wired up yet (see its own
-    "dummy machine" comment), so this is an initial, position-only view.
+    VacuumGripperVisualization already use. The drawing itself is still
+    just this static picture -- TokenProducerMachine has no motion to
+    animate (emitToken()/randomEmitToken()/emptyPlatform() complete in
+    the single tick they're dispatched on, see token_producer.py) -- but
+    its panel buttons do exercise real behavior now, not just a manual
+    placement.
     """
 
     machine_type = TokenProducerMachine
@@ -50,24 +55,45 @@ class TokenProducerVisualization(MachineVisualization):
         return [
             f"currentCommand: {machine.currentCommand}",
             f"lastUsedTokenColor: {machine.lastUsedTokenColor}",
+            f"platformSens: {machine.platformSens}",
         ]
 
     def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                       mouse_pos: tuple[int, int], machine: TokenProducerMachine, on_place_token,
-                       field_values: dict) -> list[tuple[pygame.Rect, object]]:
-        """"Place" spawns a token of the panel's currently-selected color
-        (via on_place_token, same mechanism ConveyorBeltVisualization's
-        own placement buttons use) at platform_position() -- the one
-        thing this dummy machine can't yet do for itself, since nothing
-        drives its state machine's randomEmitToken behavior into an
-        actual token yet.
+                       mouse_pos: tuple[int, int], machine: TokenProducerMachine, selected_color: TokenColorKind,
+                       on_select_color, field_values: dict) -> list[tuple[pygame.Rect, object]]:
+        """A color picker (own copy, scoped to this machine's block --
+        see factory_visualization.draw_color_palette()'s own docstring
+        for why it lives here rather than being drawn generically once
+        for the whole panel: this is the only machine kind that still
+        needs one, for "Emit Token" below), then "Emit Token"/
+        "Random Emit", which exercise this machine's own emitToken()/
+        randomEmitToken() -- the actual perform-actions the SysML model
+        calls -- so the full command -> tick() -> platformSens edge ->
+        event chain can be checked by eye from the panel, same reasoning
+        VacuumGripperVisualization's own (now-removed) "Pick"/"Place"/
+        "Safe Pos" buttons called pick()/place()/moveToSafePosition()
+        directly. "Emit Token" reads `selected_color` at click time, not
+        draw time -- see MachineVisualization.panel_buttons()'s own
+        docstring for why that's safe.
         """
-        rect = pygame.Rect(x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
-        color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
-        pygame.draw.rect(screen, color, rect, border_radius=4)
-        label_surface = font.render("Place", True, PANEL_BUTTON_TEXT_COLOR)
-        screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-        return [(rect, lambda m=machine: on_place_token(m, m.platform_position()))]
+        screen.blit(font.render("Color:", True, PANEL_TEXT_COLOR), (x, y))
+        palette_y = y + PANEL_LINE_HEIGHT
+        buttons = draw_color_palette(screen, x, palette_y, selected_color, on_select_color)
+        button_y = palette_y + PALETTE_SWATCH_SIZE + PANEL_SUMMARY_GAP
+
+        button_x = x
+        for label, action in (
+            ("Emit Token", lambda m=machine: m.emitToken(selected_color)),
+            ("Random Emit", machine.randomEmitToken),
+        ):
+            rect = pygame.Rect(button_x, button_y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
+            color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
+            pygame.draw.rect(screen, color, rect, border_radius=4)
+            label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
+            screen.blit(label_surface, label_surface.get_rect(center=rect.center))
+            buttons.append((rect, action))
+            button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
+        return buttons
 
     def draw(self, screen: pygame.Surface, machine: TokenProducerMachine) -> None:
         surface = pygame.Surface((TOKEN_PROD_SURFACE_WIDTH, TOKEN_PROD_SURFACE_HEIGHT), pygame.SRCALPHA)

@@ -1,38 +1,12 @@
 import pygame
 
-from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import Position3D
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.vacuum_gripper import (
     VacuumGripperMachine, VGR_BASE_LENGTH, VGR_BASE_WIDTH, VGR_TOWER_BASE_LENGTH, VGR_TOWER_BASE_WIDTH,
     DEFAULT_ARM_PIPE_LENGTH, MAX_ARM_EXTENSION_LENGTH_MODEL_SIZE, MAX_ARM_ENCODER_VALUE, MAX_ROT_ENCODER_VALUE,
 )
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
-from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import (
-    SCALE, _to_screen, TOKEN_OUTLINE_COLOR, PANEL_TEXT_COLOR,
-    PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT, PANEL_BUTTON_GAP, PANEL_BUTTON_COLOR,
-    PANEL_BUTTON_HOVER_COLOR, PANEL_BUTTON_TEXT_COLOR,
-    INPUT_FIELD_WIDTH, INPUT_FIELD_HEIGHT, INPUT_FIELD_LABEL_WIDTH, INPUT_FIELD_GROUP_GAP, INPUT_FIELD_ROW_GAP,
-    INPUT_FIELD_BACKGROUND_COLOR, INPUT_FIELD_BORDER_COLOR, INPUT_FIELD_FOCUSED_BORDER_COLOR, INPUT_FIELD_TEXT_COLOR,
-)
+from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import SCALE, _to_screen, TOKEN_OUTLINE_COLOR
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import arm_encoder_to_model_size, rot_encoder_to_degrees
-
-
-def _parse_field(field_values: dict, key: str) -> float:
-    """Parses a text input field's current string into a float,
-    defaulting to 0.0 for an empty/missing field or an in-progress,
-    not-yet-complete entry (a bare "-" or "."). Character filtering at
-    typing time (factory_visualization.py's _is_valid_numeric_input_char)
-    already keeps a field's content float()-parseable once it's a
-    complete number -- this just covers the moment before it is, so a
-    button click mid-typing degrades to "treat as 0" rather than
-    crashing the whole action.
-    """
-    text = field_values.get(key, "").strip()
-    if not text or text in ("-", "."):
-        return 0.0
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
 
 # Farthest the arm can ever reach from center (fixed pipe + full extension)
 # -- drives how big the local composite surface needs to be. Square, not
@@ -82,6 +56,17 @@ class VacuumGripperVisualization(MachineVisualization):
     machine's own placement (base/tower position, whole-composite
     rotation via placementCoordinate.degrees), since the arm's swivel is
     independent of where the machine itself sits/faces in the factory.
+
+    No panel_input_fields()/panel_buttons() override -- both fall back
+    to MachineVisualization's own "nothing" defaults. There used to be a
+    "Target" (horizontal/rot) input row feeding "Pick"/"Place"/"Safe Pos"
+    buttons that called pick()/place()/moveToSafePosition() directly;
+    removed once they stopped being useful enough to keep around -- this
+    machine's own behavior is already driven entirely by the SysML
+    model's own `do`/`accept` behavior (vgr-cb-true-simulation.xmi's
+    VGRMissionWith2CB), proven working end-to-end, so a manual panel
+    control duplicating that isn't needed to exercise this machine kind
+    anymore.
     """
 
     machine_type = VacuumGripperMachine
@@ -97,88 +82,6 @@ class VacuumGripperVisualization(MachineVisualization):
             f"vacuumActValve: {machine.vacuumActValve}",
             f"vacuumActCompressorOn: {machine.vacuumActCompressorOn}",
         ]
-
-    def panel_input_fields(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                            machine: VacuumGripperMachine, field_values: dict, focused_field
-                            ) -> list[tuple[str, pygame.Rect]]:
-        """One row: "Target" (horizontal/rot) -- the shared targetPosition
-        both pick() and place() take, read by their respective panel
-        buttons at click time.
-        """
-        fields = []
-        row_y = y
-        for row_label, keys in (
-            ("Target", ("target_horizontal", "target_rot")),
-        ):
-            field_x = x
-            row_label_surface = font.render(f"{row_label}:", True, PANEL_TEXT_COLOR)
-            screen.blit(row_label_surface, (field_x, row_y + (INPUT_FIELD_HEIGHT - row_label_surface.get_height()) // 2))
-            field_x += INPUT_FIELD_LABEL_WIDTH
-
-            for axis_label, key in zip(("H", "Rot"), keys):
-                axis_surface = font.render(f"{axis_label}:", True, PANEL_TEXT_COLOR)
-                screen.blit(axis_surface, (field_x, row_y + (INPUT_FIELD_HEIGHT - axis_surface.get_height()) // 2))
-                field_x += axis_surface.get_width() + 4
-
-                rect = pygame.Rect(field_x, row_y, INPUT_FIELD_WIDTH, INPUT_FIELD_HEIGHT)
-                border_color = INPUT_FIELD_FOCUSED_BORDER_COLOR if key == focused_field else INPUT_FIELD_BORDER_COLOR
-                pygame.draw.rect(screen, INPUT_FIELD_BACKGROUND_COLOR, rect)
-                pygame.draw.rect(screen, border_color, rect, width=2)
-                text_surface = font.render(field_values.get(key, ""), True, INPUT_FIELD_TEXT_COLOR)
-                screen.blit(text_surface, (rect.x + 4, rect.y + (rect.height - text_surface.get_height()) // 2))
-                fields.append((key, rect))
-
-                field_x += INPUT_FIELD_WIDTH + INPUT_FIELD_GROUP_GAP
-
-            row_y += INPUT_FIELD_HEIGHT + INPUT_FIELD_ROW_GAP
-
-        return fields
-
-    def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                       mouse_pos: tuple[int, int], machine: VacuumGripperMachine, on_place_token,
-                       field_values: dict) -> list[tuple[pygame.Rect, object]]:
-        """"Pick"/"Place"/"Safe Pos" exercise pick()/place()/
-        moveToSafePosition() directly, so the compound move-then-grip(),
-        move-then-release(), and safe-position sequences can be checked
-        by eye from the panel without a SysML scenario driving it.
-        pick()/place() read their shared targetPosition from
-        `field_values` at click time, not draw time -- panel_buttons()
-        is rebuilt fresh every frame, so each callback closure always
-        captures whatever's currently typed the moment it's actually
-        clicked (same reasoning ConveyorBeltVisualization's
-        token-placement buttons already rely on for the panel's selected
-        color). `on_place_token` goes unused here, kept only to match the
-        shared MachineVisualization.panel_buttons() signature.
-        """
-        def handle_pick():
-            machine.pick(Position3D(
-                vertical=0.0,
-                horizontal=_parse_field(field_values, "target_horizontal"),
-                rot=_parse_field(field_values, "target_rot"),
-            ))
-
-        def handle_place():
-            machine.place(Position3D(
-                vertical=0.0,
-                horizontal=_parse_field(field_values, "target_horizontal"),
-                rot=_parse_field(field_values, "target_rot"),
-            ))
-
-        buttons = []
-        button_x = x
-        for label, action in (
-            ("Pick", handle_pick),
-            ("Place", handle_place),
-            ("Safe Pos", machine.moveToSafePosition),
-        ):
-            rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
-            color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
-            pygame.draw.rect(screen, color, rect, border_radius=4)
-            label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
-            screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-            buttons.append((rect, action))
-            button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
-        return buttons
 
     def draw(self, screen: pygame.Surface, machine: VacuumGripperMachine) -> None:
         surface = pygame.Surface((VGR_SURFACE_WIDTH, VGR_SURFACE_HEIGHT), pygame.SRCALPHA)
