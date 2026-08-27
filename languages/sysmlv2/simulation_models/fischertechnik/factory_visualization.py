@@ -63,10 +63,23 @@ PANEL_WIDTH = 500  # wide enough for the longest panel_lines() row seen so far
                     # renders at ~461px (default SysFont, size 18); 300 clipped
                     # even ConveyorBeltVisualization's shorter "currentCommand:
                     # ConveyorCommandKind.MOVE_TO_SENSOR" (~376px)
-WINDOW_SIZE = (VIEWPORT_SIZE[0] + PANEL_WIDTH, VIEWPORT_SIZE[1])
+
+PANEL_SCROLLBAR_WIDTH = 8    # px, the draggable thumb/track's own width
+PANEL_SCROLLBAR_MARGIN = 2   # px gap on each side of the scrollbar, both from the
+                              # panel's content area and from the window's right edge
+PANEL_SCROLLBAR_GUTTER = PANEL_SCROLLBAR_WIDTH + PANEL_SCROLLBAR_MARGIN * 2  # reserved
+                              # strip to the right of PANEL_WIDTH -- kept separate from
+                              # it so the scrollbar never overlaps the widest panel_lines()
+                              # row the PANEL_WIDTH comment above sizes for
+PANEL_TOTAL_WIDTH = PANEL_WIDTH + PANEL_SCROLLBAR_GUTTER
+
+WINDOW_SIZE = (VIEWPORT_SIZE[0] + PANEL_TOTAL_WIDTH, VIEWPORT_SIZE[1])
 BACKGROUND_COLOR = (255, 255, 255)
 
 PANEL_X = VIEWPORT_SIZE[0]
+PANEL_SCROLLBAR_TRACK_RECT = pygame.Rect(  # fixed for the window's lifetime -- only the
+    PANEL_X + PANEL_WIDTH + PANEL_SCROLLBAR_MARGIN, 0,  # thumb's position/height within it
+    PANEL_SCROLLBAR_WIDTH, VIEWPORT_SIZE[1])            # varies with content height/scroll
 PANEL_BACKGROUND_COLOR = (245, 245, 245)
 PANEL_DIVIDER_COLOR = (60, 60, 60)
 PANEL_TEXT_COLOR = (20, 20, 20)
@@ -75,6 +88,14 @@ PANEL_TOP_PADDING = 16
 PANEL_LINE_HEIGHT = 20
 PANEL_MACHINE_GAP = 14           # extra vertical gap after each machine's block
 PANEL_SUMMARY_GAP = 14           # extra vertical gap after the factory-wide summary line
+
+PANEL_SCROLLBAR_TRACK_COLOR = (225, 225, 225)
+PANEL_SCROLLBAR_THUMB_COLOR = (170, 170, 170)
+PANEL_SCROLLBAR_THUMB_HOVER_COLOR = (130, 130, 130)
+PANEL_SCROLLBAR_MIN_THUMB_HEIGHT = 24  # px floor so the thumb stays grabbable even
+                                        # when there are enough machines that content
+                                        # height dwarfs the panel's own VIEWPORT_SIZE[1]
+PANEL_SCROLL_WHEEL_STEP = 40           # px scrolled per mouse-wheel notch
 
 PANEL_BUTTON_TEXT_COLOR = (20, 20, 20)
 
@@ -147,6 +168,26 @@ def _to_screen(coord: FactoryCoordinate) -> tuple[int, int]:
     px = ORIGIN[0] + coord.x * SCALE
     py = ORIGIN[1] - coord.y * SCALE  # flip y: pygame's screen y grows downward
     return int(px), int(py)
+
+
+def _panel_scroll_offset_from_y(mouse_y: int, track_rect: pygame.Rect, thumb_height: int, max_scroll: int) -> int:
+    """Inverse of the thumb-position math in `_draw_machine_panel`'s
+    scrollbar -- given a mouse y position (from a click or drag on the
+    scrollbar track), returns the panel scroll_offset it corresponds to.
+    Plays the same role for the scrollbar that `_speed_slider_value_from_x`
+    plays for the speed slider: `run()`'s event loop owns the drag state
+    across frames, this just maps a position to a value. Positions the
+    thumb's *center* under the mouse rather than its top, so a click
+    anywhere on the track jumps the content by roughly that click's
+    proportion down the panel instead of snapping the thumb's far edge
+    there.
+    """
+    usable = track_rect.height - thumb_height
+    if usable <= 0 or max_scroll <= 0:
+        return 0
+    frac = (mouse_y - track_rect.top - thumb_height / 2) / usable
+    frac = max(0.0, min(1.0, frac))
+    return round(frac * max_scroll)
 
 
 def _speed_slider_value_from_x(mouse_x: int, track_rect: pygame.Rect) -> int:
@@ -308,7 +349,7 @@ class FischertechnikVisualization(SimulationVisualization):
         `run()`'s event loop hit-tests both the same way regardless of
         which panel is currently showing.
         """
-        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_TOTAL_WIDTH, VIEWPORT_SIZE[1])
         pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
         pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
 
@@ -360,8 +401,8 @@ class FischertechnikVisualization(SimulationVisualization):
 
     def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
                              label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                             ticks_per_step: int, field_values: dict, focused_field
-                             ) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect, list[tuple[str, pygame.Rect]]]:
+                             ticks_per_step: int, field_values: dict, focused_field, scroll_offset: int
+                             ) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect, list[tuple[str, pygame.Rect]], int, pygame.Rect | None]:
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, then each machine's live attributes and an optional
         row of buttons, one stacked block per machine. Machines are
@@ -392,19 +433,36 @@ class FischertechnikVisualization(SimulationVisualization):
         buttons, drawn via `draw_color_palette()`).
 
         Returns the (rect, callback) pairs for every button just drawn,
-        the speed slider's own hit-rect, and every input field's
-        (field_key, hit_rect) pair (see panel_input_fields(), generic.py)
-        -- so the caller's event loop can hit-test all of them the same
-        way, computed here in the same pass as the drawing so the
-        clickable area can never drift out of sync with what's on screen.
+        the speed slider's own hit-rect, every input field's (field_key,
+        hit_rect) pair (see panel_input_fields(), generic.py), the
+        content's own max scroll offset, and the scrollbar thumb's hit-rect
+        (or None when nothing overflows and no scrollbar was drawn) -- so
+        the caller's event loop can hit-test all of them the same way,
+        computed here in the same pass as the drawing so the clickable
+        area can never drift out of sync with what's on screen.
+
+        `scroll_offset` shifts every row up by that many pixels before
+        drawing (rather than scrolling a pre-rendered surface), so hit-test
+        rects for buttons/fields/the slider come out already in real
+        on-screen coordinates -- no separate translation step needed by
+        `run()`. Content is clipped to `panel_rect`'s vertical extent
+        (`screen.set_clip`) while scrolled, so rows pushed above y=0 or
+        below the panel's bottom by the offset don't leak into the
+        viewport above/below it; the clip is lifted again before the
+        scrollbar itself is drawn, since that lives in its own gutter
+        beside `panel_rect` and doesn't need it.
         """
-        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+        panel_rect = pygame.Rect(PANEL_X, 0, PANEL_TOTAL_WIDTH, VIEWPORT_SIZE[1])
         pygame.draw.rect(screen, PANEL_BACKGROUND_COLOR, panel_rect)
         pygame.draw.line(screen, PANEL_DIVIDER_COLOR, (PANEL_X, 0), (PANEL_X, VIEWPORT_SIZE[1]), 2)
 
         mouse_pos = pygame.mouse.get_pos()
         x = PANEL_X + PANEL_LEFT_PADDING
-        y = PANEL_TOP_PADDING
+        y = PANEL_TOP_PADDING - scroll_offset
+        content_top = y
+
+        content_clip_rect = pygame.Rect(PANEL_X, 0, PANEL_WIDTH, VIEWPORT_SIZE[1])
+        screen.set_clip(content_clip_rect)
 
         screen.blit(font.render(f"Unowned tokens: {unowned_token_count}", True, PANEL_TEXT_COLOR), (x, y))
         y += PANEL_LINE_HEIGHT + PANEL_SUMMARY_GAP
@@ -442,7 +500,32 @@ class FischertechnikVisualization(SimulationVisualization):
                 y = max(rect.bottom for rect, _ in button_row)
             y += PANEL_MACHINE_GAP
 
-        return buttons, speed_slider_rect, input_fields
+        screen.set_clip(None)
+
+        # content_height is what the layout above would have measured with
+        # scroll_offset == 0 -- back it out from the offset y actually
+        # started/ended at, rather than re-running the layout, so this stays
+        # a single drawing pass like every other method here.
+        content_height = round(y - content_top)  # some drawer's panel_input_fields()/
+                                                   # panel_buttons() can hand back a
+                                                   # sub-pixel rect.bottom -- round once
+                                                   # here so max_scroll/thumb math below
+                                                   # stays in whole pixels throughout
+        max_scroll = max(0, content_height - VIEWPORT_SIZE[1])
+
+        thumb_rect = None
+        if max_scroll > 0:
+            track_rect = PANEL_SCROLLBAR_TRACK_RECT
+            pygame.draw.rect(screen, PANEL_SCROLLBAR_TRACK_COLOR, track_rect)
+            thumb_height = max(PANEL_SCROLLBAR_MIN_THUMB_HEIGHT,
+                                round(track_rect.height * VIEWPORT_SIZE[1] / content_height))
+            thumb_height = min(thumb_height, track_rect.height)
+            thumb_y = track_rect.top + round(scroll_offset / max_scroll * (track_rect.height - thumb_height))
+            thumb_rect = pygame.Rect(track_rect.x, thumb_y, track_rect.width, thumb_height)
+            thumb_color = PANEL_SCROLLBAR_THUMB_HOVER_COLOR if thumb_rect.collidepoint(mouse_pos) else PANEL_SCROLLBAR_THUMB_COLOR
+            pygame.draw.rect(screen, thumb_color, thumb_rect, border_radius=PANEL_SCROLLBAR_WIDTH // 2)
+
+        return buttons, speed_slider_rect, input_fields, max_scroll, thumb_rect
 
     def _draw_viewport(self, screen: pygame.Surface, font: pygame.font.Font, factory) -> None:
         """The main factory-floor drawing (background, grid, every belt,
@@ -517,17 +600,31 @@ class FischertechnikVisualization(SimulationVisualization):
 
         running = True
         dragging_speed_slider = False
+        dragging_scrollbar = False
         buttons: list[tuple[pygame.Rect, object]] = []
         speed_slider_rect: pygame.Rect | None = None
         input_fields: list[tuple[str, pygame.Rect]] = []
         field_values: dict[str, str] = {}
         focused_field: str | None = None
+        panel_scroll_offset = 0
+        panel_max_scroll = 0            # from last frame's _draw_machine_panel -- see its
+        scrollbar_thumb_rect = None     # docstring for why a one-frame lag here is fine,
+                                         # same as buttons/speed_slider_rect/input_fields already are
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if speed_slider_rect is not None and speed_slider_rect.collidepoint(event.pos):
+                    if scrollbar_thumb_rect is not None and scrollbar_thumb_rect.collidepoint(event.pos):
+                        dragging_scrollbar = True
+                        panel_scroll_offset = _panel_scroll_offset_from_y(
+                            event.pos[1], PANEL_SCROLLBAR_TRACK_RECT, scrollbar_thumb_rect.height, panel_max_scroll)
+                    elif panel_max_scroll > 0 and PANEL_SCROLLBAR_TRACK_RECT.collidepoint(event.pos):
+                        dragging_scrollbar = True
+                        thumb_height = scrollbar_thumb_rect.height if scrollbar_thumb_rect is not None else PANEL_SCROLLBAR_MIN_THUMB_HEIGHT
+                        panel_scroll_offset = _panel_scroll_offset_from_y(
+                            event.pos[1], PANEL_SCROLLBAR_TRACK_RECT, thumb_height, panel_max_scroll)
+                    elif speed_slider_rect is not None and speed_slider_rect.collidepoint(event.pos):
                         dragging_speed_slider = True
                         model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
                     elif any(rect.collidepoint(event.pos) for _, rect in input_fields):
@@ -540,8 +637,15 @@ class FischertechnikVisualization(SimulationVisualization):
                                 break
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     dragging_speed_slider = False
+                    dragging_scrollbar = False
                 elif event.type == pygame.MOUSEMOTION and dragging_speed_slider:
                     model.ticks_per_step = _speed_slider_value_from_x(event.pos[0], speed_slider_rect)
+                elif event.type == pygame.MOUSEMOTION and dragging_scrollbar:
+                    thumb_height = scrollbar_thumb_rect.height if scrollbar_thumb_rect is not None else PANEL_SCROLLBAR_MIN_THUMB_HEIGHT
+                    panel_scroll_offset = _panel_scroll_offset_from_y(
+                        event.pos[1], PANEL_SCROLLBAR_TRACK_RECT, thumb_height, panel_max_scroll)
+                elif event.type == pygame.MOUSEWHEEL and pygame.mouse.get_pos()[0] >= PANEL_X:
+                    panel_scroll_offset = max(0, min(panel_max_scroll, panel_scroll_offset - event.y * PANEL_SCROLL_WHEEL_STEP))
                 elif event.type == pygame.KEYDOWN and focused_field is not None:
                     current = field_values.get(focused_field, "")
                     if event.key == pygame.K_BACKSPACE:
@@ -555,14 +659,18 @@ class FischertechnikVisualization(SimulationVisualization):
                 model.tick()
                 on_tick()
                 unowned_token_count = len(model.tokens_on(None))
-                buttons, speed_slider_rect, input_fields = self._draw_machine_panel(
+                buttons, speed_slider_rect, input_fields, panel_max_scroll, scrollbar_thumb_rect = self._draw_machine_panel(
                     screen, model.machines, unowned_token_count, font, label_font,
                     selected_color, handle_select_color, model.ticks_per_step,
-                    field_values, focused_field)
+                    field_values, focused_field, panel_scroll_offset)
+                panel_scroll_offset = min(panel_scroll_offset, panel_max_scroll)
             else:
                 buttons = self._draw_start_panel(screen, font, label_font, handle_start)
                 input_fields = []
                 speed_slider_rect = None
+                panel_scroll_offset = 0
+                panel_max_scroll = 0
+                scrollbar_thumb_rect = None
 
             self._draw_viewport(screen, font, model)
             pygame.display.flip()
