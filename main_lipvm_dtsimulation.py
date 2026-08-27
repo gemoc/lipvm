@@ -26,22 +26,22 @@ from languages.sysmlv2.simulation_models.facade_proxy import SimulationBridge, T
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
 from languages.sysmlv2.simulation_models.generic import BaseSimulationModel, SimulationVisualization
-from tools.load_xmi_with_syntax import load
+from tools.load_sysml import load
 
 # A Dict describing what Simulation Model and Visualization is ready to be used as part of this CLI
 REGISTERED_SIMULATION_MODELS: dict[str, tuple[type[BaseSimulationModel], type[SimulationVisualization]]] = {
     "fischertechnik": (Factory, FischertechnikVisualization),
 }
 
-def build_simulation(xmi_path: str, simulation_model_class: type[BaseSimulationModel]) -> tuple[VirtualMachine, BaseSimulationModel]:
-    """Loads the SysML model (represented by `xmi_path), constructs a fresh instance of `BaseSimulationModel`,
+def build_simulation(sysml_path: str, simulation_model_class: type[BaseSimulationModel]) -> tuple[VirtualMachine, BaseSimulationModel]:
+    """Loads the SysML model (represented by `sysml_path), constructs a fresh instance of `BaseSimulationModel`,
     and a fresh LipVM virtual machine. Deliberately doesn't step the virtual machine, it waits until it is started
     through the Main thread (Simulation Visualization thread).
 
-    xmi_path: Path to the SysML model to be loaded (format .xmi)
+    sysml_path: Path to the SysML model to be loaded (format .sysml)
     simulation_model_class: the actual simulation model class to be used
     """
-    resource = load(xmi_path)
+    resource = load(sysml_path, keep_xmi=False)
     scenario = Scenario(program_definition=resource.contents[0])
 
     vm = VirtualMachine()
@@ -85,7 +85,7 @@ def run_interpreter_loop(vm: VirtualMachine, stop_event: threading.Event,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("xmi", help=f"Path to the .xmi model to run")
+    parser.add_argument("sysml", help=f"Path to the .sysml model to run")
     parser.add_argument("--tick-delay", type=float, default=0.25,
                          help="Seconds between interpreter reactive passes (default: 0.25)")
     parser.add_argument("--simulation-model", choices=sorted(REGISTERED_SIMULATION_MODELS),
@@ -93,7 +93,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model_class, visualization_class = REGISTERED_SIMULATION_MODELS[args.simulation_model]
-    vm, model = build_simulation(args.xmi, model_class)
+    vm, model = build_simulation(args.sysml, model_class)
 
     stop_event = threading.Event()
     started_event = threading.Event()
