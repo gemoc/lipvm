@@ -165,7 +165,7 @@ package TokenDepoSystem {
             then Idle;
 
             state Idle;
-            accept ReceiverBusyEventMessage via tokenDepoInstance
+            accept when tokenDepoInstance.receiverSens == true
                 do tokenDepoInstance.storeToken
                 then CheckCapacity;
 
@@ -413,6 +413,7 @@ package VacuumGripperSystem {
         private import VacuumGripperSystem::VacuumGripperMessages::*;
         private import VacuumGripperSystem::VacuumGripper::*;
         private import ConveyorBeltSystem::ConveyorBeltMessages::*;
+        private import TokenProducerSystem::TokenProducerMessages::*;
 
         state def VGRMissionWith2CB {
             
@@ -461,6 +462,103 @@ package VacuumGripperSystem {
             accept StartEventMessage via vgrOne
                 then Idle;
         }
+
+        state def VGRPickTokenFromProducerAndPlace {
+            
+            /* Parts involved in this mission*/
+            in vgr: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine;
+            in tokenProducer: TokenProducerSystem::TokenProducer::TokenProducerMachine;
+
+            /* parameters for some VGR actions*/        
+            in pickFromProducerPosition: Position3D;
+            in placePosition: Position3D; 
+
+            entry vgr.setup;
+            then SafePosition;
+
+            /* First initialization */
+            state SafePosition;
+            accept VGRCommandSuccessEventMessage via vgr 
+                do vgr.moveToSafePosition
+                then Idle;
+            
+            state Idle; 
+            accept when tokenProducer.platformSens == true
+                do vgr.pick {
+                    in targetPosition = pickFromProducerPosition;
+                }
+                then WaitForPickup;
+            accept StopEventMessage via vgr
+                do vgr.moveToSafePosition
+                then FullStop;
+
+            state WaitForPickup;
+            accept VGRCommandSuccessEventMessage via vgr
+                do vgr.place {
+                    in targetPosition = placePosition;
+                }
+                then WaitForPlace;
+            
+            state WaitForPlace;
+            accept VGRCommandSuccessEventMessage via vgr
+                then Idle;
+            
+            state FullStop {
+                entry vgr.stop;
+            }
+            accept StartEventMessage via vgr
+                then Idle;
+
+        }
+
+        state def VGRPickTokenFromCBAndPlace {
+            
+            /* Parts involved in this mission*/
+            in vgr: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine;
+            in cb: ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine;
+
+            /* parameters for some VGR actions*/        
+            in pickFromCBPosition: Position3D;
+            in placePosition: Position3D; 
+
+            entry vgr.setup;
+            then SafePosition;
+
+            /* First initialization */
+            state SafePosition;
+            accept VGRCommandSuccessEventMessage via vgr 
+                do vgr.moveToSafePosition
+                then Idle;
+            
+            state Idle; 
+            accept when cb.conveyorSensSwap == true
+                do vgr.pick {
+                    in targetPosition = pickFromCBPosition;
+                }
+                then WaitForPickup;
+            accept StopEventMessage via vgr
+                do vgr.moveToSafePosition
+                then FullStop;
+
+            state WaitForPickup;
+            accept VGRCommandSuccessEventMessage via vgr
+                do vgr.place {
+                    in targetPosition = placePosition;
+                }
+                then WaitForPlace;
+            
+            state WaitForPlace;
+            accept VGRCommandSuccessEventMessage via vgr
+                then Idle;
+            
+            state FullStop {
+                entry vgr.stop;
+            }
+            accept StartEventMessage via vgr
+                then Idle;
+
+        }
+
     } // package VGRStates
 } // package VacuumGripperSystem
 
@@ -550,7 +648,39 @@ package Main {
         in tokenDepoInstance = tokenDepo;
     }
 
-    state vgrMission: VGRMissionWith2CB {
+    state vgrProdToFeed: VGRPickTokenFromProducerAndPlace {
+        in vgr = vgrPickProducer;
+        in tokenProducer = tokenProd;
+
+        in pickFromProducerPosition {
+            attribute :>> vertical = 0.0;
+            attribute :>> horizontal = 1420.10;
+            attribute :>> rot = 276.07;
+        }
+        in placePosition {
+            attribute :>> vertical = 0.0;
+            attribute :>> horizontal = 959.56;
+            attribute :>> rot = 2767.71;
+        }
+    }
+
+    state vgrTransToDepo: VGRPickTokenFromCBAndPlace {
+        in vgr = vgrPlaceDepo;
+        in cb = cbTransport;
+
+        in pickFromCBPosition {
+            attribute :>> vertical = 0.0;
+            attribute :>> horizontal = 1179.45;
+            attribute :>> rot = 1652.52;
+        }
+        in placePosition {
+            attribute :>> vertical = 0.0;
+            attribute :>> horizontal = 1112.62;
+            attribute :>> rot = 1250.96;
+        }
+    }
+
+    state vgrMissionFeedTrans: VGRMissionWith2CB {
         /* Parts involved in this mission*/
         in vgrOne = vgrTransToFeeder;
         in feederCB = cbFeeder;

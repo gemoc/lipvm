@@ -101,6 +101,17 @@ class TokenProducerMachine(FischertechnikMachine):
             self._placementCoordinate.degrees,
         )
 
+    def contains_position(self, position: FactoryCoordinate) -> bool:
+        """Whether `position` is close enough to platform_position() to
+        count as landing on this machine's platform -- lets
+        VacuumGripperMachine.release() (via Factory.machine_at()) hand a
+        released token's ownership to this machine, instead of it going
+        unowned.
+        """
+        platform = self.platform_position()
+        return math.isclose(position.x, platform.x, abs_tol=PLATFORM_ARRIVAL_TOLERANCE) and \
+               math.isclose(position.y, platform.y, abs_tol=PLATFORM_ARRIVAL_TOLERANCE)
+
     def is_idle(self) -> bool:
         """Always False -- This machine has to keep
         scanning platformSens every tick regardless of whether a command

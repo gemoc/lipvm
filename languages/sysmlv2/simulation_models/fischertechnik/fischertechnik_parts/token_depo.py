@@ -98,6 +98,17 @@ class TokenDepoMachine(FischertechnikMachine):
             self._placementCoordinate.degrees,
         )
 
+    def contains_position(self, position: FactoryCoordinate) -> bool:
+        """Whether `position` is close enough to receiver_position() to
+        count as landing on this machine's receiver platform -- lets
+        VacuumGripperMachine.release() (via Factory.machine_at()) hand a
+        released token's ownership to this machine, instead of it going
+        unowned.
+        """
+        receiver = self.receiver_position()
+        return math.isclose(position.x, receiver.x, abs_tol=RECEIVER_ARRIVAL_TOLERANCE) and \
+               math.isclose(position.y, receiver.y, abs_tol=RECEIVER_ARRIVAL_TOLERANCE)
+
     def is_idle(self) -> bool:
         """Always False, because this machine must be monitored every tick, especially
         to ensure we can check whether there is a token or not
