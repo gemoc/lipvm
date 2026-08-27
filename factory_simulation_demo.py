@@ -10,7 +10,6 @@ from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorK
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import FischertechnikVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import ConveyorBeltMachine
-from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 
 
 def build_demo_factory() -> Factory:
@@ -33,17 +32,14 @@ def build_demo_factory() -> Factory:
 
     # belt1: token sits at the swap end, read from the belt itself so it's
     # guaranteed to match what conveyorSensSwap checks.
-    token1 = Token("T1", belt1.swap_position(), TokenColorKind.BLUE)
-    factory.spawn_token(token1, belt1)
+    factory.spawn_token(belt1.swap_position(), TokenColorKind.BLUE, belt1)
 
     # belt2: token sits in the middle (belt2 is rotated, so this is the only
     # case that doesn't exercise the feed/swap rotation math).
-    token2 = Token("T2", FactoryCoordinate(6, 6, 0), TokenColorKind.WHITE)
-    factory.spawn_token(token2, belt2)
+    factory.spawn_token(FactoryCoordinate(6, 6, 0), TokenColorKind.WHITE, belt2)
 
     # belt3: token sits at the feed end.
-    token3 = Token("T3", belt3.feed_position(), TokenColorKind.RED)
-    factory.spawn_token(token3, belt3)
+    factory.spawn_token(belt3.feed_position(), TokenColorKind.RED, belt3)
 
     return factory
 

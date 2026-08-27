@@ -6,8 +6,8 @@ from languages.sysmlv2.simulation_models.fischertechnik import factory
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
 from languages.sysmlv2.simulation_models.fischertechnik.enums import DirectionKind, ConveyorCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
+from languages.sysmlv2.simulation_models.fischertechnik.machine import FischertechnikMachine
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import rotate_offset, cb_step_position
-from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # The belt's own physical housing, the length is 27.5cm and width is 6cm
 # In model size, the length would be 5.5 and width is 1.1
@@ -89,14 +89,12 @@ class ConveyorBeltMachineSnapshot:
     targetStepCount: int
 
 
-class ConveyorBeltMachine(PartSimulationModel):
+class ConveyorBeltMachine(FischertechnikMachine):
 
     snapshot_type = ConveyorBeltMachineSnapshot
 
     def __init__(self, factory: Factory):
-        super().__init__()
-
-        self._factory = factory
+        super().__init__(factory)
 
         self._currentCommand: ConveyorCommandKind = ConveyorCommandKind.STOP
         self._direction: DirectionKind = DirectionKind.FORWARD
@@ -137,9 +135,9 @@ class ConveyorBeltMachine(PartSimulationModel):
         return self._currentCommand
 
     def is_idle(self) -> bool:
-        """STOP is this machine's own idle sentinel (not None -- see
-        __init__/stop()), so it needs its own override of the base
-        PartSimulationModel.is_idle() default.
+        """STOP is this machine's own idle sentinel -- see
+        FischertechnikMachine.is_idle()'s own docstring for why there's
+        no shared default to fall back on instead.
         """
         return self._currentCommand == ConveyorCommandKind.STOP
 
@@ -370,6 +368,3 @@ class ConveyorBeltMachine(PartSimulationModel):
         self.record_step()
         if self._currentStepCount >= self._targetStepCount:
             self.stop()
-
-    def emit_event_to_factory(self, event: CBEventMessages):
-        self._factory.record_event(event.value, self.name)

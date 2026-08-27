@@ -37,3 +37,14 @@ class TokenColorKind(Enum):
     BLUE = 0
     WHITE = 1
     RED = 2
+
+class TokenProducerCommandKind(Enum):
+    STOP = 'STP'
+    EMIT_TOKEN = 'EMT'
+    EMPTY_PLATFORM = 'EMP'
+    RANDOM_EMIT_TOKEN = 'RMT'
+
+class TokenDepoCommandKind(Enum):
+    STOP = 'STP'
+    STORE_TOKEN = 'STT'
+    EMPTY_RECEIVER = 'EMR'

@@ -5,8 +5,6 @@ from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_vis
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import (
     BELT_WIDTH, BELT_HEIGHT, BELT_FRAME_COLOR, BELT_SURFACE_COLOR, BELT_TREAD_COLOR,
     FEED_COLOR, SWAP_COLOR, TREAD_SPACING, ROLLER_BAND_WIDTH, SCALE, _to_screen,
-    PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT, PANEL_BUTTON_GAP, PANEL_BUTTON_COLOR,
-    PANEL_BUTTON_HOVER_COLOR, PANEL_BUTTON_TEXT_COLOR,
 )
 
 
@@ -34,6 +32,17 @@ class ConveyorBeltVisualization(MachineVisualization):
     discovers it at runtime via `scan_for_subclasses(MachineVisualization)`
     (`registry.py`), by which point `factory_visualization.py` is already
     fully loaded.
+
+    No panel_buttons() override -- falls back to
+    MachineVisualization.panel_buttons()'s own "no buttons" default.
+    There used to be "Pre"/"Feed"/"Swap"/"Post" buttons dropping a
+    manual token at each sensor boundary; removed once they stopped
+    being useful enough to keep around -- this machine's own movement
+    (moveToSensor()/moveOut()/moveNbSteps()) is already driven entirely
+    by the SysML model's own `do`/`accept when` behavior
+    (vgr-cb-true-simulation.xmi's ConveyorBeltSimpleMission), proven
+    working end-to-end, so a manual panel control duplicating that isn't
+    needed to exercise this machine kind anymore.
     """
 
     machine_type = ConveyorBeltMachine
@@ -46,39 +55,6 @@ class ConveyorBeltVisualization(MachineVisualization):
             f"currentCommand: {machine.currentCommand}",
             f"direction: {machine.direction}",
         ]
-
-    def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                       mouse_pos: tuple[int, int], machine: ConveyorBeltMachine, on_place_token,
-                       field_values: dict) -> list[tuple[pygame.Rect, object]]:
-        """"Pre-Feed"/"Feed"/"Swap"/"Post-Swap" spawn a token of the
-        panel's currently-selected color, owned by `machine`, at
-        `machine.pre_feed_position()`/`feed_position()`/`swap_position()`/
-        `post_swap_position()` respectively -- the belt's own CB_LENGTH
-        boundary on each side plus its two sensors, not an arbitrary click
-        position (see conveyor_belt.py: CB_LENGTH is already "one step"
-        beyond the sensors in the model's own movement logic, reused here
-        rather than inventing a new distance). The one manual control
-        left now that guard evaluation/action dispatch are both wired up
-        (movement itself comes only from the model's own `do`/
-        `accept when` behavior) -- placing a token is the one thing the
-        model can't do for itself, since nothing manufactures tokens.
-        """
-        buttons = []
-        button_x = x
-        for label, position in (
-            ("Pre", machine.pre_feed_position()),
-            ("Feed", machine.feed_position()),
-            ("Swap", machine.swap_position()),
-            ("Post", machine.post_swap_position()),
-        ):
-            rect = pygame.Rect(button_x, y, PANEL_BUTTON_WIDTH, PANEL_BUTTON_HEIGHT)
-            color = PANEL_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else PANEL_BUTTON_COLOR
-            pygame.draw.rect(screen, color, rect, border_radius=4)
-            label_surface = font.render(label, True, PANEL_BUTTON_TEXT_COLOR)
-            screen.blit(label_surface, label_surface.get_rect(center=rect.center))
-            buttons.append((rect, lambda m=machine, p=position: on_place_token(m, p)))
-            button_x += PANEL_BUTTON_WIDTH + PANEL_BUTTON_GAP
-        return buttons
 
     def draw(self, screen: pygame.Surface, machine: ConveyorBeltMachine) -> None:
         belt_surface = pygame.Surface((BELT_WIDTH, BELT_HEIGHT), pygame.SRCALPHA)

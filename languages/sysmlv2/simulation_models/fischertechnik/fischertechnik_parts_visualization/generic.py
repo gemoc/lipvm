@@ -3,6 +3,8 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")  # this module can get 
 import pygame
 from abc import ABC, abstractmethod
 
+from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
+
 
 class MachineVisualization(ABC):
     """Shared base for one machine kind's own drawer -- one subclass per
@@ -39,17 +41,22 @@ class MachineVisualization(ABC):
         raise NotImplementedError("Sub-class must implement this method.")
 
     def panel_buttons(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
-                       mouse_pos: tuple[int, int], machine, on_place_token, field_values: dict) -> list[tuple[pygame.Rect, object]]:
+                       mouse_pos: tuple[int, int], machine, selected_color: TokenColorKind, on_select_color,
+                       field_values: dict) -> list[tuple[pygame.Rect, object]]:
         """Optional per-machine button row drawn under this machine's panel
         lines (and any panel_input_fields() row) -- default: none. Only
-        `ConveyorBeltVisualization` (token-placement buttons) and
-        `VacuumGripperVisualization` (movement/grip commands) override
-        this today. `field_values` mirrors panel_input_fields()'s own
-        param (same dict, owned by run()) -- a button whose action needs
-        typed input (e.g. VacuumGripperVisualization's "Go to Pos") reads
-        it directly; one with none (e.g. every ConveyorBeltVisualization
-        button) just ignores it, same as on_place_token already goes
-        unused by VacuumGripperVisualization's buttons.
+        `TokenProducerVisualization` overrides this today (Emit
+        Token/Random Emit, plus its own color picker drawn via
+        `factory_visualization.draw_color_palette()` -- `selected_color`/
+        `on_select_color` exist on this signature for exactly that,
+        threaded down rather than drawn generically since no other
+        machine kind needs them). A drawer without buttons -- or without
+        a use for `selected_color`/`on_select_color`/`field_values` --
+        just ignores whichever it doesn't need (this method's own default
+        ignores every one of them). `selected_color` is rebuilt fresh
+        every frame (same as `field_values`), so a closure reading it
+        always sees whatever's currently picked at the moment it's
+        actually clicked, not whatever it was when the button was drawn.
         """
         return []
 

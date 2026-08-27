@@ -7,9 +7,9 @@ from typing import Optional
 from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate, Position3D
 from languages.sysmlv2.simulation_models.fischertechnik.enums import ExecutionStatusKind, VacuumGripperCommandKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
+from languages.sysmlv2.simulation_models.fischertechnik.machine import FischertechnikMachine
 from languages.sysmlv2.simulation_models.fischertechnik.movement_computation_model import encoder_changes_per_tick, \
     gripper_tip_position
-from languages.sysmlv2.simulation_models.generic import PartSimulationModel
 
 # At the base of the VGR, there is a square with length 25.5 cm and width 18.5 cm that we cannot use
 # With the model size, let's divide it up into 5, which yields length 5.1 and width 3.7
@@ -90,14 +90,12 @@ class VacuumGripperMachineSnapshot:
     placementCoordinate: FactoryCoordinate
 
 
-class VacuumGripperMachine(PartSimulationModel):
+class VacuumGripperMachine(FischertechnikMachine):
 
     snapshot_type = VacuumGripperMachineSnapshot
 
     def __init__(self, factory: Factory):
-        super().__init__()
-
-        self._factory = factory
+        super().__init__(factory)
 
         self._currentCommand: Optional[VacuumGripperCommandKind] = VacuumGripperCommandKind.STOP
         self._executionStatus: Optional[ExecutionStatusKind] = None
@@ -287,9 +285,6 @@ class VacuumGripperMachine(PartSimulationModel):
         self._currentCommand = VacuumGripperCommandKind.STOP
         self._executionStatus = None
         self.emit_event_to_factory(VGREventMessages.COMMAND_SUCCESS)
-
-    def emit_event_to_factory(self, event: VGREventMessages):
-        self._factory.record_event(event.value, self.name)
 
     def moveToSafePosition(self):
         """

@@ -1,13 +1,16 @@
+from itertools import count
 from typing import Tuple, Optional
 
 from languages.sysmlv2.simulation_models.step_pacer import StepPacer
+from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import FactoryCoordinate
+from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import CustomAttributeModel, PartSimulationModel, BaseSimulationModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 # One visible hop every this many Factory.tick() calls -- 0.5s at the
 # render loop's default 60fps (FactoryVisualization.run()'s tick_rate).
-TICKS_PER_STEP = 5
+TICKS_PER_STEP = 1
 
 # Range for the live speed slider (factory_visualization.py) -- 1 is the
 # fastest this can ever go (a paced step every single Factory.tick()
@@ -39,6 +42,7 @@ class Factory(BaseSimulationModel):
         self._owners = {}
         self._pacer = StepPacer(TICKS_PER_STEP)
         self._events: list[Tuple[str, Optional[str]]] = []
+        self._token_id_counter = count(1)
 
     def register_machine(self, machine):
         if machine.name is None:
@@ -52,14 +56,45 @@ class Factory(BaseSimulationModel):
     def machines(self):
         return list(self._machines.values())
 
-    def spawn_token(self, token: Token, machine):
+    def next_token_id(self) -> str:
+        """A token id unique across every token this Factory has ever
+        handed out, from whichever source (the manual placement panel,
+        TokenProducerMachine, or any future spawner) -- one shared
+        counter here, rather than each caller keeping its own, is what
+        actually guarantees two different sources can never both mint
+        "T3".
+        """
+        return f"T{next(self._token_id_counter)}"
+
+    def spawn_token(self, position: FactoryCoordinate, color: TokenColorKind, machine) -> Token:
+        """Constructs a brand-new Token at `position`/`color` (id from
+        next_token_id()) and immediately registers `machine` as its
+        owner -- encapsulates Token construction inside Factory entirely,
+        so no caller needs to import Token itself, or worry about id
+        uniqueness, just to introduce one into the world. Returns the
+        new Token in case the caller wants to keep a reference to it
+        (e.g. TokenProducerMachine doesn't currently need to, but the
+        manual placement panel's own equivalent might down the line).
+        """
+        token = Token(self.next_token_id(), position, color)
         self._owners[token] = machine
+        return token
 
     def transfer_token(self, token: Token, machine):
         self._owners[token] = machine
 
     def owner_of(self, token: Token):
         return self._owners.get(token)
+
+    def remove_token(self, token: Token) -> None:
+        """Deletes a token from the world entirely -- e.g.
+        TokenDepoMachine.storeToken() absorbing one into its internal
+        tokenCount, where it's no longer a physical entity anyone should
+        still see or query. Unlike transfer_token (which only ever
+        changes who owns a token, never dropping it from self._owners),
+        this is the one place a token actually stops existing.
+        """
+        self._owners.pop(token, None)
 
     def tokens_on(self, machine):
         return [token for token, owner in self._owners.items() if owner is machine]

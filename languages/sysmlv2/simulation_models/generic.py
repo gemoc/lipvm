@@ -4,9 +4,8 @@ from typing import Tuple, Optional
 
 
 class BaseSimulationModel(ABC):
-    """Shared base for a whole simulation domain (Fischertechnik's
-    `Factory`, and any future domain, e.g. water_power_plant) -- the
-    top-level object whoever drives the simulation constructs and drives.
+    """Shared base for a whole simulation domain, which should be extended by
+    any SysML parts (or machines) that want to be simulated.
     """
 
     @abstractmethod
@@ -43,7 +42,11 @@ class BaseSimulationModel(ABC):
 
     @abstractmethod
     def drain_events(self) -> list[Tuple[str, Optional[str]]]:
-        """"""
+        """
+        Move all the events emitted by the machine during simulation. These events are moved to another
+        entity (e.g., ThreadChannel) to be processed.
+        :return:
+        """
         raise NotImplementedError("Sub-class must implement this method.")
 
     @abstractmethod
@@ -59,10 +62,6 @@ class SimulationVisualization(ABC):
     -- `run()` is the only method called from outside the concrete
     visualization; everything else (drawing, click handling) stays
     private to that implementation.
-
-    No shared/default implementation -- Fischertechnik's is the only
-    visualization that exists today (and it's pygame-specific), so
-    there's nothing yet known to be common across domains.
     """
 
     @abstractmethod
@@ -119,29 +118,6 @@ class PartSimulationModel(ABC):
     def tick(self) -> None:
         """This method will be called by the simulation for every tick."""
         raise NotImplementedError("Sub-class must implement this method.")
-
-    @abstractmethod
-    def is_idle(self) -> bool:
-        """Whether this machine has no active command to advance --
-        Factory.tick() uses this to skip dispatching idle machines, so
-        each machine kind's own idle sentinel (None, a dedicated command
-        enum member, ...) stays its own business without Factory needing
-        to import any machine-kind-specific enum to check it. Default:
-        `currentCommand is None`, since that's every machine kind's
-        sentinel today except ConveyorBeltMachine, which overrides this.
-        """
-        raise NotImplementedError("Subclass need to implement this")
-
-    def contains_position(self, position) -> bool:
-        """Whether `position` falls within this machine's own ownable
-        footprint -- e.g. a ConveyorBeltMachine claims tokens landing
-        anywhere along its own physical extent. Default: no footprint --
-        most machine kinds don't passively own space (e.g.
-        VacuumGripperMachine only ever gains a token through its own
-        explicit grip() action, never by something merely being nearby),
-        so this only needs overriding by a machine kind that does.
-        """
-        return False
 
 class CustomAttributeModel(ABC):
     """Marker base for every simulated custom attribute's Python mirror
