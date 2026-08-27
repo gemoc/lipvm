@@ -10,6 +10,11 @@ Loads a .sysml model directly, by combining two previously separate steps:
 This lets callers pass a .sysml path wherever they previously had to
 pre-generate and pass a .xmi path.
 
+sysml-to-xmi-cli.jar itself is too large to commit to the repo, so it isn't
+checked in -- it must exist on disk locally, found via (in order):
+  1. the LIPVM_SYSML_XMI_JAR environment variable, if set
+  2. tools/sysml-to-xmi-cli.jar (this file's own directory), otherwise
+
 Usage:
     uv run python tools/load_sysml.py model.sysml
     uv run python tools/load_sysml.py model.sysml -o model.xmi --tree
@@ -29,11 +34,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.load_xmi_with_syntax import DEFAULT_MODULE, _print_tree, load as load_xmi
 
-DEFAULT_JAR = os.path.join(os.path.dirname(__file__), "sysml-to-xmi-cli.jar")
+BUNDLED_JAR = os.path.join(os.path.dirname(__file__), "sysml-to-xmi-cli.jar")
+DEFAULT_JAR = os.environ.get("LIPVM_SYSML_XMI_JAR", BUNDLED_JAR)
 
 
 def sysml_to_xmi(sysml_path, xmi_path=None, jar_path=DEFAULT_JAR, java_bin="java"):
-    """Transforms `sysml_path` to XMI via tools/sysml-to-xmi-cli.jar.
+    """Transforms `sysml_path` to XMI via sysml-to-xmi-cli.jar.
 
     The JAR's own stdout/stderr (parse warnings included) streams straight
     through, since they can point at real model issues.
@@ -44,7 +50,11 @@ def sysml_to_xmi(sysml_path, xmi_path=None, jar_path=DEFAULT_JAR, java_bin="java
     if not os.path.exists(sysml_path):
         raise FileNotFoundError(sysml_path)
     if not os.path.exists(jar_path):
-        raise FileNotFoundError(f"sysml-to-xmi-cli.jar not found: {jar_path}")
+        raise FileNotFoundError(
+            f"sysml-to-xmi-cli.jar not found: {jar_path} -- it isn't committed to "
+            f"the repo (too large). Set the LIPVM_SYSML_XMI_JAR environment "
+            f"variable to its path, or place it at {BUNDLED_JAR}."
+        )
     if shutil.which(java_bin) is None:
         raise RuntimeError(f"'{java_bin}' not found on PATH; the JAR needs a JRE to run")
 
@@ -95,7 +105,9 @@ def main():
                         help="Path for the generated .xmi "
                              "(default: <sysml> with a .xmi extension)")
     parser.add_argument("--jar", default=DEFAULT_JAR,
-                        help="Path to sysml-to-xmi-cli.jar")
+                        help="Path to sysml-to-xmi-cli.jar "
+                             "(default: $LIPVM_SYSML_XMI_JAR if set, else "
+                             f"{BUNDLED_JAR})")
     parser.add_argument("--id-attribute", default="elementId",
                         help="Domain attribute to treat as an Ecore ID "
                              "(default: elementId; empty string to rely on xmi:id)")
