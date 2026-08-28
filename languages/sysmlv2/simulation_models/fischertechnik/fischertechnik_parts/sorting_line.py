@@ -17,7 +17,7 @@ SL_WIDTH: float = 4
 BELT_WIDTH: float = CB_WIDTH
 
 PISTON_WIDTH: float = 1.8
-SORTED_TOKEN_PLATFORM_WIDTH: float = 1.8
+SORTED_TOKEN_PLATFORM_WIDTH: float = 1.1
 
 #There is a tolerance gap of 5 cm on either end, where it is the placement for the sensor
 END_OF_SL_TOLERANCE: float = 1.0
@@ -71,10 +71,26 @@ class SortingLineMachine(FischertechnikMachine):
     def sensor_SL_red(self):
         return self._sensor_SL_red
 
+    @property
+    def placementCoordinate(self):
+        return self._placementCoordinate
+
+    @placementCoordinate.setter
+    def placementCoordinate(self, value):
+        self._placementCoordinate = value
+
     def eject(self):
 
         pass
 
     def stop(self):
+
+        pass
+
+    def is_idle(self) -> bool:
+
+        return False
+
+    def tick(self) -> None:
 
         pass
