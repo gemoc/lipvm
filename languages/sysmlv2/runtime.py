@@ -780,39 +780,49 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
 
     def _find_matching_transition(self, runtime_state: RuntimeState, current_context: "ExecutableStateUsage"):
         """Returns the first transition out of `current` whose trigger
-        actually fires, checking TransitionTriggerBySignal against
-        `processed_item` and TransitionTriggerByWhenCondition against live
-        attribute state -- keeps scanning past a transition whose trigger
-        doesn't match (rather than giving up after the first one checked),
-        since a state can have more than one outgoing transition (e.g.
-        Continue has both a when-condition and a signal transition).
-        `processed_item` is None whenever `pending` is empty -- expected
-        now that _check_and_fire() runs every tick regardless of pending
-        (so when-condition transitions get checked on their own, not just
-        when a signal happens to also be waiting). A TransitionTriggerBySignal
-        can never fire without an incoming item, so it's skipped entirely
-        in that case rather than evaluated against None.
+        actually fires, checking TransitionTriggerBySignal against every
+        item currently in `pending` (not just the oldest one) and
+        TransitionTriggerByWhenCondition against live attribute state --
+        keeps scanning past a transition whose trigger doesn't match
+        (rather than giving up after the first one checked), since a state
+        can have more than one outgoing transition (e.g. Continue has both
+        a when-condition and a signal transition).
+
+        Checking a signal transition against the *whole* pending backlog,
+        rather than only its oldest item, matters because `pending` isn't
+        scoped to messages this usage actually cares about --
+        drain_event_queue() (syntax.py) broadcasts every event anywhere in
+        the simulation into every running ExecutableStateUsage's own
+        mailbox. Under real, busy conditions (other missions cycling their
+        own machines) that backlog can fill with plenty of irrelevant
+        traffic ahead of the one message this state actually needs;
+        checking only the oldest item each pass meant that message could
+        wait one full reactive pass per item ahead of it before ever being
+        examined -- effectively starving it under load, however long it
+        takes to work through however much unrelated traffic piled up
+        first. Scanning every currently-pending item this same pass means
+        a genuine match already sitting in the mailbox is found and fired
+        immediately, regardless of what unrelated noise happens to be
+        queued in front of it.
+
+        If nothing currently pending matches any transition here, the
+        entire backlog (not just one item) is dropped -- see the caller,
+        _check_and_fire() -- since a state only ever moves forward: if
+        nothing in `pending` right now is relevant to `current`, nothing
+        already queued will ever become relevant to it later either.
         """
-
-        # Treat the pending attribute as a queue, take the first element and remove it from the queue
-        processed_item: Optional[EventOccurrence] = None
-        if current_context.pending:
-            processed_item = current_context.pending[0]
-            current_context.pending.remove(processed_item)
-
-        # Captured lazily, on the first TransitionTriggerByWhenCondition
-        # actually reached below -- not unconditionally up front -- so a
-        # state whose transitions are all plain signal triggers never touches
-        # the channel at all. Every when-condition guard checked in
-        # this pass still shares the exact same snapshot object once
-        # captured, same guarantee as before.
         latest_simulation_snapshot: Optional[SimulationSnapshot] = None
         snapshot_captured = False
 
         for transition in self.current.contained_transitions:
             trigger = transition.trigger
             if isinstance(trigger, TransitionTriggerBySignal):
-                if processed_item is not None and trigger.evaluate(runtime_state, current_context, processed_item):
+                matched_item = next(
+                    (item for item in current_context.pending
+                     if trigger.evaluate(runtime_state, current_context, item)),
+                    None)
+                if matched_item is not None:
+                    current_context.pending.remove(matched_item)
                     return transition
             elif isinstance(trigger, TransitionTriggerByWhenCondition):
                 if not snapshot_captured:
@@ -821,21 +831,26 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
                 if trigger.evaluate(runtime_state, current_context, latest_simulation_snapshot):
                     return transition
 
-        if processed_item is not None:
-            logger.warning(
-                "%s: dropping pending item %s — no transition out of %s matches it",
-                self.qualified_name, processed_item.event_type.qualified_name, self.current.qualified_name)
+        if current_context.pending:
+            for processed_item in current_context.pending:
+                logger.warning(
+                    "%s: dropping pending item %s — no transition out of %s matches it",
+                    self.qualified_name, processed_item.event_type.qualified_name, self.current.qualified_name)
+            current_context.pending.clear()
 
         return None
 
     def _check_and_fire(self, runtime: RuntimeState, original_state_def: StateDef):
-        """One reactive pass: walks `pending` in FIFO order (oldest first)
-        pop one item from pending, check if it matches any transition guard of the current state, and firing it if it is found.
+        """One reactive pass: checks whether any currently-pending item
+        matches a transition guard of the current state -- scanning the
+        whole pending mailbox, not just its oldest item -- firing the
+        first one found.
 
-        Any item scanned along the way that matches nothing is stale for
-        this state: it's logged and dropped from `pending` rather than left
-        to accumulate forever, since nothing will ever consume it once
-        `current` has moved past the state that could have.
+        If nothing matches, every item currently pending is stale for this
+        state and is dropped in this same pass (logged individually) --
+        not left to trickle out one per tick -- since nothing will ever
+        consume it once `current` has moved past the state that could
+        have.
         """
         if self.current is None:
             return

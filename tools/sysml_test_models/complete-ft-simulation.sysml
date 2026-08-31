@@ -842,7 +842,7 @@ package Main {
         }
         in placePosition {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1606.50;
+            attribute :>> horizontal = 1291.50;
             attribute :>> rot = 0.00;
         }
     }

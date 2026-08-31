@@ -18,6 +18,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.custom_attribute import 
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.factory import TICKS_PER_STEP_MIN, TICKS_PER_STEP_MAX
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.conveyor_belt import CB_LENGTH, CB_WIDTH
+from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.vacuum_gripper import VacuumGripperMachine
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 from languages.sysmlv2.simulation_models.generic import SimulationVisualization
@@ -547,7 +548,15 @@ class FischertechnikVisualization(SimulationVisualization):
         screen.fill(BACKGROUND_COLOR, pygame.Rect(0, 0, VIEWPORT_SIZE[0], VIEWPORT_SIZE[1]))
         self._draw_grid(screen, font)
         self._draw_floor_boundary(screen)
-        for machine in factory.machines:
+        # Grippers drawn last (on top), regardless of factory.machines' own
+        # registration order -- a gripper's arm is the one thing expected to
+        # visually reach into/over another machine's footprint mid pick/place
+        # (e.g. into a sorting line's platform area), so it must never end up
+        # painted over by a machine drawn after it. A stable sort (key only
+        # ever 0 or 1) keeps every other machine kind in its original
+        # registration order relative to each other -- only grippers move,
+        # to the end.
+        for machine in sorted(factory.machines, key=lambda m: isinstance(m, VacuumGripperMachine)):
             self._drawers[type(machine)].draw(screen, machine)
         for token in factory.tokens:
             self._draw_token(screen, token)

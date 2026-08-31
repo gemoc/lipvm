@@ -70,6 +70,12 @@ class SortingLineMachine(FischertechnikMachine):
 
     snapshot_type = SortingLineMachineSnapshot
 
+    _ZONE_OFFSET_INDEX_BY_COLOR = {
+        TokenColorKind.BLUE: 1,
+        TokenColorKind.WHITE: 2,
+        TokenColorKind.RED: 3,
+    }
+
     def __init__(self, factory: Factory):
         super().__init__(factory)
 
@@ -100,55 +106,28 @@ class SortingLineMachine(FischertechnikMachine):
     def in_sensor_position(self) -> FactoryCoordinate:
         return self._end_position(SL_ZONE_OFFSETS[0])
 
-    def blue_zone_position(self) -> FactoryCoordinate:
-        return self._end_position(SL_ZONE_OFFSETS[1])
-
-    def white_zone_position(self) -> FactoryCoordinate:
-        return self._end_position(SL_ZONE_OFFSETS[2])
-
-    def red_zone_position(self) -> FactoryCoordinate:
-        return self._end_position(SL_ZONE_OFFSETS[3])
-
     def _zone_position(self, color: TokenColorKind) -> FactoryCoordinate:
-        """Whichever of blue_zone_position()/white_zone_position()/
-        red_zone_position() corresponds to `color` -- same
-        TokenColorKind-to-zone mapping SortingLineVisualization's own
-        zip(TokenColorKind, _STATION_OFFSETS) draws its platforms from.
-        This is a point *on the belt itself*, where the piston for
-        `color` is physically mounted (see SortingLineVisualization's own
-        cylinder_rect) -- it's not what sensor_SL_blue/white/red read
-        (those are occupancy sensors at the platform, _platform_position,
-        not this on-belt trigger point). Used by _at_own_zone() to
-        recognize a token that's just reached the point where its own
-        piston can fire, the same way real hardware identifies a token by
-        color once, wherever that happens, then just needs to know when
-        it's physically at the right spot to act -- not by reading color
-        again at each candidate zone.
+        """The on-belt point where `color`'s own piston is mounted --
+        _at_own_zone()'s trigger point, not what sensor_SL_blue/white/red
+        read (those check _platform_position instead).
         """
-        return {
-            TokenColorKind.BLUE: self.blue_zone_position,
-            TokenColorKind.WHITE: self.white_zone_position,
-            TokenColorKind.RED: self.red_zone_position,
-        }[color]()
+        return self._end_position(SL_ZONE_OFFSETS[self._ZONE_OFFSET_INDEX_BY_COLOR[color]])
+
+    def _positions_close(self, a: FactoryCoordinate, b: FactoryCoordinate) -> bool:
+        """Whether `a` and `b` sit within SENSOR_ARRIVAL_TOLERANCE of each
+        other on both axes -- the one proximity check shared by _token_at,
+        _at_own_zone, and _at_own_platform below, so the tolerance and the
+        "both axes" shape are only ever expressed once.
+        """
+        return math.isclose(a.x, b.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE) \
+            and math.isclose(a.y, b.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
 
     def _token_at(self, position: FactoryCoordinate, color: Optional[TokenColorKind] = None) -> Optional[Token]:
         """The Token (if any) this line currently owns that sits within
-        SENSOR_ARRIVAL_TOLERANCE of `position` -- same ownership-gated,
-        tolerance-matched lookup as TokenProducerMachine's own
-        _token_at_platform(), just against an arbitrary position rather
-        than a single fixed platform_position(). If `color` is given,
-        only a token of that exact color counts as a match -- a real
-        color sensor at a color zone only fires for its own color, it
-        doesn't just report "something's here" the way the entry sensor
-        (sensor_SL_in, no color to check) does. _token_near (below) is
-        this reduced to a bool for the sensor_SL_* properties; eject()
-        uses this directly since it needs the Token itself, not just
-        whether one is there.
-        """
+        SENSOR_ARRIVAL_TOLERANCE of `position` """
         return next((token for token in self._factory.tokens_on(self)
                      if (color is None or token.color == color)
-                     and math.isclose(token.position.x, position.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
-                     and math.isclose(token.position.y, position.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)),
+                     and self._positions_close(token.position, position)),
                     None)
 
     def _token_near(self, position: FactoryCoordinate, color: Optional[TokenColorKind] = None) -> bool:
@@ -162,16 +141,14 @@ class SortingLineMachine(FischertechnikMachine):
 
     def _at_own_zone(self, token: Token) -> bool:
         """Whether `token` currently sits at *its own* color's on-belt
-        zone position -- e.g. a BLUE token at blue_zone_position(), not
+        zone position -- e.g. a BLUE token at its own _zone_position(), not
         merely at some color zone. This is the piston's own trigger
         point, decided purely by the token's own color (already known,
         not "discovered" by testing each zone in turn) -- a RED token
         still crossing the blue/white zones must not register there,
         only once it physically reaches the red zone.
         """
-        zone = self._zone_position(token.color)
-        return math.isclose(token.position.x, zone.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE) \
-            and math.isclose(token.position.y, zone.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
+        return self._positions_close(token.position, self._zone_position(token.color))
 
     def _at_own_platform(self, token: Token) -> bool:
         """Whether `token` is already parked on *its own* color's
@@ -179,9 +156,7 @@ class SortingLineMachine(FischertechnikMachine):
         been diverted, so it's left alone instead of being stepped
         forward (or re-diverted) again.
         """
-        platform = self._platform_position(token.color)
-        return math.isclose(token.position.x, platform.x, abs_tol=SENSOR_ARRIVAL_TOLERANCE) \
-            and math.isclose(token.position.y, platform.y, abs_tol=SENSOR_ARRIVAL_TOLERANCE)
+        return self._positions_close(token.position, self._platform_position(token.color))
 
     def _off_belt_centerline(self, token: Token) -> bool:
         """Whether `token` currently sits away from the belt's own travel
@@ -212,14 +187,53 @@ class SortingLineMachine(FischertechnikMachine):
         token.move_to(cb_step_position(token.position, self._placementCoordinate.degrees + 90,
                                         DirectionKind.FORWARD, step))
 
+    def _token_at_entry(self) -> Optional[Token]:
+        """The Token (if any) this line owns that has reached (or already
+        passed) the entry checkpoint but hasn't yet diverted off the
+        belt's centerline toward its own platform -- sensor_SL_in
+        (below) reduced to the Token itself rather than a bool, the same
+        _token_at/_token_near split _at_own_platform's own lookups use
+        for sensor_SL_blue/white/red. Step (2) of tick()'s entry-detected
+        sequence uses this directly: it needs the actual Token (for its
+        color), not just whether one is there.
+
+        Deliberately a one-sided "has it arrived here yet" threshold
+        (local_x_offset >= the entry checkpoint's own offset), not a
+        symmetric "is it exactly at this point right now" tolerance
+        window the way _token_at (above) checks sensor_SL_blue/white/red.
+        Those get away with a symmetric window because a token parked on
+        its own platform simply stops moving there -- the window stays
+        satisfied for as long as anyone cares to look. Nothing stops a
+        token at the entry the same way (this line's tick() never holds a
+        token in place, only ever steps it forward every tick -- see
+        tick()'s own docstring), so a token sweeps straight through the
+        entry checkpoint in one step. A symmetric window only holds true
+        for the single tick it happens to be caught mid-sweep; miss
+        reading it on that one tick (e.g. because whatever's watching
+        only polls once every several ticks, or the step size doesn't
+        happen to line up with the tolerance) and detection is lost for
+        good, even though the token plainly entered. The one-sided form
+        instead latches true from the first tick the checkpoint is
+        reached all the way through to diversion -- a wide, many-tick
+        window, not a single one, so it no longer matters how precisely a
+        look lines up with the exact moment of arrival.
+        """
+        entry_offset = self._local_x_offset(self.in_sensor_position())
+        return next((token for token in self._factory.tokens_on(self)
+                     if self._local_x_offset(token.position) >= entry_offset
+                     and not self._off_belt_centerline(token)),
+                    None)
+
     @property
     def sensor_SL_in(self):
-        """Whether a token is currently at the entry. Color-blind by
-        design -- unlike sensor_SL_blue/white/red below, this is purely a
-        presence check, matching the plain Boolean it's declared as in
-        the .sysml model.
+        """Whether a token this line owns has reached (or already passed)
+        the entry checkpoint but hasn't yet diverted off the belt's
+        centerline toward its own platform -- _token_at_entry() reduced
+        to a bool, same shape as sensor_SL_blue/white/red reducing
+        _token_at() below. Color-blind by design: this only reports
+        presence, not which color.
         """
-        return self._token_near(self.in_sensor_position())
+        return self._token_at_entry() is not None
 
     @property
     def sensor_SL_blue(self):
@@ -329,28 +343,63 @@ class SortingLineMachine(FischertechnikMachine):
         """
         return False
 
+    def _decide_piston_for_entering_token(self) -> None:
+        """The three-step sequence tick() runs once it sees a token newly
+        detected at the entry: (1) is already true by the time this is
+        called -- tick() only calls this on sensor_SL_in's own rising
+        edge, otherwise it keeps checking on every subsequent tick until
+        it is. (2) identify that token and read its already-known color
+        to look up the coordinate of the piston that should push it onto
+        its own platform. (3) report the decision as complete.
+
+        Step (2)'s looked-up coordinate isn't stored anywhere -- nothing
+        currently needs it stored, since _advance_belt()/_at_own_zone()
+        independently re-derive that exact same _zone_position(token.color)
+        on their own once the token physically reaches that point, which
+        is what actually triggers the sideways push. It's still computed
+        explicitly here, as its own distinguishable step, rather than
+        folded into the edge check or skipped -- this method exists to
+        make step (2) a real, separate thing that happens, not to feed
+        its result anywhere further (yet).
+
+        This is deliberately not tied to sensor_SL_blue/white/red's own
+        rising edge (further down in tick()): those report a separate,
+        later physical fact (occupancy at the platform, after transport
+        and diversion actually finish), not this decision. eject() also
+        emits COMMAND_SUCCESS, for a third, still different meaning (a
+        release command just finished, whether or not anything was
+        there) -- all three share the one message name/type, so any
+        mission wiring built on CommandSuccessEventMessage needs to
+        account for whichever of them actually fires it.
+        """
+        # Step (2): identify the token just detected at the entry, and
+        # determine which piston should divert it.
+        token = self._token_at_entry()
+        piston_position = self._zone_position(token.color)
+
+        # Step (3): report that the sort decision is complete.
+        self.emit_event_to_factory(SLMessages.COMMAND_SUCCESS)
+
     def tick(self) -> None:
         """This line never idles (see is_idle()): every tick, its belt
         advances whatever tokens it currently owns one step further along
         -- one-way, no direction/command concept to start or stop (unlike
-        ConveyorBeltMachine's MOVE_TO_SENSOR/MOVE_OUT) -- and its three
-        platform-occupancy sensors (sensor_SL_blue/white/red) are freshly
-        re-checked for a rising edge, each reporting its own
-        *_TOKEN_AVAILABLE message the moment a token actually becomes
-        available on that platform (not merely the moment it passes that
-        zone on the belt -- see sensor_SL_blue's own docstring), alongside
-        a COMMAND_SUCCESS -- "a token was successfully sorted" is exactly
-        this edge, so this is the only other place besides eject() that
-        emits it. The two mean different things (this: a token just
-        arrived on a platform; eject(): a release command just finished,
-        whether or not anything was there) but share the one message
-        name/type -- nothing currently listens for it scoped by source
-        (`via sortingLine`) or distinguishes the two, so any future
-        mission wiring built on CommandSuccessEventMessage needs to
-        account for both call sites firing it. sensor_SL_in has no
-        matching SLMessages entry, so it isn't edge-checked here --
-        SortingLineSimpleMission polls it directly as a guard condition
-        instead (see the .sysml model).
+        ConveyorBeltMachine's MOVE_TO_SENSOR/MOVE_OUT).
+
+        sensor_SL_in is now edge-checked here too (it wasn't originally --
+        SortingLineSimpleMission used to just poll it directly as a guard
+        condition). Step (1) of _decide_piston_for_entering_token()'s own
+        three-step sequence (see its docstring) is this edge check itself:
+        only once sensor_SL_in flips from False to True -- a token has
+        just been detected at the entry -- does step (2) (identify the
+        token, look up its piston) and step (3) (emit COMMAND_SUCCESS) run.
+
+        The three platform-occupancy sensors (sensor_SL_blue/white/red)
+        are separately re-checked for their own rising edge, each
+        reporting its own *_TOKEN_AVAILABLE message the moment a token
+        actually becomes available on that platform (not merely the
+        moment it passes that zone on the belt -- see sensor_SL_blue's
+        own docstring).
 
         A token reaching its own zone on the belt (_at_own_zone, decided
         by its own already-known color, not by re-checking it at each
@@ -365,15 +414,15 @@ class SortingLineMachine(FischertechnikMachine):
         """
         self._advance_belt()
 
+        if self._sensor_edge('sensor_SL_in', self.sensor_SL_in) is True:
+            self._decide_piston_for_entering_token()
+
         if self._sensor_edge('sensor_SL_blue', self.sensor_SL_blue) is True:
             self.emit_event_to_factory(SLMessages.BLUE_TOKEN_AVAILABLE)
-            self.emit_event_to_factory(SLMessages.COMMAND_SUCCESS)
         if self._sensor_edge('sensor_SL_white', self.sensor_SL_white) is True:
             self.emit_event_to_factory(SLMessages.WHITE_TOKEN_AVAILABLE)
-            self.emit_event_to_factory(SLMessages.COMMAND_SUCCESS)
         if self._sensor_edge('sensor_SL_red', self.sensor_SL_red) is True:
             self.emit_event_to_factory(SLMessages.RED_TOKEN_AVAILABLE)
-            self.emit_event_to_factory(SLMessages.COMMAND_SUCCESS)
 
     def _advance_belt(self) -> None:
         """Moves every token this line currently owns one step further
