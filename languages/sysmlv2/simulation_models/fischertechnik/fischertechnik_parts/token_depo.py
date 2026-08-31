@@ -13,8 +13,8 @@ from languages.sysmlv2.simulation_models.fischertechnik.token import Token
 # This is a dummy machine. Thus, we can make our own model size
 TOKEN_DEPO_BASE_LENGTH = 3
 TOKEN_DEPO_BASE_WIDTH = 3
-TOKEN_RECEIVER_LENGTH = 1.5
-TOKEN_RECEIVER_WIDTH = 1.5
+TOKEN_RECEIVER_LENGTH = 1.1
+TOKEN_RECEIVER_WIDTH = 1.1
 
 # Model-unit distance from the machine's own center to the receiver
 # platform's center, along its local +x axis -- same
