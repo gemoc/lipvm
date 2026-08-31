@@ -3,7 +3,7 @@ import pygame
 from languages.sysmlv2.simulation_models.fischertechnik.enums import TokenColorKind
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.sorting_line import (
     SortingLineMachine, SL_LENGTH, SL_WIDTH, BELT_WIDTH as SL_BELT_WIDTH,
-    SORTED_TOKEN_PLATFORM_WIDTH,
+    SORTED_TOKEN_PLATFORM_WIDTH, SL_ZONE_LENGTH, SL_ZONE_OFFSETS, PISTON_WIDTH,
 )
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.factory_visualization import (
@@ -20,6 +20,13 @@ PISTON_COLOR = (110, 110, 110)       # the pusher itself is undyed; only the pla
 # either side of it.
 PISTON_ROD_WIDTH_PX = 12
 
+# How far the rod visibly pokes out past the housing edge at rest -- a
+# short stub, not the full reach to the platform's outer tip, so an idle
+# piston reads as retracted rather than a permanent bridge spanning the
+# whole housing/platform gap (see the class docstring on why this
+# changed from an earlier version that drew it fully extended).
+PISTON_RETRACTED_ROD_LENGTH_PX = 8
+
 # Composite surface sizing: kept symmetric about the housing's own center
 # so pygame.transform.rotate's pivot lands on placementCoordinate, even
 # though the sort platforms only extend past the housing on one side --
@@ -29,21 +36,24 @@ _HALF_SPAN_Y = SL_WIDTH / 2 + SORTED_TOKEN_PLATFORM_WIDTH
 SORTING_LINE_SURFACE_WIDTH = int(SL_LENGTH * SCALE) + 20
 SORTING_LINE_SURFACE_HEIGHT = int(2 * _HALF_SPAN_Y * SCALE) + 20
 
-# SL_LENGTH split into four equal zones along the belt: the entry sensor,
-# then one ejector station per TokenColorKind (BLUE/WHITE/RED, same order
-# as the sensor_SL_* attributes and SLMessages) -- each sensor location
-# gets an equal quarter of the line's own length as its own proper area,
-# rather than being sized off whatever room happened to be left over.
-_ZONE_LENGTH = SL_LENGTH / 4
-_ZONE_OFFSETS = [-SL_LENGTH / 2 + _ZONE_LENGTH * (i + 0.5) for i in range(4)]
-_IN_SENSOR_OFFSET = _ZONE_OFFSETS[0]
-_STATION_OFFSETS = _ZONE_OFFSETS[1:]
+# Zone geometry (entry sensor + one ejector station per TokenColorKind)
+# comes from sorting_line.py itself -- SL_ZONE_OFFSETS is also what
+# SortingLineMachine.tick() checks token positions against, so the drawn
+# platforms and the actual sensing points can never drift apart.
+_IN_SENSOR_OFFSET = SL_ZONE_OFFSETS[0]
+_STATION_OFFSETS = SL_ZONE_OFFSETS[1:]
 
 # Drawn width for each zone's own element (sensor band or platform/piston):
 # a fixed pixel gap narrower than the zone itself, so the four zones still
 # read as separate areas instead of touching edge to edge.
 _ZONE_GAP_PX = 8
-_ZONE_SPAN_PX = int(_ZONE_LENGTH * SCALE) - _ZONE_GAP_PX
+_ZONE_SPAN_PX = int(SL_ZONE_LENGTH * SCALE) - _ZONE_GAP_PX
+
+# Cylinder's own on-screen width (along the belt's travel axis) --
+# PISTON_WIDTH (sorting_line.py) is the pusher's real physical width,
+# previously unused here; capped at _ZONE_SPAN_PX so the cylinder never
+# visually overhangs the platform it's mounted above.
+PISTON_CYLINDER_WIDTH_PX = min(int(PISTON_WIDTH * SCALE), _ZONE_SPAN_PX)
 
 
 class SortingLineVisualization(MachineVisualization):
@@ -58,21 +68,25 @@ class SortingLineVisualization(MachineVisualization):
     belt and, color-sensor by color-sensor, gets pushed off into whichever
     platform matches it.
 
-    The piston is drawn as a rod running the full push-axis span, from the
-    belt's own edge out to the platform's outer tip -- i.e. across the
-    platform, not tucked into the housing/platform gap the way an earlier
-    version of this drawing had it -- since that's the pusher's actual
-    reach: it has to cross the whole platform to shove a token clear of
-    the housing. Drawn after (on top of) the platform fill so the platform
-    stays visible as color on either side of the rod.
+    The piston is drawn at rest, not mid-stroke: a fixed cylinder block
+    (PISTON_CYLINDER_WIDTH_PX wide, sized from PISTON_WIDTH) sits inside
+    the housing at the belt's own edge, with only a short rod stub
+    (PISTON_RETRACTED_ROD_LENGTH_PX) poking out past the housing edge --
+    a real pusher's rod only reaches all the way out to the platform for
+    the instant it's actually pushing a token; drawing it permanently
+    spanning that whole gap (an earlier version of this drawing did) read
+    as a fixed bridge connecting belt and platform, not a piston at all.
+    Drawn after (on top of) the platform fill so the platform stays
+    visible as color around the cylinder/rod.
 
     Each of the four sensor locations (entry, blue, white, red) gets an
     equal quarter of SL_LENGTH as its own zone (_ZONE_LENGTH/_ZONE_OFFSETS)
-    -- a platform/piston's span *along* the belt is that zone's width, not
-    PISTON_WIDTH (not cross-referenced by anything else yet, so free to
-    pick here). SORTED_TOKEN_PLATFORM_WIDTH is still how far each platform
-    extends *out* past the housing's edge. If either stops matching the
-    real device, only the numbers above this class need to change.
+    -- a platform's span *along* the belt is that zone's width, not
+    PISTON_WIDTH, which instead sizes the piston's own cylinder block
+    (capped at that same zone width -- see PISTON_CYLINDER_WIDTH_PX).
+    SORTED_TOKEN_PLATFORM_WIDTH is still how far each platform extends
+    *out* past the housing's edge. If any of these stop matching the real
+    device, only the numbers above this class need to change.
 
     The entry sensor is the one exception: drawn at conveyor-belt scale
     (ROLLER_BAND_WIDTH, same as ConveyorBeltVisualization's own FEED/SWAP
@@ -82,12 +96,16 @@ class SortingLineVisualization(MachineVisualization):
     to any sensor, distinct from the three color stations that each claim
     their full zone.
 
-    Static picture only -- matches this class's own scope (eject()/stop()
-    are still stubs in SortingLineMachine): no ejection animation, no
-    reading of sensor_SL_* state to highlight anything yet. Composited on
-    one local, unrotated surface first, then rotated as a whole and
-    blitted centered on placementCoordinate -- same pattern
-    ConveyorBeltVisualization/TokenDepoVisualization already use.
+    Static picture only -- the piston is always drawn retracted, with no
+    mid-stroke push animation and no reading of sensor_SL_*/token state
+    to change what's drawn. A diverted token still visually lands on its
+    own platform regardless: every Token draws itself at its own live
+    position (factory_visualization.py's _draw_token) no matter which
+    machine owns it, so this class doesn't need to know or care where a
+    token currently is. Composited on one local, unrotated surface first,
+    then rotated as a whole and blitted centered on placementCoordinate
+    -- same pattern ConveyorBeltVisualization/TokenDepoVisualization
+    already use.
     """
 
     machine_type = SortingLineMachine
@@ -135,13 +153,22 @@ class SortingLineVisualization(MachineVisualization):
             pygame.draw.rect(surface, TOKEN_COLORS[color], platform_rect, border_radius=3)
             pygame.draw.rect(surface, TOKEN_OUTLINE_COLOR, platform_rect, width=2, border_radius=3)
 
-            # Spans from the belt's own edge (near end) to the platform's
-            # outer tip (far end) -- crossing the housing/platform gap and
-            # the full platform depth, not just the gap alone.
-            piston_rect = pygame.Rect(0, 0, PISTON_ROD_WIDTH_PX, belt_rect.top - platform_rect.top)
-            piston_rect.centerx = station_x
-            piston_rect.top = platform_rect.top
-            pygame.draw.rect(surface, PISTON_COLOR, piston_rect)
+            # Cylinder: fixed mounting block inside the housing, between
+            # the belt's own edge and the housing wall -- never moves,
+            # regardless of piston state.
+            cylinder_rect = pygame.Rect(0, 0, PISTON_CYLINDER_WIDTH_PX, belt_rect.top - housing_rect.top)
+            cylinder_rect.centerx = station_x
+            cylinder_rect.top = housing_rect.top
+            pygame.draw.rect(surface, PISTON_COLOR, cylinder_rect)
+
+            # Rod: a short retracted stub poking out past the housing
+            # edge, its inner end flush against the cylinder -- stopping
+            # well short of the platform's own outer tip (see the class
+            # docstring on why this isn't drawn spanning the whole gap).
+            rod_rect = pygame.Rect(0, 0, PISTON_ROD_WIDTH_PX, PISTON_RETRACTED_ROD_LENGTH_PX)
+            rod_rect.centerx = station_x
+            rod_rect.bottom = housing_rect.top
+            pygame.draw.rect(surface, PISTON_COLOR, rod_rect)
 
         rotated = pygame.transform.rotate(surface, machine.placementCoordinate.degrees)
         px, py = _to_screen(machine.placementCoordinate)

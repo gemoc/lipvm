@@ -626,8 +626,6 @@ package SortingLineSystem {
             in sortingLine : SortingLineSystem::SortingLine::SortingLineMachine;
             in vacuumGripper : VacuumGripperSystem::VacuumGripper::VacuumGripperMachine;
 
-            in sortingPlacement : Position3D;
-            
             in whiteTokenPickup : Position3D;
             in whiteTokenPlacement : Position3D;
 
@@ -712,7 +710,7 @@ package Main {
     part tokenProd: TokenProducerSystem::TokenProducer::TokenProducerMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 5.0;
-            attribute :>> y = 20.0;
+            attribute :>> y = 10.0;
             attribute :>> degrees = 0.0;
         }
     }
@@ -720,7 +718,7 @@ package Main {
     part cbFeeder : ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 13.0;
-            attribute :>> y = 20.0;
+            attribute :>> y = 10.0;
             attribute :>> degrees = 0.0;
         }
     }
@@ -728,39 +726,39 @@ package Main {
     part cbTransport : ConveyorBeltSystem::ConveyorBelt::ConveyorBeltMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 20.0;
-            attribute :>> y = 27.0;
+            attribute :>> y = 17.0;
             attribute :>> degrees = 90.0;
         }
     }
 
     part tokenRedDepo : TokenDepoSystem::TokenDepo::TokenDepoMachine {
         attribute :>> placementCoordinate {
-            attribute :>> x = 0.0;
-            attribute :>> y = 0.0;
-            attribute :>> degrees = 0.0;
+            attribute :>> x = 28.0;
+            attribute :>> y = 32.0;
+            attribute :>> degrees = 270.0;
         }
     }
 
     part tokenWhiteDepo : TokenDepoSystem::TokenDepo::TokenDepoMachine {
         attribute :>> placementCoordinate {
-            attribute :>> x = 4.0;
-            attribute :>> y = 0.0;
-            attribute :>> degrees = 0.0;
+            attribute :>> x = 31.5;
+            attribute :>> y = 32.0;
+            attribute :>> degrees = 270.0;
         }
     }
 
     part tokenBlueDepo : TokenDepoSystem::TokenDepo::TokenDepoMachine {
         attribute :>> placementCoordinate {
-            attribute :>> x = 8.0;
-            attribute :>> y = 0.0;
-            attribute :>> degrees = 0.0;
+            attribute :>> x = 35.0;
+            attribute :>> y = 32.0;
+            attribute :>> degrees = 270.0;
         }
     }
 
     part vgrTransToFeeder: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 20.0;
-            attribute :>> y = 20.0;
+            attribute :>> y = 10.0;
             attribute :>> degrees = 0.0;
         }
     }
@@ -768,7 +766,7 @@ package Main {
     part vgrPickProducer: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 10.0;
-            attribute :>> y = 16.0;
+            attribute :>> y = 6.0;
             attribute :>> degrees = 90.0;
         }
     }
@@ -776,15 +774,23 @@ package Main {
     part vgrPlaceSorting: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine {
         attribute :>> placementCoordinate {
             attribute :>> x = 24.0;
-            attribute :>> y = 31.0;
+            attribute :>> y = 21.0;
             attribute :>> degrees = 0.0;
         }
     }
 
-    part sortingLine: SortingLineSystem::SortingLine::SortingLineMachine {
+    part vgrPlaceDepo: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine {
         attribute :>> placementCoordinate {
-            attribute :>> x = 26.0;
-            attribute :>> y = 34.0;
+            attribute :>> x = 31.0;
+            attribute :>> y = 27.0;
+            attribute :>> degrees = 0.0;
+        }
+    }
+
+    part slMachine: SortingLineSystem::SortingLine::SortingLineMachine {
+        attribute :>> placementCoordinate {
+            attribute :>> x = 32.0;
+            attribute :>> y = 21.0;
             attribute :>> degrees = 0.0;
         }
     }
@@ -836,8 +842,8 @@ package Main {
         }
         in placePosition {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1112.62;
-            attribute :>> rot = 1250.96;
+            attribute :>> horizontal = 1606.50;
+            attribute :>> rot = 0.00;
         }
     }
 
@@ -861,46 +867,40 @@ package Main {
     }
 
     state slMission: SortingLineSimpleMission {
-        in sortingLine = sortingLine;
-        in vacuumGripper = vgrPlaceSorting;
+        in sortingLine = slMachine;
+        in vacuumGripper = vgrPlaceDepo;
 
-        in sortingPlacement {
-            attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
-        }
-        
         in whiteTokenPickup {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
+            attribute :>> horizontal = 858.66;
+            attribute :>> rot = 2395.81;
         }
         in whiteTokenPlacement {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
+            attribute :>> horizontal = 247.01;
+            attribute :>> rot = 643.04;
         }
 
         in blueTokenPickup {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
-        }    
+            attribute :>> horizontal = 535.73;
+            attribute :>> rot = 2166.64;
+        }
         in blueTokenPlacement {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
+            attribute :>> horizontal = 1493.20;
+            attribute :>> rot = 291.27;
         }
 
         in redTokenPickup {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
+            attribute :>> horizontal = 1618.86;
+            attribute :>> rot = 2545.09;
         }
         in redTokenPlacement {
             attribute :>> vertical = 0.0;
-            attribute :>> horizontal = 1512.0;
-            attribute :>> rot = 720.0;
+            attribute :>> horizontal = 1012.68;
+            attribute :>> rot = 1083.85;
         }
     }
 
