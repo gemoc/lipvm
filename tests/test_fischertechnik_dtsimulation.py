@@ -81,7 +81,7 @@ def interpreter_round(vm: VirtualMachine, factory: Factory) -> None:
     executable state usages, read off vm.state.sysml -- available right
     after vm.init(), no step needed first).
 
-    One nuance, confirmed empirically against complete-ft-simulation.xmi's
+    One nuance, confirmed empirically against complete-ft-simulation.sysml's
     10 missions by logging vm.state.execution_context.current_state_usage
     after every vm.step(): the model's very first reactive pass is preceded
     by one extra interpreter_step() that only does the one-time setup
