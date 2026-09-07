@@ -22,16 +22,6 @@ def on_tick(vm: VirtualMachine, factory: Factory) -> None:
     last call (instantiate first, so a part created this call already
     exists for the action-drain/snapshot-publish that follow), then
     republishes a fresh snapshot.
-
-    Production calls this from the pygame thread, once per rendered frame,
-    with the interpreter's own vm.step() calls running concurrently on a
-    background thread -- deliberately not reproduced here. A free-running
-    background thread can't be paused between one vm.step() and the next,
-    which is exactly the control a test needs to inspect state after every
-    individual tick. So this module runs everything on the single test
-    thread instead: interpreter_step()/simulation_tick() below call
-    vm.step()/factory.tick() directly, one at a time, only when the test
-    asks for one -- same bodies as production, just driven synchronously.
     """
     channel = vm.state.channel
 
@@ -136,7 +126,7 @@ def dt_simulation():
     interleaved however your scenario needs, with plain assertions on
     vm.state.sysml / factory in between each call.
     """
-    resource = load(MODEL_PATH)
+    resource = load(MODEL_PATH, keep_xmi=False)
     root = resource.contents[0]
     scenario = Scenario(program_definition=root)
 
@@ -261,3 +251,91 @@ def test_token_producer_platform_sensor_edge(dt_simulation):
     # A second drain proves drain_events() actually cleared the list,
     # rather than just handing back a live view of it.
     assert factory.drain_events() == []
+
+
+def test_token_producer_to_feeder_conveyor_transport(dt_simulation):
+    """End-to-end check of vgrProdToFeed (VGRPickTokenFromProducerAndPlace,
+    complete-ft-simulation.sysml): a Token spawned by tokenProducerMission
+    onto tokenProd's platform should end up owned by cbFeeder once
+    vgrPickProducer has picked it up (via pickFromProducerPosition) and
+    placed it back down (via placePosition).
+
+    Drives interpreter_step()/simulation_tick() interleaved one-for-one --
+    one Factory tick right after each individual mission's own turn --
+    rather than pump()'s round-then-tick lockstep (every mission gets its
+    turn, *then* one tick). That distinction actually matters here, not
+    just for realism: under pump()'s lockstep, tokenProducerMission's
+    round-1 entry action (randomEmitToken) and vgrProdToFeed's round-1
+    entry action (vgr.setup) both sit queued, un-ticked, until the exact
+    same single end-of-round tick -- so both complete simultaneously, and
+    both completion events reach channel.event_queue together. Idle's
+    `accept when tokenProducer.platformSens == true` guard then fires the
+    very same round its own stale VGRCommandSuccessEventMessage (left over
+    from `entry vgr.setup`, whose target is already the arm/rot's resting
+    0/0) gets delivered -- and a `when`-triggered transition
+    (ExecutableStateUsage._check_and_fire(), languages/sysmlv2/runtime.py)
+    returns without flushing unmatched pending signal items, so that stale
+    event survives into WaitForPickup and gets wrongly consumed there as
+    the pick's own completion, long before the arm/rot encoders ever
+    physically reach pickFromProducerPosition -- grip() never runs.
+
+    Interleaving a tick after every mission's own turn (rather than after
+    a full round) spreads those two entry actions across different ticks,
+    so Idle gets at least one turn where its pending mailbox has nothing
+    it can use and correctly drops the stale event (runtime.py:820-825)
+    before platformSens ever goes true -- matching how
+    main_lipvm_dtsimulation.py's two threads actually run in production
+    (the interpreter stepping on its own cadence, independently of
+    Factory.tick()/on_tick(), which run together once per render frame,
+    not once per full interpreter round). Confirmed empirically both
+    against that real two-thread loop (consistently across repeated
+    trials) and deterministically here.
+
+    Runs forward until the transfer is observed (or the tick budget below
+    is exhausted) rather than hand-computing an exact step count -- the
+    real handshake against Factory's own per-tick encoder advance
+    (ARM_ENCODER_STEP_PER_TICK/ROT_ENCODER_STEP_PER_TICK,
+    fischertechnik_parts/vacuum_gripper.py) takes on the order of a few
+    hundred ticks to physically traverse pickFromProducerPosition's/
+    placePosition's rot axis.
+    """
+    vm, factory = dt_simulation
+
+    # When: step the whole simulation forward one mission-turn plus one
+    # Factory tick at a time, tracking the first Token tokenProducerMission
+    # ever spawns, until either it ends up owned by cbFeeder or the tick
+    # budget below runs out.
+    TICK_BUDGET = 1000
+    token = None
+    for _ in range(TICK_BUDGET):
+        interpreter_step(vm, factory)
+        simulation_tick(vm, factory)
+
+        if token is None and factory.tokens:
+            token = factory.tokens[0]
+
+        cb_feeder = factory.get_machine("Main::cbFeeder")
+        if token is not None and cb_feeder is not None and cb_feeder.conveyorSensFeed == True:
+            break
+
+    # Then: a token was actually produced, and by the time the loop above
+    # stopped, cbFeeder -- not tokenProd, not vgrPickProducer, not thin air
+    # -- owns it.
+    assert token is not None, "tokenProducerMission never produced a token"
+
+    cb_feeder = factory.get_machine("Main::cbFeeder")
+    assert factory.owner_of(token) is cb_feeder, (
+        f"token was never transferred to cbFeeder within {TICK_BUDGET} ticks -- "
+        f"still owned by {factory.owner_of(token)}"
+    )
+
+    # And: checked from the interpreter's own side, not the simulation
+    # model directly -- conveyorSensFeed via the same published snapshot
+    # an `accept when conveyorBelt.conveyorSensFeed == ...` guard would
+    # read (SimulationBridge.read_attribute_from_snapshot(),
+    # facade_proxy.py) -- reads True too, confirming the interpreter would
+    # actually see the arrival, not just the Factory-side Python objects.
+    snapshot = vm.state.channel.latest_snapshot.read()
+    assert SimulationBridge.read_attribute_from_snapshot(
+        snapshot, "Main::cbFeeder", "conveyorSensFeed"
+    ) is True
