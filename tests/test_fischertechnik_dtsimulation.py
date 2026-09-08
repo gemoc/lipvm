@@ -1,3 +1,5 @@
+import types
+
 import pytest
 
 from core.vm import *
@@ -7,15 +9,62 @@ from languages.sysmlv2.syntax import *
 from languages.sysmlv2 import runtime as rt
 from languages.sysmlv2.simulation_models.facade_proxy import SimulationBridge
 from languages.sysmlv2.simulation_models.fischertechnik.factory import Factory
-from languages.sysmlv2.simulation_models.fischertechnik.enums import ConveyorCommandKind, DirectionKind, \
-    TokenProducerCommandKind
+from languages.sysmlv2.simulation_models.fischertechnik.enums import ConveyorCommandKind, DirectionKind
 
 from tools.load_sysml import load
 
 MODEL_PATH = "tools/sysml_test_models/complete-ft-simulation.sysml"
 
 
-def on_tick(vm: VirtualMachine, factory: Factory) -> None:
+class MockFactory:
+    """Dumb recorder standing in for a real Factory at exactly the seam
+    on_tick() drives it through (instantiate_machine/execute_action/
+    drain_events/build_snapshot) -- for tests that want to check
+    interpreter runtime state (vm.state.sysml / rt.*) without also having
+    to drive Factory's own physics (real machines, real token movement,
+    real encoder pacing) just to produce the simulation-side values that
+    state depends on.
+
+    instantiate_machine()/execute_action() do nothing but record the call
+    -- no machine registry, no validation that a name was ever
+    instantiated, no side effects -- so what the interpreter *decided to
+    do* can be asserted on directly (self.instantiate_calls/action_calls).
+    drain_events()/build_snapshot() return whatever the test staged via
+    self.staged_events/self.staged_snapshot for that tick, standing in for
+    what a real Factory.tick() would otherwise have computed physically.
+
+    Deliberately has no tick() -- there's no physics here to advance.
+    "Ticking" this mock forward means staging the next
+    events/snapshot and letting on_tick()/interpreter_step() drain and
+    publish them as usual.
+
+    No model-compliance checking lives here either (e.g. verifying a
+    recorded action_name is one the SysML model actually declares for that
+    part) -- that's left to whatever assertions a given test writes against
+    the recorded calls, case-by-case, not baked into the recorder itself.
+    """
+
+    def __init__(self):
+        self.instantiate_calls: list[tuple[str, str, dict]] = []
+        self.action_calls: list[tuple[str, str, dict]] = []
+        self.staged_events: list[tuple[str, str | None]] = []
+        self.staged_snapshot: dict = {}
+
+    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+        self.instantiate_calls.append((qualified_name, part_def_name, attrs))
+
+    def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
+        self.action_calls.append((qualified_name, action_name, args))
+
+    def drain_events(self) -> list[tuple[str, str | None]]:
+        events, self.staged_events = self.staged_events, []
+        return events
+
+    def build_snapshot(self) -> dict:
+        return self.staged_snapshot
+
+
+def on_tick(vm: VirtualMachine, factory: MockFactory) -> None:
     """The simulation-thread half of one frame -- verbatim copy of
     on_tick()'s body from main_lipvm_dtsimulation.py's main(). Drains
     whatever the interpreter side queued onto vm.state.channel since the
@@ -39,7 +88,7 @@ def on_tick(vm: VirtualMachine, factory: Factory) -> None:
     channel.latest_snapshot.publish(factory.build_snapshot())
 
 
-def interpreter_step(vm: VirtualMachine, factory: Factory) -> None:
+def interpreter_step(vm: VirtualMachine, factory: MockFactory) -> None:
     """One controlled interpreter tick: exactly one vm.step() -- per
     core/vm.py's own step()/is_step docstring, this runs every pending
     operation up to (not including) the next ExecutableStateUsage's own
@@ -53,67 +102,8 @@ def interpreter_step(vm: VirtualMachine, factory: Factory) -> None:
     on_tick(vm, factory)
 
 
-def simulation_tick(vm: VirtualMachine, factory: Factory) -> None:
-    """One controlled simulation tick: exactly one Factory.tick() --
-    physically advances every currently non-idle machine by one step --
-    then republishes a fresh snapshot, so the next interpreter_step() (e.g.
-    an `accept when` guard) sees up-to-date attribute values rather than
-    whatever was live before this tick.
-    """
-    factory.tick()
-    on_tick(vm, factory)
-
-
-def interpreter_round(vm: VirtualMachine, factory: Factory) -> None:
-    """Advances the interpreter through exactly one full round-robin pass:
-    every currently-registered ExecutableStateUsage gets exactly one
-    reactive turn (interpreter_step() N times, N = the number of
-    executable state usages, read off vm.state.sysml -- available right
-    after vm.init(), no step needed first).
-
-    One nuance, confirmed empirically against complete-ft-simulation.sysml's
-    10 missions by logging vm.state.execution_context.current_state_usage
-    after every vm.step(): the model's very first reactive pass is preceded
-    by one extra interpreter_step() that only does the one-time setup
-    (part-instantiation + event-queue drain) and runs no mission at all --
-    so round 1 costs N+1 steps, not N. Every round after that costs exactly
-    N, with no drift: the next round's own setup silently piggybacks on the
-    previous round's final stat-step (core/operation.py's lazy_loop's
-    Operation chain splicing does this, not anything the interpreter does
-    explicitly). vm.state.execution_context.current_state_usage is None
-    only during that one leading setup-only step, before any mission's
-    evaluate() has ever run -- exactly the condition that needs the one-off
-    extra step, so it's what this checks rather than counting calls.
-    """
-    if vm.state.execution_context.current_state_usage is None:
-        interpreter_step(vm, factory)
-
-    n = len(vm.state.sysml.lookup_table_executable_state_usages.records)
-    for _ in range(n):
-        interpreter_step(vm, factory)
-
-
-def pump(vm: VirtualMachine, factory: Factory) -> None:
-    """Advances the whole simulated world by one 'frame': every mission
-    gets its one round-robin turn (interpreter_round()), then the physical
-    world advances by one Factory.tick() (simulation_tick()) -- so every
-    mission reacts to one consistent snapshot before it changes again.
-
-    Convenience for a test that wants "run everything forward by one unit"
-    without caring about round-robin mechanics. Reach for
-    interpreter_step()/simulation_tick() directly instead when you need
-    finer control -- e.g. ticking Factory many times while waiting for a
-    token to physically travel from one sensor to another, without also
-    forcing all 9 *other* missions to re-evaluate that many times (most
-    visibly: tokenProducerMission's randomEmitToken firing on every one of
-    those ticks, spawning tokens you never asked for).
-    """
-    interpreter_round(vm, factory)
-    simulation_tick(vm, factory)
-
-
 @pytest.fixture
-def dt_simulation():
+def lipvm_based_sysml_interpreter():
     """Builds the VM + Factory pre-condition for a Fischertechnik
     dt-simulation test -- single-threaded, no run_interpreter_loop/pygame
     involved. Loads MODEL_PATH, constructs the Scenario/VirtualMachine
@@ -134,208 +124,127 @@ def dt_simulation():
     vm.scenario = scenario
     vm.init()
 
-    factory = Factory()
-
-    yield vm, factory
+    yield vm
 
 
-def test_complete_ft_simulation(dt_simulation):
-    """One pump() -- one full interpreter round (every mission's first
-    turn) plus one physical Factory tick -- should already be enough for
-    every mission's own unconditional `entry; then <FirstSubstate>;`
-    default transition to fire (see ExecutableStateUsage.evaluate()'s `if
-    self.current is None: self._run_entry_behaviour(...)`,
-    languages/sysmlv2/runtime.py): nothing here depends on an external
-    event or a when-guard, so there's no reason any of the 10 missions
-    would still be sitting at current=None afterward.
+def test_token_producer_platform_sensor_edge(lipvm_based_sysml_interpreter):
     """
-    vm, factory = dt_simulation
+    A unit test to check if the interpreter send an action to produce a token to a Token Producer machine
+    """
 
-    stats = {
+    factory = MockFactory()
+
+    # Given part
+    # It is expected that there is a token produce machine named tokenProd with its state machine called
+    # tokenProducerMission in the input SysML model. Such a condition exists knowing that there
+    # are multiple state machines (Missions) to be executed by the interpreter
+    tp_qualified_name = "Main::tokenProd"
+    mission_qualified_name = "Main::tokenProducerMission"
+    mission_stats = {
+        record.qualified_name: record.element_type
+        for record in lipvm_based_sysml_interpreter.state.sysml.lookup_table_executable_state_usages.records
+    }
+
+    # When: calling a step to the interpreter, at some point, there is an action called by a state machine
+    # controlling the token producer to emit a token with a random color. Since we are unsure when this action
+    # is called, we specify a step budget (a number of steps called to the interpreter) that we know, at some point
+    # the emit token action will be called.
+    STEP_BUDGET = 20
+    for _ in range(STEP_BUDGET):
+        if factory.action_calls:
+            break
+        interpreter_step(lipvm_based_sysml_interpreter, factory)
+    else:
+        pytest.fail(f"tokenProd never received an action within {STEP_BUDGET} interpreter steps")
+
+    # Then: the interpreter issued exactly randomEmitToken -- purely what
+    # it decided to do (recorded by the mock), not anything a real Factory
+    # computed -- and tokenProducerMission's own state confirms it's the
+    # entry chain that issued it.
+    assert factory.action_calls == [(tp_qualified_name, "randomEmitToken", {})]
+    assert (mission_stats[mission_qualified_name].current.qualified_name ==
+            "TokenProducerSystem::TokenProducerStates::TokenProducerSimpleMission::ProducingTokenRandomly")
+
+    # When: At the moment when a token is emitted, two event messages must be sent
+    # Success message (token is emitted) and the token exist in the platform, thereby the
+    # platform is busy.
+    factory.staged_events = [
+        ("TokenProducerSuccessEventMessage", tp_qualified_name),
+        ("TokenPlatformBusyEventMessage", tp_qualified_name),
+    ]
+    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(platformSens=True)}
+    wait_platform_free_state = (
+        "TokenProducerSystem::TokenProducerStates::TokenProducerSimpleMission::WaitPlatformFree"
+    )
+
+    # Then: tokenProducerMission moves on to WaitPlatformFree -- and, since
+    # the staged snapshot still reads platformSens == True, it stays there
+    # rather than bouncing straight back to ProducingTokenRandomly via its
+    # own `accept when tokenProducerMachine.platformSens == false` (the
+    # loop below fails the test outright if that isn't what happens).
+    for _ in range(STEP_BUDGET):
+        if mission_stats[mission_qualified_name].current.qualified_name == wait_platform_free_state:
+            break
+        interpreter_step(lipvm_based_sysml_interpreter, factory)
+    else:
+        pytest.fail("tokenProducerMission never reacted to TokenProducerSuccessEventMessage")
+
+
+def test_token_producer_to_feeder_conveyor_transport(lipvm_based_sysml_interpreter):
+    """
+    A unit test ensuring a VGR machine will pick a token once it is available
+    in the token producer's platform
+    """
+    vm = lipvm_based_sysml_interpreter
+    factory = MockFactory()
+
+    vgr_qualified_name = "Main::vgrPickProducer"
+    tp_qualified_name = "Main::tokenProd"
+    mission_qualified_name = "Main::vgrProdToFeed"
+    idle_state = "VacuumGripperSystem::VGRStates::VGRPickTokenFromProducerAndPlace::Idle"
+    wait_for_pickup_state = "VacuumGripperSystem::VGRStates::VGRPickTokenFromProducerAndPlace::WaitForPickup"
+
+    mission_stats = {
         record.qualified_name: record.element_type
         for record in vm.state.sysml.lookup_table_executable_state_usages.records
     }
 
-    # Given: nothing has run yet -- fresh off vm.init(), before any pump().
-    assert all(usage.current is None for usage in stats.values())
+    def action_names(qualified_name):
+        return [call[1] for call in factory.action_calls if call[0] == qualified_name]
 
-    # When: exactly one pump().
-    pump(vm, factory)
-
-    # Then: every mission already left current=None -- landed on the first
-    # substate named by its own StateDef's default transition.
-    expected_first_state = {
-        "Main::tokenProducerMission":
-            "TokenProducerSystem::TokenProducerStates::TokenProducerSimpleMission::ProducingTokenRandomly",
-        "Main::cbFeederMission": "ConveyorBeltSystem::ConveyorBeltStates::ConveyorBeltSimpleMission::Start",
-        "Main::cbTransportMission": "ConveyorBeltSystem::ConveyorBeltStates::ConveyorBeltSimpleMission::Start",
-        "Main::tokenRedDepoMission": "TokenDepoSystem::TokenDepoStates::TokenDepoSimpleMission::Idle",
-        "Main::tokenWhiteDepoMission": "TokenDepoSystem::TokenDepoStates::TokenDepoSimpleMission::Idle",
-        "Main::tokenBlueDepoMission": "TokenDepoSystem::TokenDepoStates::TokenDepoSimpleMission::Idle",
-        "Main::vgrProdToFeed": "VacuumGripperSystem::VGRStates::VGRPickTokenFromProducerAndPlace::Idle",
-        "Main::vgrPickToSort": "VacuumGripperSystem::VGRStates::VGRPickTokenFromCBAndPlace::Idle",
-        "Main::vgrMissionFeedTrans": "VacuumGripperSystem::VGRStates::VGRMissionWith2CB::SafePosition",
-        "Main::slMission": "SortingLineSystem::SortingLineMissions::SortingLineSimpleMission::Idle",
-    }
-    assert set(stats) == set(expected_first_state)
-    for qualified_name, expected_substate in expected_first_state.items():
-        current = stats[qualified_name].current
-        assert current is not None, f"{qualified_name} never fired its default transition"
-        assert current.qualified_name == expected_substate
-
-    # And: Start's own entry action (`conveyorBelt.moveToSensor { direction
-    # = FORWARD }`) already reached the real Factory, not just the
-    # interpreter's own bookkeeping -- cbFeeder is a live ConveyorBeltMachine
-    # actually mid-command.
-    cb_feeder = factory.get_machine("Main::cbFeeder")
-    assert cb_feeder is not None
-    assert cb_feeder.currentCommand == ConveyorCommandKind.MOVE_TO_SENSOR
-    assert cb_feeder.direction == DirectionKind.FORWARD
-
-
-def test_token_producer_platform_sensor_edge(dt_simulation):
-    """tokenProd.platformSens is a live read (whether a Token currently
-    sits on platform_position(), via Factory.tokens_on() --
-    fischertechnik_parts/token_producer.py) rather than simulation
-    bookkeeping, so it can only flip once randomEmitToken's queued command
-    has actually been *ticked* on the real Factory -- one tick after the
-    interpreter issues it, not at the moment it's issued. Checks that edge
-    directly (False before the tick that runs the command, True after),
-    then checks the two events TokenProducerMachine raises as a direct
-    result: TokenProducerSuccessEventMessage (stop(), the command
-    finishing) and TokenPlatformBusyEventMessage (the platformSens rising
-    edge itself, detected via FischertechnikMachine._sensor_edge() right
-    after that dispatch).
-    """
-    vm, factory = dt_simulation
-
-    # When: every mission gets its first turn -- tokenProducerMission's own
-    # entry chain (entry; then ProducingTokenRandomly; entry
-    # tokenProducerMachine.randomEmitToken) queues the ActionCommand, but
-    # nothing has been ticked yet.
-    interpreter_round(vm, factory)
-
-    tp = factory.get_machine("Main::tokenProd")
-    assert tp is not None
-    assert tp.currentCommand == TokenProducerCommandKind.RANDOM_EMIT_TOKEN
-
-    # Then: the command is issued but not yet physically run -- no token on
-    # the platform, so platformSens still reads False.
-    assert tp.platformSens is False
-    assert factory.tokens == []
-
-    # When: exactly one physical tick actually executes the queued command.
-    # Using factory.tick() directly here (rather than simulation_tick())
-    # deliberately skips the drain-into-channel/republish-snapshot step, so
-    # the events below can be inspected via drain_events() before anything
-    # else consumes them.
-    factory.tick()
-
-    # Then: a token now sits on the platform -- platformSens's rising edge.
-    assert tp.platformSens is True
-    assert len(factory.tokens) == 1
-    assert tp.currentCommand == TokenProducerCommandKind.STOP
-
-    # And: Factory recorded exactly those two events for tokenProd, in
-    # order -- filtered by source, since this same tick also completes
-    # setup() on every VacuumGripperMachine mid-entry (vgr.setup, three of
-    # the ten missions), each raising its own unrelated
-    # VGRCommandSuccessEventMessage in the same drain.
-    events = factory.drain_events()
-    token_producer_events = [event for event in events if event[1] == "Main::tokenProd"]
-    assert token_producer_events == [
-        ("TokenProducerSuccessEventMessage", "Main::tokenProd"),
-        ("TokenPlatformBusyEventMessage", "Main::tokenProd"),
-    ]
-
-    # A second drain proves drain_events() actually cleared the list,
-    # rather than just handing back a live view of it.
-    assert factory.drain_events() == []
-
-
-def test_token_producer_to_feeder_conveyor_transport(dt_simulation):
-    """End-to-end check of vgrProdToFeed (VGRPickTokenFromProducerAndPlace,
-    complete-ft-simulation.sysml): a Token spawned by tokenProducerMission
-    onto tokenProd's platform should end up owned by cbFeeder once
-    vgrPickProducer has picked it up (via pickFromProducerPosition) and
-    placed it back down (via placePosition).
-
-    Drives interpreter_step()/simulation_tick() interleaved one-for-one --
-    one Factory tick right after each individual mission's own turn --
-    rather than pump()'s round-then-tick lockstep (every mission gets its
-    turn, *then* one tick). That distinction actually matters here, not
-    just for realism: under pump()'s lockstep, tokenProducerMission's
-    round-1 entry action (randomEmitToken) and vgrProdToFeed's round-1
-    entry action (vgr.setup) both sit queued, un-ticked, until the exact
-    same single end-of-round tick -- so both complete simultaneously, and
-    both completion events reach channel.event_queue together. Idle's
-    `accept when tokenProducer.platformSens == true` guard then fires the
-    very same round its own stale VGRCommandSuccessEventMessage (left over
-    from `entry vgr.setup`, whose target is already the arm/rot's resting
-    0/0) gets delivered -- and a `when`-triggered transition
-    (ExecutableStateUsage._check_and_fire(), languages/sysmlv2/runtime.py)
-    returns without flushing unmatched pending signal items, so that stale
-    event survives into WaitForPickup and gets wrongly consumed there as
-    the pick's own completion, long before the arm/rot encoders ever
-    physically reach pickFromProducerPosition -- grip() never runs.
-
-    Interleaving a tick after every mission's own turn (rather than after
-    a full round) spreads those two entry actions across different ticks,
-    so Idle gets at least one turn where its pending mailbox has nothing
-    it can use and correctly drops the stale event (runtime.py:820-825)
-    before platformSens ever goes true -- matching how
-    main_lipvm_dtsimulation.py's two threads actually run in production
-    (the interpreter stepping on its own cadence, independently of
-    Factory.tick()/on_tick(), which run together once per render frame,
-    not once per full interpreter round). Confirmed empirically both
-    against that real two-thread loop (consistently across repeated
-    trials) and deterministically here.
-
-    Runs forward until the transfer is observed (or the tick budget below
-    is exhausted) rather than hand-computing an exact step count -- the
-    real handshake against Factory's own per-tick encoder advance
-    (ARM_ENCODER_STEP_PER_TICK/ROT_ENCODER_STEP_PER_TICK,
-    fischertechnik_parts/vacuum_gripper.py) takes on the order of a few
-    hundred ticks to physically traverse pickFromProducerPosition's/
-    placePosition's rot axis.
-    """
-    vm, factory = dt_simulation
-
-    # When: step the whole simulation forward one mission-turn plus one
-    # Factory tick at a time, tracking the first Token tokenProducerMission
-    # ever spawns, until either it ends up owned by cbFeeder or the tick
-    # budget below runs out.
-    TICK_BUDGET = 1000
-    token = None
-    for _ in range(TICK_BUDGET):
-        interpreter_step(vm, factory)
-        simulation_tick(vm, factory)
-
-        if token is None and factory.tokens:
-            token = factory.tokens[0]
-
-        cb_feeder = factory.get_machine("Main::cbFeeder")
-        if token is not None and cb_feeder is not None and cb_feeder.conveyorSensFeed == True:
+    # When: stepped forward -- polled rather than counted, same reasoning
+    # as the round-robin ordering elsewhere in this file -- until
+    # vgrProdToFeed's own entry chain (entry vgr.setup; then Idle;) has
+    # run: an unconditional transition, not gated on any event, so it
+    # lands on Idle the very turn vgr.setup is issued.
+    STEP_BUDGET = 20
+    for _ in range(STEP_BUDGET):
+        current = mission_stats[mission_qualified_name].current
+        if current is not None and current.qualified_name == idle_state:
             break
+        interpreter_step(vm, factory)
+    else:
+        pytest.fail(f"vgrProdToFeed never reached Idle within {STEP_BUDGET} interpreter steps")
 
-    # Then: a token was actually produced, and by the time the loop above
-    # stopped, cbFeeder -- not tokenProd, not vgrPickProducer, not thin air
-    # -- owns it.
-    assert token is not None, "tokenProducerMission never produced a token"
+    # Then: vgr.setup was issued to get there, and Idle's own `accept when
+    # tokenProducer.platformSens == true` guard hasn't had a true reading
+    # to react to yet -- no pick issued.
+    assert "setup" in action_names(vgr_qualified_name)
+    assert "pick" not in action_names(vgr_qualified_name)
 
-    cb_feeder = factory.get_machine("Main::cbFeeder")
-    assert factory.owner_of(token) is cb_feeder, (
-        f"token was never transferred to cbFeeder within {TICK_BUDGET} ticks -- "
-        f"still owned by {factory.owner_of(token)}"
-    )
+    # When: the simulation reports the token producer's platform sensor as
+    # busy -- a token is now available on tokenProd's platform.
+    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(platformSens=True)}
 
-    # And: checked from the interpreter's own side, not the simulation
-    # model directly -- conveyorSensFeed via the same published snapshot
-    # an `accept when conveyorBelt.conveyorSensFeed == ...` guard would
-    # read (SimulationBridge.read_attribute_from_snapshot(),
-    # facade_proxy.py) -- reads True too, confirming the interpreter would
-    # actually see the arrival, not just the Factory-side Python objects.
-    snapshot = vm.state.channel.latest_snapshot.read()
-    assert SimulationBridge.read_attribute_from_snapshot(
-        snapshot, "Main::cbFeeder", "conveyorSensFeed"
-    ) is True
+    # Then: vgrProdToFeed's Idle guard fires -- it picks up from
+    # pickFromProducerPosition (`do vgr.pick { in targetPosition =
+    # pickFromProducerPosition; }`) and moves on to WaitForPickup.
+    for _ in range(STEP_BUDGET):
+        current = mission_stats[mission_qualified_name].current
+        if current is not None and current.qualified_name == wait_for_pickup_state:
+            break
+        interpreter_step(vm, factory)
+    else:
+        pytest.fail("vgrProdToFeed never reacted to tokenProducer.platformSens becoming true")
+
+    assert "pick" in action_names(vgr_qualified_name)
