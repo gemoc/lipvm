@@ -3,9 +3,10 @@ name = "lipvm"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 testpaths = "tests"
 dependencies = [
+    "citylearn>=3.0.2",
     "jsonrpclib>=0.2.1",
     "pyecore>=0.15.2",
     "pyecoregen>=0.5.1",
