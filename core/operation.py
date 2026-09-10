@@ -24,10 +24,21 @@ class Operation:
 
     @property
     def syntax_element(self):
-        from core.language import AbstractSyntaxElement
+        """The AST element this operation corresponds to, resolved through a
+        uniform contract: an argument that is itself an AbstractSyntaxElement is
+        that element; a RuntimeStateElement standing in for an AST construct
+        declares it via ast_node(). This lets an operation whose subject is a
+        runtime element (e.g. a sysmlv2 ExecutableStateUsage) still relate to
+        the AST node it executes on behalf of.
+        """
+        from core.language import AbstractSyntaxElement, RuntimeStateElement
         for arg in self.args:
             if isinstance(arg, AbstractSyntaxElement):
                 return arg
+            if isinstance(arg, RuntimeStateElement):
+                node = arg.ast_node()
+                if isinstance(node, AbstractSyntaxElement):
+                    return node
         return None
 
     @property
@@ -85,6 +96,18 @@ def operation(_method: Callable = None, is_step = False, **sub_operations_dict: 
         @wraps(method)
         def wrapper(*args, **kwargs) -> Operation:
             operation = Operation(method, args=args, kwargs=dict(kwargs), is_step=is_step)
+
+            # By design, a stepped operation must relate to an AST element (see
+            # Operation.syntax_element) -- either the decorated method's subject
+            # is itself an AbstractSyntaxElement, or it is a RuntimeStateElement
+            # that declares its AST node via ast_node(). Enforced at mint time
+            # so a regression surfaces the first time such an operation is built.
+            if is_step and operation.syntax_element is None:
+                raise TypeError(
+                    f"A stepped @operation must relate to an AST element, but "
+                    f"{method.__qualname__} resolved none -- its subject is neither an "
+                    f"AbstractSyntaxElement nor a RuntimeStateElement with an ast_node()."
+                )
 
             if not sub_operations_dict:
                 return operation

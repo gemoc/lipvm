@@ -41,6 +41,13 @@ class ElementDefinition(RuntimeStateElement, metaclass=MetaEClass):
     qualified_name = EAttribute(eType=EString, lower=1, upper=1)
     definition = EReference(eType=AbstractSyntaxElement, lower=1, upper=1)
 
+    def ast_node(self) -> AbstractSyntaxElement:
+        """This registry entry's originating AST node, satisfying the core
+        RuntimeStateElement contract so a stepped Operation whose subject is
+        this element (e.g. an ExecutableStateUsage reactive pass) resolves to
+        the AST node it was built from."""
+        return self.definition
+
 class EnumerationDefinition(ElementDefinition, metaclass=MetaEClass):
 
     '''

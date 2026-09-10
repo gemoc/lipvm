@@ -22,11 +22,20 @@ class RuntimeStateElement(EObject, metaclass=MetaEClass):
 
     name = EAttribute(eType=EString)
 
+    def ast_node(self) -> "AbstractSyntaxElement | None":
+        """The AST element this runtime element executes on behalf of, if any.
+
+        Defaults to None. A runtime element that stands in for an AST construct
+        -- and can therefore be the subject of a stepped Operation (e.g. a
+        sysmlv2 ExecutableStateUsage) -- overrides this to return that construct,
+        so Operation.syntax_element can relate the operation to the AST node.
+        """
+        return None
+
 
 class RuntimeState(EObject, metaclass=MetaEClass):
 
     elements = EReference(eType=RuntimeStateElement, lower=0, upper=-1)
-
 
     def __getattr__(self, attr_name: LiteralString) -> Any:
         for element in self.elements:
@@ -43,18 +52,6 @@ class ASTElementPosition(EObject, metaclass=MetaEClass):
     end_column = EAttribute(eType=EInt, default_value=-1)
 
 
-class MigrationScript(EObject, metaclass=MetaEClass):
-
-    def evaluate(self, runtime: RuntimeState) -> None:
-        pass
-
-
-class SafepointCondition(EObject, metaclass=MetaEClass):
-
-    def evaluate(self, runtime: RuntimeState) -> bool:
-        return True
-
-
 class AbstractSyntaxElement(EObject, metaclass=MetaEClass):
 
     abstract = True
@@ -63,26 +60,9 @@ class AbstractSyntaxElement(EObject, metaclass=MetaEClass):
 
     text_position = EReference(eType=ASTElementPosition, lower=0, upper=1)
 
-    prepare_migration = EReference(eType=MigrationScript, lower=0, upper=1)
-    safepoint_condition = EReference(eType=SafepointCondition, lower=0, upper=1)
-    perform_migration = EReference(eType=MigrationScript, lower=0, upper=1)
-
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-
-        if self.prepare_migration is None:
-            self.prepare_migration = MigrationScript()
-
-        if self.safepoint_condition is None:
-            self.safepoint_condition = SafepointCondition()
-
-        if self.perform_migration is None:
-            self.perform_migration = MigrationScript()
-
-
-    def isSafeToMigrate(self, runtime: RuntimeState) -> bool:
-        return self.safepoint_condition.evaluate(runtime)
 
 
     def set_attribute(self, name: str, value: EObject) -> None:
@@ -148,9 +128,55 @@ class AbstractSyntaxElement(EObject, metaclass=MetaEClass):
         else:
             self.eSet(feature, None)
 
+    def isUpdatePoint(self) -> bool:
+        return False
 
     def evaluate(self, runtime: RuntimeState) -> Operation | None:
         raise NotImplementedError("Please Implement this method")
+
+
+class UpdatePoint(AbstractSyntaxElement, metaclass=MetaEClass):
+    """An AST node marked as a checkpoint: a place where, while the program
+    runs, the VM may take a pending Update into account (see core.edit.Update).
+    A language engineer marks a node type as a checkpoint by extending
+    UpdateBeforePoint or UpdateAfterPoint; the VM applies an Update only when
+    the running operation's node is an update point whose type matches the
+    Update's declared checkpoint_type().
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+
+    def isUpdatePoint(self) -> bool:
+        return True
+
+    def isUpdateBefore(self) -> bool:
+        raise NotImplementedError("Abstract class, please use UpdateBeforePoint or UpdateAfterPoint")
+
+    def isUpdateAfter(self) -> bool:
+        raise NotImplementedError("Abstract class, please use UpdateBeforePoint or UpdateAfterPoint")
+
+class UpdateBeforePoint(UpdatePoint, metaclass=MetaEClass):
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+
+    def isUpdateBefore(self) -> bool:
+        return True
+
+    def isUpdateAfter(self) -> bool:
+        return False
+
+class UpdateAfterPoint(UpdatePoint, metaclass=MetaEClass):
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+
+    def isUpdateBefore(self) -> bool:
+        return False
+
+    def isUpdateAfter(self) -> bool:
+        return True
 
 
 class Scenario(AbstractSyntaxElement, metaclass=MetaEClass):

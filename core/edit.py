@@ -23,16 +23,6 @@ class EditSyntaxOperation(EObject, metaclass=MetaEClass):
         if self.identifier != self.syntax.identifier:
             raise Exception(f"The syntax element to edit does not match with current edit operation, expecting identifier: {self.identifier}.")
 
-    def prepare(self, runtime: RuntimeState) -> None:
-        self._raise_if_invalid_syntax()
-        if self.syntax.prepare_migration is not None:
-            self.syntax.prepare_migration.evaluate(runtime)
-
-    def migrate(self, runtime: RuntimeState) -> None:
-        self._raise_if_invalid_syntax()
-        if self.syntax.perform_migration is not None:
-            self.syntax.perform_migration.evaluate(runtime)
-
     def apply(self) -> None:
         self._raise_if_invalid_syntax()
         self.edit_syntax(self.syntax)
@@ -119,14 +109,43 @@ class EditScript(EObject, metaclass=MetaEClass):
         for child in syntax.get_children():
             self.attach_to(child)
 
-    def prepare(self, runtime: RuntimeState) -> None:
-        for edit in self.operations:
-            edit.prepare(runtime)
-
     def apply(self) -> None:
         for edit in self.operations:
             edit.apply()
 
-    def migrate(self, runtime: RuntimeState) -> None:
-        for edit in self.operations:
-            edit.migrate(runtime)
+
+class Update(EObject, metaclass=MetaEClass):
+    """A code change to take into account while a program runs.
+
+    Rather than attaching migration to specific AST nodes, an Update bundles
+    everything needed to fold a change into a running program:
+      * edit_script -- the set of AST changes to apply;
+      * checkpoint_type() -- the kind of UpdatePoint (see core.language) at
+        which it is safe to apply them: the VM only considers this update when
+        the running operation's syntax node is an update point of this type;
+      * condition()/apply() -- an optional guard and the migration logic used
+        to reconcile the live runtime with the changed syntax.
+
+    A language engineer (e.g. for SysMLv2) subclasses Update, overriding
+    checkpoint_type() and, where migration is needed, condition()/apply().
+    """
+
+    # The set of AST changes this update carries.
+    edit_script = EReference(eType=EditScript, lower=0, upper=1, containment=True)
+
+    def checkpoint_type(self) -> type:
+        """The UpdatePoint subclass at which this update may be applied. The VM
+        considers this update only when the running operation's syntax node is
+        an update point that is an instance of this type."""
+        raise NotImplementedError("An Update must declare its checkpoint_type()")
+
+    def condition(self, runtime: RuntimeState) -> bool:
+        """Whether the update may be applied at the reached checkpoint right
+        now. Always true by default; override to gate on live runtime state."""
+        return True
+
+    def apply(self, runtime: RuntimeState) -> None:
+        """Migration logic run right after the edit script is applied, to
+        reconcile the live runtime with the changed syntax. No-op by default,
+        since many updates need no migration."""
+        pass

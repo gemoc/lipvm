@@ -1,6 +1,6 @@
 from pyecore.ecore import *
 
-from core.language import AbstractSyntaxElement, RuntimeState
+from core.language import AbstractSyntaxElement, UpdateBeforePoint, RuntimeState
 from core.operation import Operation, lazy_loop, operation
 
 from languages.minilogo.runtime import (
@@ -23,7 +23,13 @@ Operator.eLiterals.append(EEnumLiteral("MULTIPLY"))
 
 
 # Abstract Syntax Classes
-class Command(AbstractSyntaxElement, metaclass=MetaEClass):
+class Command(UpdateBeforePoint, metaclass=MetaEClass):
+    # A minilogo program is a flat sequence of commands run one at a time (see
+    # Program.evaluate's lazy_loop, which re-reads `commands` by index). Every
+    # command boundary is therefore a safe place to fold in a code change:
+    # commands are marked as "before" update points so a pending Update is
+    # taken into account just before the next command runs. See
+    # languages/minilogo/updates.py for the updates derived from this.
     abstract = True
 
 

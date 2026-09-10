@@ -30,7 +30,7 @@ class VirtualMachine:
         self._operation = None
         self._runtime = None
 
-        self._edit_script = None
+        self._pending_update = None
 
     @property
     def state(self) -> RuntimeState:
@@ -46,12 +46,16 @@ class VirtualMachine:
     def step(self) -> Any:
         """Execute one visible step: advance through internal glue operations
         until reaching the next operation that corresponds to an AST node.
-        """
-        self._apply_pending_edits()
 
+        A pending update is taken into account at each node boundary, honoring
+        its checkpoint's timing: a before-point update is applied just before
+        the node's operation executes, an after-point update just after.
+        """
         result = None
         while self._operation is not None:
+            self._apply_pending_update(before=True)
             result = self._operation.execute()
+            self._apply_pending_update(before=False)
             self._operation = self._operation.continuation
             if self._operation is not None and self._operation.is_step:
                 break
@@ -70,39 +74,65 @@ class VirtualMachine:
 
         return result
 
-    def udpate(self, edit_script: EditScript, option: ProgramUpdateOption) -> None:
-        """Apply a set of edits to the running program.
+    def update(self, update: Update, option: ProgramUpdateOption) -> None:
+        """Take a code change (an Update) into account.
 
-        With RESTART, the edits are applied immediately and execution restarts
-        from scratch with the updated syntax tree.
+        With RESTART, the update is applied immediately and execution restarts
+        from scratch on the changed syntax tree.
 
-        With HOTSWAP, execution keeps running and the edits are held until the
-        VM reaches a safepoint, at which point they are applied in place.
+        With HOTSWAP, execution keeps running and the update is held pending
+        until the VM reaches a checkpoint of the update's checkpoint_type()
+        whose condition() holds, at which point it is applied in place (see
+        _apply_pending_update).
         """
         self.stop()
 
-        self._edit_script = edit_script
-        self._edit_script.attach_to(self.scenario)
+        if update.edit_script is not None:
+            update.edit_script.attach_to(self.scenario)
 
         if option == ProgramUpdateOption.RESTART:
-            self._edit_script.apply()
+            if update.edit_script is not None:
+                update.edit_script.apply()
             self.init()
-            self._edit_script.migrate(self._runtime)
-            self._edit_script = None
+            update.apply(self._runtime)
         else:
-            self._edit_script.prepare(self._runtime)
+            self._pending_update = update
 
         self.run()
 
-    def _apply_pending_edits(self) -> None:
-        """If a safepoint has been reached, apply the pending edits and migrate the runtime."""
-        if not self._edit_script:
+    def _apply_pending_update(self, before: bool) -> None:
+        """If a pending update's checkpoint has been reached and its condition
+        holds, apply its edit script and run its migration.
+
+        Called twice around each operation's execution -- with before=True
+        just before it runs, and before=False just after. The current
+        operation's syntax node must (1) be an update point, (2) be an instance
+        of the update's declared checkpoint_type(), and (3) have the timing
+        that matches this call (a before-point on the before=True call, an
+        after-point on the before=False call). Only then is the update's
+        condition() checked and, if true, the change applied: the edit script
+        edits the syntax, then apply() migrates the live runtime to match.
+        """
+        update = self._pending_update
+        if update is None:
             return None
 
-        syntax = self._operation.syntax_element
-        if syntax is None or not syntax.isSafeToMigrate(self._runtime):
+        node = self._operation.syntax_element if self._operation is not None else None
+        if node is None:
             return None
 
-        self._edit_script.apply()
-        self._edit_script.migrate(self._runtime)
-        self._edit_script = None
+        if not node.isUpdatePoint() or not isinstance(node, update.checkpoint_type()):
+            return None
+
+        # Honor the checkpoint's before/after timing: only take the update
+        # into account on the call whose timing the node's type calls for.
+        if node.isUpdateBefore() != before:
+            return None
+
+        if not update.condition(self._runtime):
+            return None
+
+        if update.edit_script is not None:
+            update.edit_script.apply()
+        update.apply(self._runtime)
+        self._pending_update = None

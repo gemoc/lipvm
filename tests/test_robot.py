@@ -202,7 +202,7 @@ def test_update_program_and_restart():
     ])
 
     # When
-    vm.udpate(edit_script, ProgramUpdateOption.RESTART)
+    vm.update(Update(edit_script=edit_script), ProgramUpdateOption.RESTART)
     state = vm.state
 
     # Then

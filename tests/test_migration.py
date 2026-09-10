@@ -1,109 +1,253 @@
-from pyecore.ecore import EAttribute, EInt, MetaEClass
+import pytest
+from pyecore.ecore import EReference, MetaEClass
 
-from core.edit import EditScript, DeleteSyntaxOperation
-from core.language import MigrationScript, RuntimeState, SafepointCondition
+from core.edit import EditScript, DeleteSyntaxOperation, Update
+from core.language import (
+    AbstractSyntaxElement,
+    UpdatePoint,
+    UpdateBeforePoint,
+    UpdateAfterPoint,
+    RuntimeState,
+)
 from core.operation import Operation
 from core.vm import VirtualMachine
 
 from languages.robot.runtime import Direction, GridPosition, Maze, Robot
-from languages.robot.syntax import Program, MoveForward
 
 
-# --- Helpers ---
+# --- Helpers: a minimal language whose command nodes are update points ---
 
-class _ColumnAtLeast(SafepointCondition, metaclass=MetaEClass):
-    threshold = EAttribute(eType=EInt)
-
-    def evaluate(self, runtime: RuntimeState) -> bool:
-        return runtime.maze.robot.position.column >= self.threshold
+class _Checkpoint(UpdateBeforePoint, metaclass=MetaEClass):
+    """A command node a language engineer marked as a "before" checkpoint."""
+    pass
 
 
-def _make_runtime(column: int) -> RuntimeState:
-    robot = Robot(name="robot", position=GridPosition(column=column, row=0), direction=Direction.EAST)
+class _AfterCheckpoint(UpdateAfterPoint, metaclass=MetaEClass):
+    """A command node marked as an "after" checkpoint."""
+    pass
+
+
+class _OtherBefore(UpdateBeforePoint, metaclass=MetaEClass):
+    """A "before" checkpoint of a different type than _Checkpoint."""
+    pass
+
+
+class _PlainNode(AbstractSyntaxElement, metaclass=MetaEClass):
+    """A command node that is not a checkpoint at all."""
+    pass
+
+
+class _Program(AbstractSyntaxElement, metaclass=MetaEClass):
+    commands = EReference(eType=AbstractSyntaxElement, upper=-1, containment=True)
+
+
+class _FaceEast(Update):
+    """Deletes the command at `index` under node `parent_identifier` and
+    migrates the live robot to face east, at a _Checkpoint (before-point).
+
+    A language engineer's Update owns its own edit script: it is built from
+    the target node identifiers in the constructor, not supplied per call.
+    """
+
+    def __init__(self, parent_identifier: int, index: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.edit_script = EditScript(
+            operations=[DeleteSyntaxOperation(identifier=parent_identifier, index=index)]
+        )
+
+    def checkpoint_type(self) -> type:
+        return _Checkpoint
+
+    def apply(self, runtime: RuntimeState) -> None:
+        runtime.maze.robot.direction = Direction.EAST
+
+
+class _FaceEastAfter(_FaceEast):
+    """Same, but applied at an _AfterCheckpoint (after-point)."""
+
+    def checkpoint_type(self) -> type:
+        return _AfterCheckpoint
+
+
+class _NeverReady(_FaceEast):
+    def condition(self, runtime: RuntimeState) -> bool:
+        return False
+
+
+def _make_runtime() -> RuntimeState:
+    robot = Robot(name="robot", position=GridPosition(column=0, row=0), direction=Direction.NORTH)
     maze = Maze(name="maze", width=5, height=1, robot=robot)
     return RuntimeState(elements=[maze])
 
 
-# --- Tests ---
-
-def test_migration_scripts_are_dedicated_instances():
-    # Given
-    first = MoveForward(identifier=1)
-    second = MoveForward(identifier=2)
-
-    # Then: each instance gets its own default scripts, not a shared singleton
-    assert isinstance(first.prepare_migration, MigrationScript)
-    assert isinstance(first.perform_migration, MigrationScript)
-    assert isinstance(first.safepoint_condition, SafepointCondition)
-
-    assert first.prepare_migration is not second.prepare_migration
-    assert first.perform_migration is not second.perform_migration
-    assert first.safepoint_condition is not second.safepoint_condition
-
-
-def test_is_safe_to_migrate_defaults_to_true():
-    # Given
-    node = MoveForward(identifier=1)
-
-    # Then
-    assert node.isSafeToMigrate(_make_runtime(column=0)) is True
-
-
-def test_is_safe_to_migrate_uses_safepoint_condition():
-    # Given
-    node = MoveForward(identifier=1, safepoint_condition=_ColumnAtLeast(threshold=2))
-
-    # Then
-    assert node.isSafeToMigrate(_make_runtime(column=0)) is False
-    assert node.isSafeToMigrate(_make_runtime(column=2)) is True
-
-
-def test_pending_edits_wait_for_safepoint():
-    # Given
-    blocked = MoveForward(identifier=1, safepoint_condition=_ColumnAtLeast(threshold=2))
-    free = MoveForward(identifier=2, safepoint_condition=_ColumnAtLeast(threshold=2))
-    program = Program(identifier=0, commands=[blocked, free])
-
-    edit_script = EditScript(operations=[DeleteSyntaxOperation(identifier=0, index=1)])
-    edit_script.attach_to(program)
-
+def _pending_vm(update: Update, program: _Program, current_node: AbstractSyntaxElement) -> VirtualMachine:
+    if update.edit_script is not None:
+        update.edit_script.attach_to(program)
     vm = VirtualMachine()
-    vm._edit_script = edit_script
-    vm._runtime = _make_runtime(column=0)
-    vm._operation = Operation(lambda: None, args=(blocked, vm._runtime,))
+    vm._pending_update = update
+    vm._runtime = _make_runtime()
+    vm._operation = Operation(lambda: None, args=(current_node, vm._runtime))
+    return vm
 
-    # When: safepoint not yet reached
-    vm._apply_pending_edits()
 
-    # Then: edit is still pending
-    assert vm._edit_script is edit_script
+# --- Checkpoint marking ---
+
+def test_plain_node_is_not_an_update_point():
+    assert _PlainNode(identifier=1).isUpdatePoint() is False
+
+
+def test_checkpoint_node_is_an_update_point():
+    node = _Checkpoint(identifier=1)
+    assert node.isUpdatePoint() is True
+    assert node.isUpdateBefore() is True
+    assert node.isUpdateAfter() is False
+
+
+def test_update_point_before_after_are_abstract():
+    node = UpdatePoint(identifier=1)
+    assert node.isUpdatePoint() is True
+    with pytest.raises(NotImplementedError):
+        node.isUpdateBefore()
+
+
+# --- Update defaults ---
+
+def test_update_condition_defaults_to_true_and_apply_is_noop():
+    update = Update()
+    assert update.condition(_make_runtime()) is True
+    update.apply(_make_runtime())  # no-op, does not raise
+
+
+def test_update_requires_a_checkpoint_type():
+    with pytest.raises(NotImplementedError):
+        Update().checkpoint_type()
+
+
+# --- VM applies the update at a matching checkpoint ---
+
+def test_before_update_applied_before_its_node_runs():
+    # Given: a program whose commands are "before" checkpoints
+    first = _Checkpoint(identifier=1)
+    program = _Program(identifier=0, commands=[first, _Checkpoint(identifier=2)])
+
+    update = _FaceEast(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=first)
+
+    # When: the pre-execution check reaches the matching before-checkpoint
+    vm._apply_pending_update(before=True)
+
+    # Then: the edit is applied and the migration ran
+    assert vm._pending_update is None
+    assert [cmd.identifier for cmd in program.commands] == [1]
+    assert vm._runtime.maze.robot.direction == Direction.EAST
+
+
+def test_before_update_not_applied_after_its_node_runs():
+    # Given: a before-checkpoint update
+    first = _Checkpoint(identifier=1)
+    program = _Program(identifier=0, commands=[first, _Checkpoint(identifier=2)])
+
+    update = _FaceEast(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=first)
+
+    # When: only the post-execution check runs
+    vm._apply_pending_update(before=False)
+
+    # Then: a before-point update is not taken into account after the node
+    assert vm._pending_update is update
+    assert [cmd.identifier for cmd in program.commands] == [1, 2]
+    assert vm._runtime.maze.robot.direction == Direction.NORTH
+
+
+def test_after_update_applied_only_after_its_node_runs():
+    # Given: a program whose commands are "after" checkpoints
+    first = _AfterCheckpoint(identifier=1)
+    program = _Program(identifier=0, commands=[first, _AfterCheckpoint(identifier=2)])
+
+    update = _FaceEastAfter(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=first)
+
+    # When: the pre-execution check runs -- too early for an after-point
+    vm._apply_pending_update(before=True)
+
+    # Then: still pending
+    assert vm._pending_update is update
     assert [cmd.identifier for cmd in program.commands] == [1, 2]
 
-    # When: safepoint reached
-    vm._runtime = _make_runtime(column=2)
-    vm._operation = Operation(lambda: None, args=(free, vm._runtime,))
-    vm._apply_pending_edits()
+    # When: the post-execution check runs
+    vm._apply_pending_update(before=False)
 
-    # Then: edit is applied
-    assert vm._edit_script is None
+    # Then: now applied
+    assert vm._pending_update is None
     assert [cmd.identifier for cmd in program.commands] == [1]
+    assert vm._runtime.maze.robot.direction == Direction.EAST
 
 
-def test_pending_edits_skip_glue_operations():
-    # Given: a glue operation carries no AbstractSyntaxElement in its args
-    program = Program(identifier=0, commands=[MoveForward(identifier=1)])
+def test_update_waits_when_node_type_does_not_match():
+    # Given: the running node is a checkpoint of the *wrong* type (same timing)
+    node = _OtherBefore(identifier=1)
+    program = _Program(identifier=0, commands=[node, _OtherBefore(identifier=2)])
 
-    edit_script = EditScript(operations=[DeleteSyntaxOperation(identifier=0, index=0)])
-    edit_script.attach_to(program)
+    update = _FaceEast(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=node)
 
+    # When
+    vm._apply_pending_update(before=True)
+
+    # Then: nothing applied, update still pending
+    assert vm._pending_update is update
+    assert [cmd.identifier for cmd in program.commands] == [1, 2]
+    assert vm._runtime.maze.robot.direction == Direction.NORTH
+
+
+def test_update_waits_when_node_is_not_a_checkpoint():
+    # Given: the running node is not an update point at all
+    node = _PlainNode(identifier=1)
+    program = _Program(identifier=0, commands=[node, _PlainNode(identifier=2)])
+
+    update = _FaceEast(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=node)
+
+    # When
+    vm._apply_pending_update(before=True)
+
+    # Then
+    assert vm._pending_update is update
+    assert [cmd.identifier for cmd in program.commands] == [1, 2]
+
+
+def test_update_waits_when_condition_is_false():
+    # Given: matching checkpoint, but the update's condition never holds
+    first = _Checkpoint(identifier=1)
+    program = _Program(identifier=0, commands=[first, _Checkpoint(identifier=2)])
+
+    update = _NeverReady(parent_identifier=0, index=1)
+    vm = _pending_vm(update, program, current_node=first)
+
+    # When
+    vm._apply_pending_update(before=True)
+
+    # Then: held back until the condition holds
+    assert vm._pending_update is update
+    assert [cmd.identifier for cmd in program.commands] == [1, 2]
+    assert vm._runtime.maze.robot.direction == Direction.NORTH
+
+
+def test_update_skips_glue_operations_without_a_syntax_node():
+    # Given: a glue operation carrying no AbstractSyntaxElement in its args
+    program = _Program(identifier=0, commands=[_Checkpoint(identifier=1)])
+
+    update = _FaceEast(parent_identifier=0, index=0)
+    if update.edit_script is not None:
+        update.edit_script.attach_to(program)
     vm = VirtualMachine()
-    vm._edit_script = edit_script
-    vm._runtime = _make_runtime(column=0)
+    vm._pending_update = update
+    vm._runtime = _make_runtime()
     vm._operation = Operation(lambda: None)
 
     # When
-    vm._apply_pending_edits()
+    vm._apply_pending_update(before=True)
 
-    # Then: edit stays pending, nothing crashes
-    assert vm._edit_script is edit_script
+    # Then: nothing crashes, update stays pending
+    assert vm._pending_update is update
     assert [cmd.identifier for cmd in program.commands] == [1]

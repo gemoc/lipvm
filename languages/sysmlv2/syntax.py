@@ -4,7 +4,7 @@ import pyecore.ecore as Ecore
 from pyecore.ecore import *
 from core.operation import Operation, lazy_loop, lazy_while
 
-from core.language import AbstractSyntaxElement, RuntimeState
+from core.language import AbstractSyntaxElement, UpdateBeforePoint, RuntimeState
 
 from core.operation import operation
 
@@ -6683,7 +6683,15 @@ class DerivedStatedefinition(EDerivedCollection):
     pass
 
 
-class StateUsage(ActionUsage):
+class StateUsage(ActionUsage, UpdateBeforePoint):
+    # Checkpoint marking (see languages/sysmlv2/updates.py): a top-level
+    # StateUsage (`main : MySimulationDefinition`) becomes the runtime
+    # ExecutableStateUsage whose `evaluate` is the VM's one is_step boundary,
+    # and that step now resolves back to this AST node (ExecutableStateUsage
+    # .ast_node() -> its `definition`). Marking StateUsage as an
+    # UpdateBeforePoint makes each state-machine reactive pass a "before"
+    # checkpoint, where a pending Update is taken into account just before the
+    # pass runs -- gated by the Update's own `condition` (typically quiescence).
     """<p>A <code>StateUsage</code> is an <code>ActionUsage</code> that is nominally the <code>Usage</code> of a <code>StateDefinition</code>. However, other kinds of kernel <code>Behaviors</code> are also allowed as <code>types</code>, to permit use of <code>Behaviors</code from the Kernel Model Libraries.</p>
 
 <p>A <code>StateUsage</code> may be related to up to three of its <code>ownedFeatures</code> by <code>StateSubactionMembership</code> <code>Relationships</code>, all of different <code>kinds</code>, corresponding to the entry, do and exit actions of the <code>StateUsage</code>.</p>

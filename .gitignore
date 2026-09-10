@@ -10,6 +10,7 @@ __pycache__/
 lib/
 *.html
 .mcp.json
+.DS_Store
 
 # Too large to commit -- see tools/load_sysml.py (LIPVM_SYSML_XMI_JAR)
 tools/sysml-to-xmi-cli.jar
