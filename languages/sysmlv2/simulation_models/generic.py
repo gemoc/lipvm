@@ -27,7 +27,7 @@ class BaseSimulationModel(ABC):
         batch, see facade_proxy.py); takes effect from the next tick.
 
         :param qualified_name: the part's full SysML name
-        :param attrs: attr_name -> (custom_class_name, values) pairs, same shape as instantiate_machine's
+        :param attrs: attr_name -> (custom_class_name, values) pairs, same shape as instantiate_part's
         :return: None
         """
         raise NotImplementedError("Sub-class must implement this method.")

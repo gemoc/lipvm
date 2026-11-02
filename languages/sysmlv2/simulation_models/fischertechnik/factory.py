@@ -183,7 +183,7 @@ class Factory(BaseSimulationModel):
     def _custom_attribute_value(custom_class_name: str, values: dict):
         """Builds the simulation-side object for one custom attribute value
         (e.g. a FactoryCoordinate), resolved against the CustomAttributeModel
-        registry -- shared by instantiate_machine and set_attribute, so both
+        registry -- shared by instantiate_part and set_attribute, so both
         build attribute values the same way.
         """
         return scan_for_subclasses(CustomAttributeModel)[custom_class_name](**values)
@@ -266,7 +266,7 @@ class Factory(BaseSimulationModel):
         item_name is the ItemDef's bare declared name (e.g.
         "CBCommandSuccessEventMessage"), never a qualified one -- Factory
         has no access to the parsed SysML model to resolve one itself (see
-        instantiate_machine()'s identical bare-name convention on the
+        instantiate_part()'s identical bare-name convention on the
         reverse direction). source_qualified_name is this machine's own
         qualified name for a targeted event, or None for a broadcast event
         with no specific origin.

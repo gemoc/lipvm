@@ -601,7 +601,7 @@ class FischertechnikVisualization(SimulationVisualization):
         row of buttons, one stacked block per machine. Machines are
         labeled by their own SysML part name (e.g. "Belt: cb1") --
         `machine.name` (`PartSimulationModel`) holds the qualified name
-        `Factory.instantiate_machine()` assigned it (see
+        `Factory.instantiate_part()` assigned it (see
         `PartInstantiation.evaluate()`, runtime.py); the leaf segment
         after the last `::` is what the model itself calls the part
         (`part cb1 : ...`), same split `PartInstantiation.evaluate()`

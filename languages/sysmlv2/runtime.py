@@ -949,7 +949,7 @@ class CompositeCustomValue(Value):
     def evaluate(self, runtime: RuntimeState):
         """Resolves `type`'s bare class name against the same
         scan_for_subclasses(CustomAttributeModel) registry
-        Factory.instantiate_machine() already uses on the simulation side
+        Factory.instantiate_part() already uses on the simulation side
         (same "EnumerationUsage" precedent ReferenceValue.evaluate() already
         sets for reaching into a different registry, scan_for_subclasses(Enum)
         -- runtime.py:173), and constructs the actual object right here.
