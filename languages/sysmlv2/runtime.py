@@ -164,7 +164,11 @@ class ReferenceValue(Value):
           not just its qualified name -- these are absolute, globally
           registered names (cb1 is declared directly under package Main),
           so a flat table lookup is correct and doesn't depend on which
-          instance is asking. Anything with neither a table entry nor
+          instance is asking. A name missing from its table raises
+          LookupError rather than resolving to None: e.g. a part removed by
+          a live update while a state machine still binds it, a dangling
+          pointer the language user has to avoid (the Parameter branch adds
+          which binding it was). Anything with neither a table entry nor
           "Parameter"/"EnumerationUsage" (none observed today) raises,
           naming the unrecognized reference_type and what's actually
           handled, for the same reason.
@@ -193,7 +197,13 @@ class ReferenceValue(Value):
                     f"(available: {sorted(argument.name for argument in current.arguments)}) -- "
                     f"cannot resolve parameter reference '{self.el.qualified_name}'."
                 )
-            return binding.value.evaluate(runtime)
+            try:
+                return binding.value.evaluate(runtime)
+            except LookupError as error:
+                # Name the binding, so the language user can find e.g. a
+                # re-appointment a live update forgot.
+                raise LookupError(
+                    f"Argument '{param_name}' of '{current.qualified_name}': {error}") from error
 
         if self.el.reference_type == "AttributeUsage":
             part = runtime.execution_context.current_part
@@ -208,7 +218,11 @@ class ReferenceValue(Value):
         table_name = _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE.get(self.el.reference_type)
         if table_name is not None:
             record = getattr(runtime.sysml, table_name).get_reference(self.el.qualified_name)
-            return record.element_type if record is not None else None
+            if record is None:
+                raise LookupError(
+                    f"'{self.el.qualified_name}' isn't a registered {self.el.reference_type} "
+                    f"(e.g. removed by a live update without re-appointing what pointed to it).")
+            return record.element_type
 
         raise LookupError(
             f"No resolution rule for reference_type '{self.el.reference_type}' "
@@ -568,9 +582,9 @@ class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
         if event_occurrence.source is None:
             return False
 
-        # If no, then continue to evaluate
+        # If no, then continue to evaluate (a missing bound part raises, see ReferenceValue)
         bound_part = ReferenceValue(el=self.via).evaluate(runtime)
-        return bound_part is not None and bound_part.qualified_name == event_occurrence.source.qualified_name
+        return bound_part.qualified_name == event_occurrence.source.qualified_name
 
 class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 

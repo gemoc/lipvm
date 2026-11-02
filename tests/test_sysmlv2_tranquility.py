@@ -663,3 +663,31 @@ def test_update_to_an_added_part_waits_for_its_tranquility():
     assert not vm.has_pending_update()
     assert _placement_coordinate(vm, NEW_DEPO) == {"x": "32.0", "y": "30.0", "degrees": "270.0"}
 
+
+# --- A binding to a missing part ---
+# Dangling pointers (e.g. a part removed without re-appointing its state
+# machines) are the language user's to avoid; the interpreter reports one
+# where it is used, naming the binding, instead of resolving it to None.
+
+def test_binding_to_a_missing_part_is_reported_where_it_is_used():
+    # Stands in for a removal without re-appointment: tokenDepoMission's
+    # `in tokenDepoInstance = ...` now names a part that isn't running.
+    vm = _build()
+    [mission] = [record.element_type for record in vm.state.sysml.lookup_table_executable_state_usages.records
+                 if record.qualified_name == "Main::tokenDepoMission"]
+    [binding] = [argument for argument in mission.arguments if argument.name == "tokenDepoInstance"]
+    binding.value = rt.ReferenceValue(el=rt.Reference(
+        qualified_name="Main::removedDepo", reference_type=rt.PartInstantiation.__name__))
+
+    # The mission reads its parameter, as a guard or an action does.
+    parameter = rt.ReferenceValue(el=rt.Reference(
+        qualified_name="TokenDepoSystem::TokenDepoStates::tokenDepoInstance", reference_type="Parameter"))
+    vm.state.execution_context.begin(mission)
+    with pytest.raises(LookupError) as error:
+        parameter.evaluate(vm.state)
+
+    message = str(error.value)
+    assert "Main::tokenDepoMission" in message
+    assert "tokenDepoInstance" in message
+    assert "Main::removedDepo" in message
+
