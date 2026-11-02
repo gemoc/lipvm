@@ -20,7 +20,8 @@ UPDATES = [
 
 Examples to copy from are in `examples/` (start with
 `examples/move_token_depo.py`, which moves the token depot and shows how to
-build a `placementCoordinate` value).
+build a `placementCoordinate` value; `examples/add_token_depo.py` adds a
+second, idle token depot with `AddPartInstantiation`).
 
 Ignored here: files whose name starts with `_` or `.`, anything that isn't a
 `.py` file (like this README), and subfolders, including `applied/`. Loading
