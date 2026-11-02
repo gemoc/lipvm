@@ -1129,12 +1129,16 @@ redefinition, only on the nested object itself.
   is the single entry point for watching parts: it attaches a
   `ConfiguredValueObserver` to the parts already there (startup) and to every
   part added later, and for an added part also records the instantiation
-  (`record_instantiation`, built with
+  (`record_add_part_instantiation`, built with
   `PartInstantiation.simulation_instantiation()` like at startup). `flush` sends one
   item per round: a list of `ModelUpdateCommand`s, one subclass per kind of
-  change (`AddPartCommand`, then one `SetAttributeCommand` per changed part;
-  `simulation_models/synchronization.py`), applied in order, so the machines
-  are created first. Visitor-style: the simulation side calls
+  change (`AddPartCommand`, `SetAttributeCommand`, `RemovePartCommand`;
+  `simulation_models/synchronization.py`). The manager keeps one list, in the
+  order the changes happened, and the simulation applies them in that order
+  (*revised 2026-11-02*: was additions, then attribute changes merged per
+  part, then removals, which would apply "remove `X`, then add a new `X`"
+  within one round the wrong way round: the addition is a no-op for an
+  existing machine, then the removal deletes it). Visitor-style: the simulation side calls
   `command.accept(model)`, and each kind calls its own operation of
   `BaseSimulationModel` (`instantiate_part`, `set_attribute`), implemented
   by the domain (e.g. `Factory`); no type checks, and a new kind adds a
@@ -1143,11 +1147,24 @@ redefinition, only on the nested object itself.
   Startup keeps its own path (`PartInstantiation.evaluate`,
   `instantiate_queue`). Only unbound parts for now: a working new machine also
   needs a state usage, and the running state machines are fixed at start.
-- **Not covered, later:** removing a whole `PartInstantiation` (the table
-  observer raises on anything but an addition; open: refuse removing a part a
-  running state usage binds, since `ReferenceValue.evaluate` returns `None`
-  for a missing part). Removing a redefinition is not handled either; no
-  update does that.
+- **Removing a whole `PartInstantiation` (2026-11-02):**
+  `RemovePartInstantiation(owner)` removes the part's record from the
+  registry; its affected element is the part, so it waits for the part's own
+  tranquility. The table observer detaches the part's
+  `ConfiguredValueObserver` and records a removal, and `flush` sends a
+  `RemovePartCommand` in its place in the list; `Factory.remove_part` unregisters
+  the machine, and tokens it held become unowned (not fixed by the
+  simulation). **Dangling pointers are the language user's responsibility**
+  (decided with the user): the VM doesn't refuse removing a part a running
+  state usage binds; a removal comes with the re-appointment of its jobs and
+  new coordinates in the same `AtomicUpdate`, written by the systems engineer.
+  The interpreter only reports a forgotten one where it is used:
+  `ReferenceValue.evaluate` raises `LookupError` for a name missing from its
+  table (it returned `None` before), naming the state usage and argument. The
+  VM guarantees *when* an update is applied (language safe point +
+  tranquility), the language user that it is complete. Re-appointment and new
+  coordinates (`ChangeStateUsageArgument`) are the next step. Removing a
+  redefinition is not handled; no update does that.
 - **Each observer is given its part when attached**, rather than walking up
   `eContainer()` when it fires: simpler, and it still works for an object that
   has been detached from the tree. A redefinition belongs to exactly one part

@@ -664,30 +664,70 @@ def test_update_to_an_added_part_waits_for_its_tranquility():
     assert _placement_coordinate(vm, NEW_DEPO) == {"x": "32.0", "y": "30.0", "degrees": "270.0"}
 
 
+# --- RemovePartInstantiation: a live removal of a part ---
+# Written ahead of the implementation. `updates.RemovePartInstantiation` is
+# looked up on the module inside each test, so that until it exists each test
+# fails on its own rather than the whole module failing to collect.
+
+def test_removed_part_waits_for_its_tranquility():
+    # A removal waits for the removed part's own #Tranquility constraint
+    # (TokenDepoMachine: no token at the receiver). The part is the second
+    # depot added live, which no state machine binds.
+    vm = _build()
+    vm.submit(_add_second_depo(), ProgramUpdateOption.HOTSWAP)
+    vm.step()
+    assert not vm.has_pending_update()
+    table = vm.state.sysml.lookup_table_part_instantiations
+
+    vm.submit(updates.RemovePartInstantiation(owner=NEW_DEPO), ProgramUpdateOption.HOTSWAP)
+
+    # Not published yet: its condition can't be confirmed.
+    vm.step()
+    assert vm.has_pending_update()
+    assert table.get_reference(NEW_DEPO) is not None
+
+    # A token at its receiver: not tranquil.
+    _publish_and_refresh(vm, {NEW_DEPO: _token_depo_values(receiverSens=True)})
+    vm.step()
+    assert vm.has_pending_update()
+    assert table.get_reference(NEW_DEPO) is not None
+
+    # The receiver is free: removed.
+    _publish_and_refresh(vm, {NEW_DEPO: _token_depo_values(receiverSens=False)})
+    vm.step()
+    assert not vm.has_pending_update()
+    assert table.get_reference(NEW_DEPO) is None
+
+
+def test_removing_a_part_that_isnt_running_is_refused():
+    # An update naming a part that isn't running (e.g. a typo in an update
+    # file) can't be applied at all; check() refuses it, so the driver rejects
+    # the file before submitting it. Unlike a dangling pointer, this is about
+    # the update itself, not about the rest of the model.
+    vm = _build()
+    with pytest.raises(LookupError):
+        updates.RemovePartInstantiation(owner="Main::noSuchPart").check(vm.state)
+
 # --- A binding to a missing part ---
 # Dangling pointers (e.g. a part removed without re-appointing its state
-# machines) are the language user's to avoid; the interpreter reports one
-# where it is used, naming the binding, instead of resolving it to None.
+# machines) are the language user's to avoid: the VM doesn't refuse such a
+# removal. The interpreter reports the dangling binding where it is used,
+# naming it, instead of resolving it to None.
 
-def test_binding_to_a_missing_part_is_reported_where_it_is_used():
-    # Stands in for a removal without re-appointment: tokenDepoMission's
-    # `in tokenDepoInstance = ...` now names a part that isn't running.
+def test_removal_without_re_appointment_is_reported_where_the_binding_is_used():
+    # tokenDepo is removed, but tokenDepoMission still binds it
+    # (`in tokenDepoInstance = tokenDepo;`); in Idle it reads
+    # `tokenDepoInstance.receiverSens` every step.
     vm = _build()
-    [mission] = [record.element_type for record in vm.state.sysml.lookup_table_executable_state_usages.records
-                 if record.qualified_name == "Main::tokenDepoMission"]
-    [binding] = [argument for argument in mission.arguments if argument.name == "tokenDepoInstance"]
-    binding.value = rt.ReferenceValue(el=rt.Reference(
-        qualified_name="Main::removedDepo", reference_type=rt.PartInstantiation.__name__))
+    _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=False)})
+    vm.submit(updates.RemovePartInstantiation(owner=TOKEN_DEPO), ProgramUpdateOption.HOTSWAP)
 
-    # The mission reads its parameter, as a guard or an action does.
-    parameter = rt.ReferenceValue(el=rt.Reference(
-        qualified_name="TokenDepoSystem::TokenDepoStates::tokenDepoInstance", reference_type="Parameter"))
-    vm.state.execution_context.begin(mission)
     with pytest.raises(LookupError) as error:
-        parameter.evaluate(vm.state)
+        _step_round(vm)
 
+    assert vm.state.sysml.lookup_table_part_instantiations.get_reference(TOKEN_DEPO) is None
     message = str(error.value)
     assert "Main::tokenDepoMission" in message
     assert "tokenDepoInstance" in message
-    assert "Main::removedDepo" in message
+    assert TOKEN_DEPO in message
 

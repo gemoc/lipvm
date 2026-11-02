@@ -206,8 +206,8 @@ def _apply_queued_commands(channel: ThreadChannel, model: BaseSimulationModel) -
     """Simulation thread: applies what the interpreter queued, in this order:
     startup instantiations (so a part created now exists for what follows),
     live update batches (one list of ModelUpdateCommands per flush, applied
-    in order: added parts first, then new configured values; each command
-    calls its own operation on the model, see synchronization.py), actions.
+    in the order the changes happened; each command calls its own operation
+    on the model, see synchronization.py), actions.
     """
     while not channel.instantiate_queue.empty():
         command = channel.instantiate_queue.get_nowait()
@@ -339,10 +339,10 @@ def main() -> None:
         next `model.tick()`.
 
         `Namespace.evaluate()` (syntax.py) enqueues one InstantiateCommand
-        per PartInstantiation, once, during `vm.init()`; live
-        changes to a part's configured values arrive separately, on
-        `model_update_queue`. `model.instantiate_machine()` stays a no-op
-        for a qualified_name it already has.
+        per PartInstantiation, once, during `vm.init()`; live updates'
+        changes (parts added or removed, configured values changed) arrive
+        separately, on `model_update_queue`. `model.instantiate_part()`
+        stays a no-op for a qualified_name it already has.
         """
         frame = next(frames)
         channel: ThreadChannel = vm.state.channel

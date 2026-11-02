@@ -33,6 +33,18 @@ class BaseSimulationModel(ABC):
         raise NotImplementedError("Sub-class must implement this method.")
 
     @abstractmethod
+    def remove_part(self, qualified_name: str) -> None:
+        """Removes an instantiated part, from a live update (a
+        `RemovePartCommand`, see synchronization.py); gone from the next
+        tick. Only removes it: whether that was safe now is the
+        interpreter's decision (the update's tranquility).
+
+        :param qualified_name: the part's full SysML name
+        :return: None
+        """
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
     def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
         """Calls a named action on an already-instantiated part.
 

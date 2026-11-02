@@ -226,6 +226,24 @@ class Factory(BaseSimulationModel):
             f"{name}={class_name}({', '.join(f'{k}={v}' for k, v in values.items())})"
             for name, (class_name, values) in attrs.items()))
 
+    def remove_part(self, qualified_name: str) -> None:
+        """The simulation side of a live removal (a `RemovePartCommand`):
+        unregisters the machine, so it no longer ticks, publishes or is
+        drawn. Raises KeyError for an unknown machine.
+
+        Tokens it held become unowned (shown as such in the panel), not
+        moved or deleted: whether removing it now was safe is the
+        interpreter's decision (the update's tranquility), not compensated
+        here.
+        """
+        machine = self._machines.pop(qualified_name, None)
+        if machine is None:
+            raise KeyError(f"No machine named {qualified_name!r} to remove")
+        for token in self.tokens_on(machine):
+            self.transfer_token(token, None)
+        self._pacer.reset(machine)
+        print(f"Machine {qualified_name} is removed")
+
     def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
         """Looks up the machine and calls the named action on it with
         `args` -- the actual execution behind an `ActionCommand`

@@ -266,6 +266,38 @@ class AddPartInstantiation(TranquilUpdate):
         runtime.sysml.add_part_instantiation(part)
 
 
+class RemovePartInstantiation(TranquilUpdate):
+    """A runtime change: remove a running part usage (e.g. `Main::tokenDepo`).
+    `apply()` removes its PartInstantiation from the registry; the
+    part-table observer then has the simulation remove its machine, through
+    the SynchronizationManager.
+
+    Waits for the removed part's own tranquility (its part def's
+    #Tranquility constraints plus its own), so it isn't removed mid-task.
+
+    Doesn't re-appoint anything: a state usage that still binds the part is
+    left pointing to nothing. Avoiding such dangling pointers is the language
+    user's job, e.g. by re-appointing the part's jobs and re-assigning
+    coordinates in the same AtomicUpdate; the interpreter reports a dangling
+    binding where it is used (ReferenceValue).
+    """
+
+    def __init__(self, owner: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._owner = owner
+
+    def affected_elements(self, runtime: RuntimeState) -> list[rt.PartInstantiation]:
+        return [_part_instantiation(runtime, self._owner)]
+
+    def check(self, runtime: RuntimeState) -> None:
+        """Raises LookupError if the owner isn't a running part usage."""
+        _part_instantiation(runtime, self._owner)
+
+    def apply(self, runtime: RuntimeState) -> None:
+        self.check(runtime)
+        runtime.sysml.remove_part_instantiation(self._owner)
+
+
 class AtomicUpdate(TranquilUpdate):
     """A list of tranquil updates applied as one (design doc, Topic 9
     "Atomic application of a list of updates"): at the same checkpoint, all

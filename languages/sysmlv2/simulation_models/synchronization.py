@@ -72,9 +72,22 @@ class SetAttributeCommand(ModelUpdateCommand):
         model.set_attribute(self.qualified_name, self.attrs)
 
 
+@dataclass(frozen=True)
+class RemovePartCommand(ModelUpdateCommand):
+    """A live update removed a part: the simulation removes its machine.
+
+    qualified_name: the part's full SysML name
+    """
+    qualified_name: str
+
+    def accept(self, model: BaseSimulationModel) -> None:
+        model.remove_part(self.qualified_name)
+
+
 class SynchronizationManager(RuntimeStateElement):
     """Interpreter-side record of what live updates changed in the running
-    model -- parts added and configured attribute values changed -- sent to
+    model -- parts added, configured attribute values changed, parts
+    removed -- sent to
     the simulation as one batch per `flush` (design doc,
     Language-Safe-and-Execution-Tranquility-points.md, Topic 10 "Syncing a
     runtime change to the simulation"). Every live change reaches the
@@ -86,7 +99,8 @@ class SynchronizationManager(RuntimeStateElement):
     interpreter thread only: the simulation thread never touches it.
 
     The record is filled by language-specific observers, which convert each
-    change before calling `record`/`record_instantiation` (the same split as
+    change before calling `record`/`record_instantiation`/`record_removal`
+    (the same split as
     instantiation: the language converts, the bridge only enqueues). Updates
     always replace a configured value rather than change it in place, so a
     value converted when recorded is still the current one at `flush`.
@@ -95,12 +109,10 @@ class SynchronizationManager(RuntimeStateElement):
     "Lockstep while an update is pending") in `start_round`, and notes how
     the round's values were copied.
 
-    self._additions: one `AddPartCommand` per part added since the last
-        flush, in the order they were added
-    self._record: qualified_name -> {attr_name: (custom_class_name, values)},
-        the attribute changes since the last flush; the last change to an
-        attribute wins. Turned into one `SetAttributeCommand` per part at
-        `flush`
+    self._commands: one `ModelUpdateCommand` per change since the last
+        flush, in the order the changes happened, which is the order the
+        simulation applies them in (e.g. a part removed and a new one added
+        under the same name: removed first, then added)
     self.values_copied_while_paused: whether this round waited for the
         simulation's question before its values were copied, i.e. copied while
         the simulation was paused; always False with lockstep disabled. Read by
@@ -113,8 +125,7 @@ class SynchronizationManager(RuntimeStateElement):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._additions = []
-        self._record = {}
+        self._commands = []
         self.values_copied_while_paused = False
         self._owed_answer = None
         self._last_answered = None
@@ -128,32 +139,32 @@ class SynchronizationManager(RuntimeStateElement):
         an update was applied."""
         return self._owed_answer is not None
 
-    def record(self, qualified_name: str, attr_name: str, value: tuple) -> None:
+    def record_set_attribute_redefinition(self, qualified_name: str, attr_name: str, value: tuple) -> None:
         """Remember that `attr_name` of part `qualified_name` now holds
         `value`, a `(custom_class_name, values)` pair."""
-        self._record.setdefault(qualified_name, {})[attr_name] = value
+        self._commands.append(SetAttributeCommand(qualified_name, {attr_name: value}))
 
-    def record_instantiation(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def record_add_part_instantiation(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         """Remember that part `qualified_name` was added: the simulation must
         create a `part_def_name` machine with the configured values `attrs`
         (`{attr_name: (custom_class_name, values)}`)."""
-        self._additions.append(AddPartCommand(qualified_name, part_def_name, attrs))
+        self._commands.append(AddPartCommand(qualified_name, part_def_name, attrs))
+
+    def record_remove_part_instantiation(self, qualified_name: str) -> None:
+        """Remember that part `qualified_name` was removed: the simulation
+        must remove its machine."""
+        self._commands.append(RemovePartCommand(qualified_name))
 
     def flush(self, channel: ThreadChannel) -> None:
-        """Sends everything recorded since the last flush as one batch, a
-        list of `ModelUpdateCommand`s: the added parts first (a part added now
-        exists for what follows), then one `SetAttributeCommand` per changed
-        part. Then starts a new record. Sends nothing when nothing was
-        recorded, so a batch on the queue always means changes to apply.
+        """Sends everything recorded since the last flush as one batch, the
+        list of `ModelUpdateCommand`s in the order the changes happened, then
+        starts a new record. Sends nothing when nothing was recorded, so a
+        batch on the queue always means changes to apply.
         """
-        commands = self._additions + [
-            SetAttributeCommand(qualified_name, attrs) for qualified_name, attrs in self._record.items()
-        ]
-        if not commands:
+        if not self._commands:
             return
-        SimulationBridge.send_model_update(channel, commands)
-        self._additions = []
-        self._record = {}
+        SimulationBridge.send_model_update(channel, self._commands)
+        self._commands = []
 
     def start_round(self, channel: ThreadChannel, update_pending: bool) -> None:
         """Called at the start of every round, before the events are drained

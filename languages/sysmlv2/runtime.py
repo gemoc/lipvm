@@ -1214,6 +1214,17 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
     def add_part_instantiation(self, instantiation):
         self.lookup_table_part_instantiations.set_reference(instantiation.qualified_name, instantiation)
 
+    def remove_part_instantiation(self, qualified_name: str) -> None:
+        """Removes a running part's record (a live removal). Raises
+        LookupError if no part runs under `qualified_name`. Whatever still
+        points to it (e.g. a state usage's binding) is left as it is: a
+        dangling pointer is the language user's to avoid, and
+        ReferenceValue reports it where it is used."""
+        record = self.lookup_table_part_instantiations.get_reference(qualified_name)
+        if record is None:
+            raise LookupError(f"{qualified_name!r} is not a part usage of the running model.")
+        self.lookup_table_part_instantiations.records.remove(record)
+
 def _resolve_definition(tables, type_node):
     """Looks up the ElementDefinition registered under `type_node`'s qualified
     name in any of `tables`, if any (e.g. a scalar-typed feature resolves to
