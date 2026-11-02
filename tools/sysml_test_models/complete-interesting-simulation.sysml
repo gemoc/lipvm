@@ -1,8 +1,11 @@
 library package LiveModeling {
-    // Labels a constraint as a tranquility condition: a hot update may only be
-    // applied while it holds (see Language-Safe-and-Execution-Tranquility-points.md).
+    // Labels a tranquility condition: a constraint (it must hold) or a state of
+    // a state def (the state machine may be updated while in it); a hot update
+    // may only be applied while it holds (see
+    // Language-Safe-and-Execution-Tranquility-points.md, Topics 8 and 13).
     metadata def Tranquility {
         :> annotatedElement : SysML::ConstraintUsage;
+        :> annotatedElement : SysML::StateUsage;
     }
 } // package LiveModeling
 
@@ -466,7 +469,7 @@ package VacuumGripperSystem {
                 do vgrOne.moveToSafePosition
                 then Idle;
 
-            state Idle; 
+            #Tranquility state Idle; 
             accept SwapBusyEventMessage via feederCB
                 do vgrOne.pick {
                     in targetPosition = pickFromFeederPosition;
@@ -500,20 +503,26 @@ package VacuumGripperSystem {
             in vgr: VacuumGripperSystem::VacuumGripper::VacuumGripperMachine;
             in tokenProducer: TokenProducerSystem::TokenProducer::TokenProducerMachine;
 
-            /* parameters for some VGR actions*/        
+            /* parameters for some VGR actions*/
             in pickFromProducerPosition: Position3D;
-            in placePosition: Position3D; 
+            in placePosition: Position3D;
+
+            // Tranquil while no token waits on the producer's platform, i.e.
+            // the gripper has no pick pending.
+            #Tranquility constraint {
+                tokenProducer.platformSens == false
+            }
 
             entry vgr.setup;
             then SafePosition;
 
             /* First initialization */
             state SafePosition;
-            accept VGRCommandSuccessEventMessage via vgr 
+            accept VGRCommandSuccessEventMessage via vgr
                 do vgr.moveToSafePosition
                 then Idle;
-            
-            state Idle; 
+
+            #Tranquility state Idle;
             accept when tokenProducer.platformSens == true
                 do vgr.pick {
                     in targetPosition = pickFromProducerPosition;
@@ -561,7 +570,7 @@ package VacuumGripperSystem {
                 do vgr.moveToSafePosition
                 then Idle;
             
-            state Idle; 
+            #Tranquility state Idle; 
             accept when cb.conveyorSensSwap == true
                 do vgr.pick {
                     in targetPosition = pickFromCBPosition;

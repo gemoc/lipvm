@@ -730,4 +730,3 @@ def test_removal_without_re_appointment_is_reported_where_the_binding_is_used():
     assert "Main::tokenDepoMission" in message
     assert "tokenDepoInstance" in message
     assert TOKEN_DEPO in message
-

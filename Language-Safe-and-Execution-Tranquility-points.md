@@ -2298,6 +2298,158 @@ or inspects the runtime model as XMI. To keep the later switch cheap:
 
 ---
 
+# Topic 13 — Tranquility of a running state machine (first proposition, 2026-11-02)
+
+*First proposition from a brainstorm with the user; may be revised after more
+thought. Nothing implemented.*
+
+## Why
+
+`#Tranquility` is only read in part defs and part usages (Topic 8); a
+`state def` constraint is ignored, and `ExecutableStateUsage` is not a
+`TranquilityHolder`. Updates that change a running state machine
+(`ChangeStateUsageArgument`, a re-appointment or new coordinates, Topic 10)
+can then only wait for the **parts** it binds. Gap: a state machine in the
+middle of its own sequence while all its parts look idle (e.g. a gripper
+mission that picked a token and waits for an event before placing it) can't
+be held back.
+
+What a running state machine exposes at runtime: `current` (the sub-state it
+is in), `pending` (its mailbox), `arguments` (bound parts and values, read
+through parameter references like guards do).
+
+## Two kinds of condition
+
+**A. Tranquil states (marking).** The modeller marks the sub-states in which
+the state machine may be changed:
+
+```
+state def TokenDepoSimpleMission {
+    in tokenDepoInstance : TokenDepoMachine;
+    entry; then Idle;
+    #Tranquility state Idle;          // tranquil only while waiting in Idle
+    state CheckCapacity;
+    state StopMachine { ... }
+}
+```
+
+The interpreter checks whether `current` is a marked state. Several marked
+states are alternatives ("in `Idle` or in `WaitForToken`"). Close to the
+classic notion: a component not in the middle of a transaction.
+
+**B. A constraint over the parameters.** Like the part version, but reaching
+the bound parts through the parameters; states conditions *across* parts that
+no single part's condition expresses:
+
+```
+state def VGRPickTokenFromCBAndPlace {
+    in vgr : VacuumGripperMachine;
+    in cb : ConveyorBeltMachine;
+    #Tranquility constraint { vgr.vacuumActValve == false and cb.currentCommand == ConveyorCommandKind::STOP }
+}
+```
+
+Reuses the guard evaluation. Sees only data, not where the state machine is
+in its sequence.
+
+**C. Both (the proposition).** A covers "where am I in my job", B "what do my
+parts look like". Fits the planned BSM2/TEP scenarios too (a control strategy
+tranquil in a `Steady` state *and* while every constraint margin is
+comfortable).
+
+## "Current" stays out of the model
+
+Answers Topic 5's open question "referring to the active state": the model
+never states which state is current, it only **marks** states. "Which state
+is the state machine in now" is a runtime fact the interpreter already tracks
+(`ExecutableStateUsage.current`), as a part's sensor values aren't written in
+the model but observed. The interpreter joins the two.
+
+Not chosen: an expression testing the active state (`isIn(Idle)`), since no
+standard SysML v2 construct for it is confirmed (to check in the spec); a
+modeller-maintained `mode` attribute set in every `entry`, verbose and easy to
+get wrong.
+
+Details: before its first step a state machine has no `current`, so it is not
+tranquil (as an unpublished part). A marked composite state could mean
+"tranquil anywhere inside it"; decide once a model has nested states (today's
+are flat).
+
+## Combining A and B: AND
+
+The state machine is tranquil when
+
+    (current is one of the marked states, or no state is marked)
+    and (every #Tranquility constraint holds, or there are none)
+
+- **AND**, consistent with parts, where the def's and the usage's conditions
+  accumulate and must all hold (Topic 8): each kind only narrows when an
+  update may be applied.
+- **Not OR**: the state machine would count as tranquil mid-sequence whenever
+  its parts' data happened to look fine, reopening the gap A closes.
+- **Not "only one kind allowed"**: unnecessary, the defaults below already let
+  the modeller use just one.
+- **Default: no marked state means "any state"**, not "no state is
+  tranquil"; otherwise B alone would block forever. Only A → only the states
+  count; only B → only the data; both → both; neither → always tranquil, as
+  for parts without `#Tranquility` (the modeller's choice).
+
+## Open
+
+- Where it is declared: `state def` (every usage), the state usage in `Main`,
+  or both, accumulating like parts (Topic 8).
+- What `ChangeStateUsageArgument` waits for: the state usage only, or the
+  state usage *and* the parts it binds.
+- Whether other updates also wait for the state machines involved, e.g.
+  `RemovePartInstantiation` for the state usages binding the removed part
+  (the VM deciding *when*, consistent with the responsibility split in
+  Topic 10). In a remove + re-appoint group the re-appointment already
+  affects the state machine, so the group would wait for it.
+- Topic 7's alternative: a constraint placed inside a sub-state, scoping it to
+  that state. Marking (A) is close to such a constraint with body `true`;
+  whether to offer that form too.
+- ~~Practical: whether the exporter keeps a metadata annotation on a state usage
+  (`#Tranquility state Idle;`).~~ **Checked 2026-11-02:** exporting
+  `complete-interesting-simulation.sysml` (parsed without warnings) puts a
+  `MetadataUsage` typed by `LiveModeling::Tranquility` under each of the three
+  gripper `Idle` `StateUsage`s, owned through an `OwningMembership`, exactly
+  as on a `#Tranquility` constraint, so `_is_tranquility_constraint`'s test
+  applies unchanged (minus the constraint check). No other `Idle` or
+  `SafePosition` state and no state def carries it. The current interpreter
+  runs the exported model unchanged (the mark is ignored for now).
+  `tests/complete-interesting-simulation.xmi` regenerated the same day (it
+  was confirmed to be an export of the committed `.sysml`; ignoring generated
+  ids, the only content changes are the library and the three `Idle` marks);
+  suite: 101 passed.
+- **Library updated 2026-11-02:** `LiveModeling::Tranquility` now declares
+  both `:> annotatedElement : SysML::ConstraintUsage;` and
+  `:> annotatedElement : SysML::StateUsage;` (was constraints only, Topic 8's
+  sketch), so marking a state no longer contradicts the library. Read as "a
+  constraint usage or a state usage" (to verify against the specification,
+  with Topic 8's `:>` vs. `:>>` question). `StateUsage`, not
+  `StateDefinition`: the marked element is a state inside a state def. The
+  interpreter only matches the qualified name, so no code change; the
+  exporter still doesn't enforce the restriction. Only
+  `complete-interesting-simulation.sysml` carries the library today; other
+  models copying it need the same edit once they mark states. Re-exported
+  without warnings: the three `Idle` marks and the four `#Tranquility`
+  constraints are still recognized.
+- Revises Topic 8 / step 1b's decision that `#Tranquility` in a `state def` is
+  ignored.
+- Placement (2026-11-02, the user): declared in the `state def`, shared by
+  every state usage typed by it, as a part def's conditions are by its parts.
+  First marking in `complete-interesting-simulation.sysml`: the three gripper
+  state defs (`VGRMissionWith2CB`, `VGRPickTokenFromProducerAndPlace`,
+  `VGRPickTokenFromCBAndPlace`) mark `Idle`.
+- Evidence: the first attempt marked `SafePosition`, a state passed only once
+  at startup (`entry; then SafePosition`, then `Idle → WaitForPickup →
+  WaitForPlace → Idle` forever). A marked state that is never revisited makes
+  every later update affecting the state machine wait forever: the "tranquility
+  never reached" case of Topic 4, easy for a modeller to fall into because the
+  state's name sounds safe. Moved to `Idle`, the state the cycle returns to.
+
+---
+
 ## Status
 
 - Two-layer model (language safe point + execution tranquility point, plus
@@ -2360,3 +2512,9 @@ or inspects the runtime model as XMI. To keep the later switch cheap:
   reflection of the runtime model is needed (today the registry saves to XMI
   as an empty skeleton); attribute lookup by short name breaks under a
   renaming redefinition.
+- Tranquility of a running state machine (Topic 13): **first proposition**
+  (2026-11-02, may be revised): tranquil states marked with `#Tranquility`
+  (A) AND `#Tranquility` constraints over the parameters (B), "current"
+  staying a runtime fact; no marked state means any state. Where it is
+  declared, what `ChangeStateUsageArgument` and other updates wait for, and
+  exporter support: **open**. Nothing implemented.
