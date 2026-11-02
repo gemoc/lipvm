@@ -9,7 +9,7 @@ class BaseSimulationModel(ABC):
     """
 
     @abstractmethod
-    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def instantiate_part(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         """Constructs and registers a new part -- idempotent, a no-op if
         `qualified_name` is already registered.
 
@@ -23,7 +23,7 @@ class BaseSimulationModel(ABC):
     @abstractmethod
     def set_attribute(self, qualified_name: str, attrs: dict) -> None:
         """Gives an already-instantiated part new configured attribute
-        values, from a live update (one entry of a `SetAttributeCommand`
+        values, from a live update (one entry of a `ModelUpdateCommand`
         batch, see facade_proxy.py); takes effect from the next tick.
 
         :param qualified_name: the part's full SysML name

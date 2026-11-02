@@ -146,7 +146,7 @@ class Factory(BaseSimulationModel):
             if machine.is_idle():
                 self._pacer.reset(machine)
 
-    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def instantiate_part(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         """The actual construction/registration logic behind an
         `InstantiateCommand` (facade_proxy.py) -- idempotent, same
         contract `FischertechnikBridge.instantiate()` used to implement
@@ -189,7 +189,7 @@ class Factory(BaseSimulationModel):
         return scan_for_subclasses(CustomAttributeModel)[custom_class_name](**values)
 
     def set_attribute(self, qualified_name: str, attrs: dict) -> None:
-        """The simulation side of a live update (a `SetAttributeCommand`
+        """The simulation side of a live update (a `ModelUpdateCommand`
         batch, drained in main_lipvm_dtsimulation.py's `on_tick`): gives an
         existing machine new configured values, e.g. a new
         placementCoordinate. Machines compute positions from their

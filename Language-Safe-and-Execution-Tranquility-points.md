@@ -1119,10 +1119,35 @@ redefinition, only on the nested object itself.
   during the build (`PartUsage.visit`) is not possible (the bridge object
   doesn't exist yet) and would record every startup value as a change. From
   then on the observer maintains itself.
-- **Not covered, later (major changes anyway):** adding or removing whole
-  `PartInstantiation`s, which also needs creating or removing the machine in
-  the simulation, not just updating it. Removing a redefinition is not handled
-  either; no update does that.
+- **Adding a whole `PartInstantiation` (2026-11-02):** `AddPartInstantiation`
+  adds the part to the registry only. Adding is **always tranquil**: a new part
+  has no running state, no behaviour in progress and nothing bound to it, so
+  only the language safe point applies (`affected_elements()` is empty; still a
+  `TranquilUpdate`, so it can be an `AtomicUpdate` member). Every live change
+  goes through the `SynchronizationManager`: a `PartInstantiationTableObserver`
+  on `lookup_table_part_instantiations`, attached once the registry is built,
+  is the single entry point for watching parts: it attaches a
+  `ConfiguredValueObserver` to the parts already there (startup) and to every
+  part added later, and for an added part also records the instantiation
+  (`record_instantiation`, built with
+  `PartInstantiation.simulation_instantiation()` like at startup). `flush` sends one
+  item per round: a list of `ModelUpdateCommand`s, one subclass per kind of
+  change (`AddPartCommand`, then one `SetAttributeCommand` per changed part;
+  `simulation_models/synchronization.py`), applied in order, so the machines
+  are created first. Visitor-style: the simulation side calls
+  `command.accept(model)`, and each kind calls its own operation of
+  `BaseSimulationModel` (`instantiate_part`, `set_attribute`), implemented
+  by the domain (e.g. `Factory`); no type checks, and a new kind adds a
+  subclass and, if needed, an abstract operation every simulation must
+  implement.
+  Startup keeps its own path (`PartInstantiation.evaluate`,
+  `instantiate_queue`). Only unbound parts for now: a working new machine also
+  needs a state usage, and the running state machines are fixed at start.
+- **Not covered, later:** removing a whole `PartInstantiation` (the table
+  observer raises on anything but an addition; open: refuse removing a part a
+  running state usage binds, since `ReferenceValue.evaluate` returns `None`
+  for a missing part). Removing a redefinition is not handled either; no
+  update does that.
 - **Each observer is given its part when attached**, rather than walking up
   `eContainer()` when it fires: simpler, and it still works for an object that
   has been detached from the tree. A redefinition belongs to exactly one part
@@ -1219,7 +1244,9 @@ is **one** item on it (one batch), and the simulation thread applies a drained
 item in `on_tick`, between two `model.tick()` calls: the whole update lands in
 the same frame, before the simulation advances again. Splitting one update into
 several items could let the simulation drain between two `put`s and apply half
-of it one frame earlier.
+of it one frame earlier. *Since 2026-11-02:* the item is a list of
+`ModelUpdateCommand` subclasses (`AddPartCommand`, `SetAttributeCommand`,
+later e.g. removals), each applied through `command.accept(model)`.
 
 **The `SynchronizationManager` (named 2026-10-28).** The interpreter-side
 object holding the record and `flush` (called "the bridge object" above) is a
@@ -1740,7 +1767,9 @@ else:
   `move_request_queue` at shutdown (implementation detail).
 
 **Implemented 2026-10-29: the record and `flush` (lockstep not yet).**
-`SynchronizationManager` lives in `facade_proxy.py`, next to `ThreadChannel`
+`SynchronizationManager` lives in `facade_proxy.py` (*moved 2026-11-02 to
+`simulation_models/synchronization.py`, with the batch command it sends,
+`ModelUpdateCommand`; `facade_proxy.py` keeps the channel and the bridge*), next to `ThreadChannel`
 but as its own class (the channel holds what both threads share, the manager
 what only the interpreter thread uses, plus logic). It is generic: it records
 values already converted to `(class_name, values)` and sends one

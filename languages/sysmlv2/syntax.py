@@ -12,8 +12,9 @@ from core.operation import operation
 # its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
-from languages.sysmlv2.observers import ConfiguredValueObserver
-from languages.sysmlv2.simulation_models.facade_proxy import SynchronizationManager, ThreadChannel
+from languages.sysmlv2.observers import attach_registry_observers
+from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
+from languages.sysmlv2.simulation_models.synchronization import SynchronizationManager
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
@@ -1049,15 +1050,11 @@ endif
         #Initialization for Bridge to the simulation
         runtime.elements.append(ThreadChannel(name="channel"))
 
-        # The registry is built. For each running part, once: watch its
-        # configured values, so live updates' changes are sent to the
-        # simulation, and ask the simulation to create its machine. Updates
-        # edit the registry, never re-walk the AST, so no part appears later;
-        # an update that adds one (not supported yet) must do both itself.
+        # The registry is built: ask the simulation to create the startup
+        # parts' machines, once.
         synchronization_manager = SynchronizationManager(name="synchronization_manager")
         runtime.elements.append(synchronization_manager)
         for part in get_part_instantiations(sysml_state.lookup_table_part_instantiations):
-            ConfiguredValueObserver(part, synchronization_manager)
             part.evaluate(runtime)
 
         runtime.elements.append(rt.ExecutionContext(name="execution_context"))
@@ -1066,6 +1063,11 @@ endif
         if not executable_stats:
             print("No ExecutableStateUsage found in this model; nothing to run.")
             return
+
+        # Watch the registry, so what live updates change is sent to the
+        # simulation through the SynchronizationManager. Updates edit the
+        # registry, never re-walk the AST.
+        attach_registry_observers(sysml_state, synchronization_manager)
 
         return lazy_while(
             lambda runtime, stats: self.read_events_and_execute(runtime, stats),

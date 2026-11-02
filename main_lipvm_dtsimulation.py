@@ -204,18 +204,18 @@ class LiveUpdateControl:
 
 def _apply_queued_commands(channel: ThreadChannel, model: BaseSimulationModel) -> None:
     """Simulation thread: applies what the interpreter queued, in this order:
-    instantiations (so a part created now exists for what follows), live
-    update batches (one SetAttributeCommand per applied update, its parts'
-    new configured values), actions.
+    startup instantiations (so a part created now exists for what follows),
+    live update batches (one list of ModelUpdateCommands per flush, applied
+    in order: added parts first, then new configured values; each command
+    calls its own operation on the model, see synchronization.py), actions.
     """
     while not channel.instantiate_queue.empty():
         command = channel.instantiate_queue.get_nowait()
-        model.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
+        model.instantiate_part(command.qualified_name, command.part_def_name, command.attrs)
 
     while not channel.model_update_queue.empty():
-        command = channel.model_update_queue.get_nowait()
-        for qualified_name, attrs in command.parts.items():
-            model.set_attribute(qualified_name, attrs)
+        for command in channel.model_update_queue.get_nowait():
+            command.accept(model)
 
     while not channel.action_queue.empty():
         command = channel.action_queue.get_nowait()

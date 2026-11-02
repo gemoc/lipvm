@@ -19,6 +19,7 @@ from languages.sysmlv2 import runtime as rt
 from languages.sysmlv2 import syntax
 from languages.sysmlv2 import updates
 from languages.sysmlv2.runtime_utility import ScalarType, TypeKind
+from languages.sysmlv2.simulation_models import synchronization
 from languages.sysmlv2.simulation_models.fischertechnik.enums import ConveyorCommandKind
 from languages.sysmlv2.syntax import AssertConstraintUsage, ConstraintUsage
 from languages.sysmlv2.sysml_utility_classes import qualified_name
@@ -321,26 +322,26 @@ def _factory_coordinate(x: float, y: float, degrees: float) -> rt.CompositeCusto
 
 
 def test_change_runtime_attribute_value_waits_until_the_part_is_tranquil():
-    # Valentin's pattern (tests/test_sysmlv2_updates.py): hand the update to
-    # the VM directly, step to the StateUsage before-checkpoint, and check
-    # whether it is still pending. The condition here is tokenDepo's
+    # Valentin's pattern (tests/test_sysmlv2_updates.py), with `submit`: hand
+    # the update to the VM without running it, step to the StateUsage
+    # before-checkpoint, and check whether it is still pending. The condition here is tokenDepo's
     # tranquility (`receiverSens == false`) instead of quiescence.
     vm = _build()
     update = updates.ChangeRuntimeAttributeValue(
         owner=TOKEN_DEPO, attribute="placementCoordinate",
         new_value=_factory_coordinate(x=25.0, y=35.0, degrees=270.0))
-    vm._pending_update = update
+    vm.submit(update, ProgramUpdateOption.HOTSWAP)
 
     # A token at the receiver: not tranquil, so the update is held back.
     _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=True)})
     vm.step()
-    assert vm._pending_update is update
+    assert vm.has_pending_update()
 
     # The receiver is free: tranquil, so the update is applied at the next
     # checkpoint.
     _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=False)})
     vm.step()
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
 
 
 def _placement_coordinate(vm: VirtualMachine, part_usage: str) -> dict:
@@ -362,13 +363,13 @@ def test_change_runtime_attribute_value_replaces_the_redefinition_value():
     vm.step()
 
     # Then comes the update
-    vm._pending_update = updates.ChangeRuntimeAttributeValue(
+    vm.submit(updates.ChangeRuntimeAttributeValue(
         owner=TOKEN_DEPO, attribute="placementCoordinate",
-        new_value=_factory_coordinate(x=25.0, y=30.0, degrees=180.0))
+        new_value=_factory_coordinate(x=25.0, y=30.0, degrees=180.0)), ProgramUpdateOption.HOTSWAP)
     vm.step()
 
     # At this point, the update should still exist
-    assert vm._pending_update is not None
+    assert vm.has_pending_update()
     assert _placement_coordinate(vm, TOKEN_DEPO) == {"x": "20.0", "y": "35.0", "degrees": "270.0"}
 
     # Then, assume the token held token depo now is picked up by the gripper
@@ -376,7 +377,7 @@ def test_change_runtime_attribute_value_replaces_the_redefinition_value():
     vm.step()
 
     # At this point now, the update should be applied
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
     assert _placement_coordinate(vm, TOKEN_DEPO) == {"x": "25.0", "y": "30.0", "degrees": "180.0"}
 
 
@@ -407,19 +408,20 @@ def test_applied_update_sends_one_batch_with_the_changed_configured_values():
         CB_FEEDER: _conveyor_belt_values(),
         VGR: _vgr_values(),
     })
-    vm._pending_update = updates.ChangeRuntimeAttributeValue(
+    vm.submit(updates.ChangeRuntimeAttributeValue(
         owner=TOKEN_DEPO, attribute="placementCoordinate",
-        new_value=_factory_coordinate(x=25.0, y=30.0, degrees=180.0))
+        new_value=_factory_coordinate(x=25.0, y=30.0, degrees=180.0)), ProgramUpdateOption.HOTSWAP)
     _step_round(vm)
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
 
     [batch] = _drain(vm.state.channel.model_update_queue)
-    # Their observed values changed, but they aren't sent back to the simulation.
-    assert CB_FEEDER not in batch.parts
-    assert VGR not in batch.parts
-    assert batch.parts[TOKEN_DEPO] == {
-        "placementCoordinate": ("FactoryCoordinate", {"x": 25.0, "y": 30.0, "degrees": 180.0}),
-    }
+    # Only tokenDepo: the others' observed values changed, but they aren't
+    # sent back to the simulation.
+    assert batch == [
+        synchronization.SetAttributeCommand(TOKEN_DEPO, {
+            "placementCoordinate": ("FactoryCoordinate", {"x": 25.0, "y": 30.0, "degrees": 180.0}),
+        }),
+    ]
 
 
 def test_update_arriving_mid_round_waits_for_values_copied_while_paused():
@@ -459,13 +461,13 @@ def test_update_arriving_mid_round_waits_for_values_copied_while_paused():
 
     for _ in range(machines - 3):  # checkpoints before machines 3 to 6: copied while moving
         vm.step()
-    assert vm._pending_update is update
+    assert vm.has_pending_update()
 
     vm.step()  # checkpoint before machine 7 still sees round 2's copy; machine 7
-    assert vm._pending_update is update  # runs, then round 3 starts: takes question 1, copies while paused
+    assert vm.has_pending_update()  # runs, then round 3 starts: takes question 1, copies while paused
 
     vm.step()  # checkpoint before round 3's machine 1: tokenDepo is tranquil, so it is applied
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
 
 
 # --- AtomicUpdate: a list of updates applied as one (design doc, Topic 9) ---
@@ -495,14 +497,14 @@ def test_atomic_update_waits_until_every_affected_part_is_tranquil():
     # alone being tranquil isn't enough while cbFeeder is moving.
     vm = _build()
     update = _move_depo_and_feeder()
-    vm._pending_update = update
+    vm.submit(update, ProgramUpdateOption.HOTSWAP)
 
     _publish_and_refresh(vm, {
         TOKEN_DEPO: _token_depo_values(receiverSens=False),
         CB_FEEDER: _conveyor_belt_values(currentCommand=ConveyorCommandKind.MOVE_TO_SENSOR),
     })
     vm.step()
-    assert vm._pending_update is update
+    assert vm.has_pending_update()
     assert _placement_coordinate(vm, TOKEN_DEPO) == DEPO_BEFORE
     assert _placement_coordinate(vm, CB_FEEDER) == FEEDER_BEFORE
 
@@ -511,7 +513,7 @@ def test_atomic_update_waits_until_every_affected_part_is_tranquil():
         CB_FEEDER: _conveyor_belt_values(),
     })
     vm.step()
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
     assert _placement_coordinate(vm, TOKEN_DEPO) == {"x": "25.0", "y": "30.0", "degrees": "180.0"}
     assert _placement_coordinate(vm, CB_FEEDER) == {"x": "15.0", "y": "22.0", "degrees": "90.0"}
 
@@ -525,7 +527,7 @@ def test_atomic_update_with_a_failing_member_changes_nothing():
         TOKEN_DEPO: _token_depo_values(receiverSens=False),
         CB_FEEDER: _conveyor_belt_values(),
     })
-    vm._pending_update = _move_depo_and_feeder(feeder_attribute="placementCoordinat")
+    vm.submit(_move_depo_and_feeder(feeder_attribute="placementCoordinat"), ProgramUpdateOption.HOTSWAP)
 
     with pytest.raises(LookupError):
         vm.step()
@@ -534,20 +536,130 @@ def test_atomic_update_with_a_failing_member_changes_nothing():
 
 
 def test_applied_atomic_update_sends_one_batch_for_every_affected_part():
-    # The simulation applies the whole group in the same frame: one
-    # SetAttributeCommand carrying both parts' new values.
+    # The simulation applies the whole group in the same frame: one batch
+    # carrying both parts' new values.
     vm = _build()
     _publish_and_refresh(vm, {
         TOKEN_DEPO: _token_depo_values(receiverSens=False),
         CB_FEEDER: _conveyor_belt_values(),
         VGR: _vgr_values(),
     })
-    vm._pending_update = _move_depo_and_feeder()
+    vm.submit(_move_depo_and_feeder(), ProgramUpdateOption.HOTSWAP)
     _step_round(vm)
-    assert vm._pending_update is None
+    assert not vm.has_pending_update()
 
     [batch] = _drain(vm.state.channel.model_update_queue)
-    assert batch.parts == {
-        TOKEN_DEPO: {"placementCoordinate": ("FactoryCoordinate", {"x": 25.0, "y": 30.0, "degrees": 180.0})},
-        CB_FEEDER: {"placementCoordinate": ("FactoryCoordinate", {"x": 15.0, "y": 22.0, "degrees": 90.0})},
-    }
+    assert batch == [
+        synchronization.SetAttributeCommand(TOKEN_DEPO, {"placementCoordinate": ("FactoryCoordinate", {"x": 25.0, "y": 30.0, "degrees": 180.0})}),
+        synchronization.SetAttributeCommand(CB_FEEDER, {"placementCoordinate": ("FactoryCoordinate", {"x": 15.0, "y": 22.0, "degrees": 90.0})}),
+    ]
+
+
+# --- AddPartInstantiation: a live addition of a part ---
+# Written ahead of the implementation. `updates.AddPartInstantiation` is looked
+# up on the module inside each test, so that until it exists each test fails on
+# its own rather than the whole module failing to collect.
+
+NEW_DEPO = "Main::tokenDepo2"
+TOKEN_DEPO_MACHINE = "TokenDepoSystem::TokenDepo::TokenDepoMachine"
+NEW_DEPO_AT = {"x": 32.0, "y": 35.0, "degrees": 270.0}
+
+
+def _add_second_depo():
+    """An update adding a second token depot, unbound to any state machine,
+    in the empty top-right of the floor."""
+    return updates.AddPartInstantiation(
+        qualified_name=NEW_DEPO, part_def=TOKEN_DEPO_MACHINE,
+        attribute_values={"placementCoordinate": _factory_coordinate(**NEW_DEPO_AT)})
+
+
+def test_added_part_needs_only_the_language_safe_point():
+    # A new part has no running state and nothing bound to it, so adding it is
+    # always tranquil: it is applied at the first checkpoint even though no
+    # running part is tranquil (tokenDepo holds a token, the others haven't
+    # been published).
+    vm = _build()
+    _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=True)})
+    vm.submit(_add_second_depo(), ProgramUpdateOption.HOTSWAP)
+    vm.step()
+
+    assert not vm.has_pending_update()
+    part = vm.state.sysml.lookup_table_part_instantiations.get_reference(NEW_DEPO).element_type
+    assert part.part_def_origin.qualified_name == TOKEN_DEPO_MACHINE
+    assert _placement_coordinate(vm, NEW_DEPO) == {"x": "32.0", "y": "35.0", "degrees": "270.0"}
+
+
+def test_adding_a_part_under_a_taken_name_leaves_the_running_part_alone():
+    # The registry keys parts by qualified name: adding one under a running
+    # part's name would silently replace that part. The update is refused
+    # instead, and the running tokenDepo stays as it was.
+    vm = _build()
+    table = vm.state.sysml.lookup_table_part_instantiations
+    running = table.get_reference(TOKEN_DEPO).element_type
+    vm.submit(updates.AddPartInstantiation(
+        qualified_name=TOKEN_DEPO, part_def=TOKEN_DEPO_MACHINE,
+        attribute_values={"placementCoordinate": _factory_coordinate(**NEW_DEPO_AT)}), ProgramUpdateOption.HOTSWAP)
+
+    with pytest.raises(ValueError):
+        vm.step()
+    assert table.get_reference(TOKEN_DEPO).element_type is running
+    assert _placement_coordinate(vm, TOKEN_DEPO) == DEPO_BEFORE
+
+
+def test_atomic_update_adding_a_part_waits_for_the_other_members_parts():
+    # Adding a part is always tranquil, but as a member of an AtomicUpdate it
+    # isn't applied ahead of the group: nothing changes while tokenDepo, which
+    # the other member moves, holds a token; both changes happen together once
+    # it is tranquil.
+    vm = _build()
+    vm.submit(updates.AtomicUpdate([
+        _add_second_depo(),
+        updates.ChangeRuntimeAttributeValue(
+            owner=TOKEN_DEPO, attribute="placementCoordinate",
+            new_value=_factory_coordinate(x=25.0, y=30.0, degrees=180.0)),
+    ]), ProgramUpdateOption.HOTSWAP)
+    table = vm.state.sysml.lookup_table_part_instantiations
+
+    _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=True)})
+    vm.step()
+    assert vm.has_pending_update()
+    assert table.get_reference(NEW_DEPO) is None
+    assert _placement_coordinate(vm, TOKEN_DEPO) == DEPO_BEFORE
+
+    _publish_and_refresh(vm, {TOKEN_DEPO: _token_depo_values(receiverSens=False)})
+    vm.step()
+    assert not vm.has_pending_update()
+    assert table.get_reference(NEW_DEPO) is not None
+    assert _placement_coordinate(vm, TOKEN_DEPO) == {"x": "25.0", "y": "30.0", "degrees": "180.0"}
+
+
+def test_update_to_an_added_part_waits_for_its_tranquility():
+    # An added part takes part in tranquility like a startup part, through its
+    # part def's #Tranquility constraint (TokenDepoMachine: no token at the
+    # receiver). Moving it waits until the simulation has published it, then
+    # until its receiver is free.
+    vm = _build()
+    vm.submit(_add_second_depo(), ProgramUpdateOption.HOTSWAP)
+    vm.step()
+    assert not vm.has_pending_update()
+
+    vm.submit(updates.ChangeRuntimeAttributeValue(
+        owner=NEW_DEPO, attribute="placementCoordinate",
+        new_value=_factory_coordinate(x=32.0, y=30.0, degrees=270.0)), ProgramUpdateOption.HOTSWAP)
+
+    # Not published yet: its condition can't be confirmed.
+    vm.step()
+    assert vm.has_pending_update()
+
+    # A token at its receiver: not tranquil.
+    _publish_and_refresh(vm, {NEW_DEPO: _token_depo_values(receiverSens=True)})
+    vm.step()
+    assert vm.has_pending_update()
+    assert _placement_coordinate(vm, NEW_DEPO) == {"x": "32.0", "y": "35.0", "degrees": "270.0"}
+
+    # The receiver is free: applied.
+    _publish_and_refresh(vm, {NEW_DEPO: _token_depo_values(receiverSens=False)})
+    vm.step()
+    assert not vm.has_pending_update()
+    assert _placement_coordinate(vm, NEW_DEPO) == {"x": "32.0", "y": "30.0", "degrees": "270.0"}
+

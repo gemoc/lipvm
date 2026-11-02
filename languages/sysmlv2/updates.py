@@ -25,6 +25,7 @@ satisfy its part def's `#Tranquility` constraints (see
 Language-Safe-and-Execution-Tranquility-points.md). The checkpoint stays the
 language safe point; tranquility is the `condition`.
 """
+from typing import Optional
 
 from core.edit import Update
 from core.language import RuntimeState
@@ -143,6 +144,10 @@ class TranquilUpdate(SysmlUpdate):
         AtomicUpdate check every member before applying any, and a driver
         reject an update before submitting it. Nothing to check by default.
         """
+        raise NotImplementedError("A TranquilUpdate sub-class must implement a pre-check mechanism to ensure validity.")
+
+    def apply(self, runtime: RuntimeState) -> None:
+        raise NotImplementedError("A TranquilUpdate must declare the mechanism to apply changes to the current execution.")
 
 
 class ChangeRuntimeAttributeValue(TranquilUpdate):
@@ -173,7 +178,7 @@ class ChangeRuntimeAttributeValue(TranquilUpdate):
                 f"change, not a runtime one.")
         return [_part_instantiation(runtime, self._owner)]
 
-    def _redefinition(self, runtime: RuntimeState) -> rt.AttributeRedefinition:
+    def _redefinition(self, runtime: RuntimeState) -> Optional[rt.AttributeRedefinition]:
         part = _part_instantiation(runtime, self._owner)
         redefinition = next((r for r in part.attribute_redefinitions if r.name == self._attribute), None)
         if redefinition is None:
@@ -189,6 +194,76 @@ class ChangeRuntimeAttributeValue(TranquilUpdate):
 
     def apply(self, runtime: RuntimeState) -> None:
         self._redefinition(runtime).value = self._new_value
+
+
+class AddPartInstantiation(TranquilUpdate):
+    """A runtime change: add a running part usage (e.g. a second
+    `Main::tokenDepo2 : TokenDepoMachine`) with its configured values.
+    `apply()` adds a PartInstantiation to the registry, shaped like one the
+    build pass makes from `part tokenDepo2 : TokenDepoMachine { attribute :>>
+    placementCoordinate { ... } }`; the part-table observer then sends it to
+    the simulation through the SynchronizationManager.
+
+    Always tranquil: a new part has no running state, no behaviour in
+    progress and nothing bound to it, so nothing can be inconsistent with it
+    and only the language safe point applies (`affected_elements()` is empty).
+    It is still a TranquilUpdate, so it can be an AtomicUpdate member.
+
+    `attribute_values` maps attribute names of the part def to registry
+    Values; only composite values (CompositeCustomValue) for now, the only
+    kind the simulation receives. The new part carries no #Tranquility
+    constraints of its own (its part def's still apply).
+    """
+
+    def __init__(self, qualified_name: str, part_def: str, attribute_values: dict, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._qualified_name = qualified_name
+        self._part_def = part_def
+        self._attribute_values = dict(attribute_values)
+
+    def affected_elements(self, runtime: RuntimeState) -> list[rt.TranquilityHolder]:
+        return []
+
+    def check(self, runtime: RuntimeState) -> None:
+        """Raises ValueError if the name is taken, LookupError if the part def
+        isn't registered or doesn't declare an attribute, TypeError for a
+        value that isn't composite."""
+        if runtime.sysml.lookup_table_part_instantiations.get_reference(self._qualified_name) is not None:
+            raise ValueError(f"{self._qualified_name!r} is already a part usage of the running model.")
+
+        record = runtime.sysml.lookup_table_part_defs.get_reference(self._part_def)
+        if record is None:
+            raise LookupError(f"{self._part_def!r} is not a registered PartDef.")
+
+        declared = {attribute.name for attribute in record.element_type.attributes}
+        for attr_name, value in self._attribute_values.items():
+            if attr_name not in declared:
+                raise LookupError(
+                    f"{self._part_def!r} doesn't declare {attr_name!r} (declared: {sorted(declared)}).")
+            if not isinstance(value, rt.CompositeCustomValue):
+                raise TypeError(
+                    f"{self._qualified_name!r}'s {attr_name!r}: only composite values can be sent "
+                    f"to the simulation, got {type(value).__name__}.")
+
+    def apply(self, runtime: RuntimeState) -> None:
+        self.check(runtime)
+        part_def = runtime.sysml.lookup_table_part_defs.get_reference(self._part_def).element_type
+        declared = {attribute.name: attribute.qualified_name for attribute in part_def.attributes}
+
+        part = rt.PartInstantiation(
+            name=self._qualified_name.split("::")[-1], qualified_name=self._qualified_name)
+        part.part_def_origin = rt.Reference(qualified_name=self._part_def, reference_type=rt.PartDef.__name__)
+        part.attribute_redefinitions = [
+            rt.AttributeRedefinition(
+                name=attr_name,
+                qualified_name=f"{self._qualified_name}::{attr_name}",
+                redefined_feature=rt.Reference(qualified_name=declared[attr_name],
+                                               reference_type=rt.AttributeUsageElement.__name__),
+                value=value,
+            )
+            for attr_name, value in self._attribute_values.items()
+        ]
+        runtime.sysml.add_part_instantiation(part)
 
 
 class AtomicUpdate(TranquilUpdate):

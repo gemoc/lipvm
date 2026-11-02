@@ -1113,14 +1113,23 @@ class PartInstantiation(ElementDefinition, TranquilityHolder, metaclass=MetaECla
         shapes either -- only which Python class (see
         FischertechnikBridge.instantiate()) mirrors the custom type named.
         """
-        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
-
-        attrs = {}
-        for redefinition in self.attribute_redefinitions:
-            if isinstance(redefinition.value, CompositeCustomValue):
-                attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
-
+        part_def_name, attrs = self.simulation_instantiation()
         SimulationBridge.instantiate(runtime.channel, self.qualified_name, part_def_name, **attrs)
+
+    def simulation_instantiation(self) -> tuple[str, dict]:
+        """What the simulation needs to create this part's machine: the part
+        def's bare name and the configured values, `{attr_name:
+        (custom_class_name, values)}`. Shared by startup (`evaluate`) and live
+        additions (the SynchronizationManager), so both send the same shape.
+        Only composite values are included (see `evaluate`).
+        """
+        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
+        attrs = {
+            redefinition.name: _custom_attribute_value(redefinition.value)
+            for redefinition in self.attribute_redefinitions
+            if isinstance(redefinition.value, CompositeCustomValue)
+        }
+        return part_def_name, attrs
 
 class ExecutionContext(RuntimeStateElement, metaclass=MetaEClass):
 
