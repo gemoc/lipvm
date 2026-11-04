@@ -730,3 +730,128 @@ def test_removal_without_re_appointment_is_reported_where_the_binding_is_used():
     assert "Main::tokenDepoMission" in message
     assert "tokenDepoInstance" in message
     assert TOKEN_DEPO in message
+
+
+# --- Tranquility of a running state machine (design doc, Topic 13) ---
+# Written ahead of the implementation. A state def carries the sub-states
+# marked `#Tranquility state` (A) and its `#Tranquility constraint`s over its
+# parameters (B); a running state usage typed by it is tranquil when its
+# current sub-state is a marked one (or none is marked) AND every constraint
+# holds (or there is none).
+
+PICK_FROM_PRODUCER = "VacuumGripperSystem::VGRStates::VGRPickTokenFromProducerAndPlace"
+PICK_FROM_CB = "VacuumGripperSystem::VGRStates::VGRPickTokenFromCBAndPlace"
+MISSION_WITH_2_CB = "VacuumGripperSystem::VGRStates::VGRMissionWith2CB"
+TOKEN_DEPO_SIMPLE_MISSION = "TokenDepoSystem::TokenDepoStates::TokenDepoSimpleMission"
+
+VGR_PROD_TO_FEED = "Main::vgrProdToFeed"      # VGRPickTokenFromProducerAndPlace: A and B
+VGR_TRANS_TO_DEPO = "Main::vgrTransToDepo"    # VGRPickTokenFromCBAndPlace: A only
+TOKEN_DEPO_MISSION = "Main::tokenDepoMission" # TokenDepoSimpleMission: neither
+TOKEN_PROD = "Main::tokenProd"
+
+
+def _state_def(vm: VirtualMachine, state_def_qualified_name: str):
+    """The registry's rt.StateDef for `state_def_qualified_name`."""
+    return vm.state.sysml.lookup_table_state_defs.get_reference(state_def_qualified_name).element_type
+
+
+def _state_usage(vm: VirtualMachine, state_usage_qualified_name: str):
+    """The registry's running rt.ExecutableStateUsage for `state_usage_qualified_name`."""
+    return vm.state.sysml.lookup_table_executable_state_usages.get_reference(
+        state_usage_qualified_name).element_type
+
+
+def _enter(vm: VirtualMachine, state_usage_qualified_name: str, substate_name: str) -> None:
+    """Stand in for the state machine having moved to `substate_name`: sets
+    its `current`, as the interpreter does when a transition fires."""
+    usage = _state_usage(vm, state_usage_qualified_name)
+    state_def = _state_def(vm, usage.state_def_origin.qualified_name)
+    substate = state_def.get_substate(f"{state_def.qualified_name}::{substate_name}")
+    assert substate is not None, f"{state_def.qualified_name} has no sub-state {substate_name!r}"
+    usage.current = substate
+
+
+def _token_producer_values(**overrides) -> types.SimpleNamespace:
+    """A complete simulation-side value object for a TokenProducerMachine,
+    with no token on the platform unless overridden."""
+    values = dict(platformSens=False, currentCommand=None, lastUsedTokenColor=None, placementCoordinate=None)
+    values.update(overrides)
+    return types.SimpleNamespace(**values)
+
+
+def test_state_defs_carry_their_tranquil_states_and_conditions():
+    vm = _build()
+
+    # The three gripper state defs mark `#Tranquility state Idle;`.
+    for state_def in (PICK_FROM_PRODUCER, PICK_FROM_CB, MISSION_WITH_2_CB):
+        assert [state.qualified_name for state in _state_def(vm, state_def).tranquil_states] == [
+            f"{state_def}::Idle"]
+
+    # VGRPickTokenFromProducerAndPlace also has
+    # `#Tranquility constraint { tokenProducer.platformSens == false }`: an
+    # attribute read through the parameter `tokenProducer`, as in a guard.
+    [condition] = _state_def(vm, PICK_FROM_PRODUCER).tranquility_conditions
+    assert isinstance(condition, rt.BinaryExpression)
+    assert condition.operator == "=="
+    assert isinstance(condition.left, rt.AttributeReference)
+    assert condition.left.target.reference_type == "Parameter"
+    assert condition.left.target.qualified_name == f"{PICK_FROM_PRODUCER}::tokenProducer"
+    assert condition.left.attribute.qualified_name.split("::")[-1] == "platformSens"
+    assert isinstance(condition.right, rt.LiteralValue)
+    assert condition.right.el == "False"
+
+    assert list(_state_def(vm, PICK_FROM_CB).tranquility_conditions) == []
+
+    # TokenDepoSimpleMission has neither.
+    assert list(_state_def(vm, TOKEN_DEPO_SIMPLE_MISSION).tranquil_states) == []
+    assert list(_state_def(vm, TOKEN_DEPO_SIMPLE_MISSION).tranquility_conditions) == []
+
+
+def test_state_machine_is_tranquil_only_in_a_marked_state():
+    # A only: vgrTransToDepo may be changed while waiting in Idle, not in the
+    # middle of a pick and place.
+    vm = _build()
+    usage = _state_usage(vm, VGR_TRANS_TO_DEPO)
+
+    # Before its first step it has no current state (as an unpublished part).
+    assert usage.current is None
+    assert usage.is_tranquil(vm.state) is False
+
+    _enter(vm, VGR_TRANS_TO_DEPO, "SafePosition")
+    assert usage.is_tranquil(vm.state) is False
+    _enter(vm, VGR_TRANS_TO_DEPO, "Idle")
+    assert usage.is_tranquil(vm.state) is True
+    _enter(vm, VGR_TRANS_TO_DEPO, "WaitForPickup")
+    assert usage.is_tranquil(vm.state) is False
+
+
+def test_state_machine_needs_its_marked_state_and_its_constraint():
+    # A and B: vgrProdToFeed is tranquil in Idle while no token waits on the
+    # producer's platform (read through `tokenProducer = tokenProd`).
+    vm = _build()
+    usage = _state_usage(vm, VGR_PROD_TO_FEED)
+
+    _enter(vm, VGR_PROD_TO_FEED, "Idle")
+    _publish_and_refresh(vm, {TOKEN_PROD: _token_producer_values(platformSens=False)})
+    assert usage.is_tranquil(vm.state) is True
+
+    # In Idle, but a pick is about to start.
+    _publish_and_refresh(vm, {TOKEN_PROD: _token_producer_values(platformSens=True)})
+    assert usage.is_tranquil(vm.state) is False
+
+    # The platform is free, but the gripper is in the middle of its sequence.
+    _enter(vm, VGR_PROD_TO_FEED, "WaitForPickup")
+    _publish_and_refresh(vm, {TOKEN_PROD: _token_producer_values(platformSens=False)})
+    assert usage.is_tranquil(vm.state) is False
+
+
+def test_state_machine_without_marks_is_tranquil_in_any_state():
+    # Neither: as for a part without #Tranquility, only the language safe
+    # point applies, once the state machine has started.
+    vm = _build()
+    usage = _state_usage(vm, TOKEN_DEPO_MISSION)
+
+    assert usage.is_tranquil(vm.state) is False
+    for substate in ("Idle", "CheckCapacity", "StopMachine"):
+        _enter(vm, TOKEN_DEPO_MISSION, substate)
+        assert usage.is_tranquil(vm.state) is True
