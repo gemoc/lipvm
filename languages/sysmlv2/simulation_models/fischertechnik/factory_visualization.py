@@ -21,7 +21,7 @@ from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.con
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts.vacuum_gripper import VacuumGripperMachine
 from languages.sysmlv2.simulation_models.fischertechnik.fischertechnik_parts_visualization.generic import MachineVisualization
 from languages.sysmlv2.simulation_models.fischertechnik.token import Token, TOKEN_DIAMETER
-from languages.sysmlv2.simulation_models.generic import SimulationVisualization
+from languages.sysmlv2.simulation_models.generic import LiveUpdateState, SimulationVisualization
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 MODEL_RANGE = 40                 # factory floor spans model coordinates 0..MODEL_RANGE on both x and y
@@ -224,6 +224,9 @@ START_BUTTON_WIDTH = 100
 START_BUTTON_HEIGHT = 32
 START_BUTTON_COLOR = (150, 200, 150)
 START_BUTTON_HOVER_COLOR = (120, 180, 120)
+LIVE_UPDATE_BUTTON_DISABLED_COLOR = (215, 215, 215)   # same size as Start, greyed out when it can't be clicked
+LIVE_UPDATE_BUTTON_DISABLED_TEXT_COLOR = (130, 130, 130)
+LIVE_UPDATE_BUTTON_PADDING = 12   # px left/right of the label; the button grows with it (it names a file)
 
 PALETTE_SWATCH_SIZE = 22
 PALETTE_SWATCH_GAP = 8
@@ -337,6 +340,22 @@ def _speed_slider_value_from_x(mouse_x: int, track_rect: pygame.Rect) -> int:
     frac = max(0.0, min(1.0, frac))
     value = TICKS_PER_STEP_MAX - frac * (TICKS_PER_STEP_MAX - TICKS_PER_STEP_MIN)
     return round(value)
+
+
+def _wrap_text(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+    """Splits `text` into lines no wider than `max_width` pixels in `font`,
+    at spaces (a single word longer than that stays on its own line). For
+    panel messages such as why an update file was rejected.
+    """
+    lines, current = [], ""
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if current and font.size(candidate)[0] > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    return lines + [current] if current else lines
 
 
 def _is_valid_numeric_input_char(char: str, current_text: str) -> bool:
@@ -513,6 +532,38 @@ class FischertechnikVisualization(SimulationVisualization):
 
         return [(rect, on_start_click)]
 
+    def _draw_live_update_section(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
+                                  label_font: pygame.font.Font, mouse_pos, state: LiveUpdateState,
+                                  on_submit_update, buttons: list) -> int:
+        """Draws the "Live update" section of the running panel: a heading,
+        the update button (Start's colours when enabled, greyed out when not;
+        as wide as its label, which names the update file), and the state's
+        message lines, wrapped to the panel width. Appends the button to
+        `buttons` only when enabled, so a disabled one can't be clicked.
+        Returns the y below the section.
+        """
+        screen.blit(label_font.render("Live update", True, PANEL_TEXT_COLOR), (x, y))
+        y += PANEL_LINE_HEIGHT
+
+        label_surface = label_font.render(
+            state.label, True, PANEL_BUTTON_TEXT_COLOR if state.enabled else LIVE_UPDATE_BUTTON_DISABLED_TEXT_COLOR)
+        rect = pygame.Rect(x, y, max(START_BUTTON_WIDTH, label_surface.get_width() + 2 * LIVE_UPDATE_BUTTON_PADDING),
+                           START_BUTTON_HEIGHT)
+        if state.enabled:
+            color = START_BUTTON_HOVER_COLOR if rect.collidepoint(mouse_pos) else START_BUTTON_COLOR
+            buttons.append((rect, on_submit_update))
+        else:
+            color = LIVE_UPDATE_BUTTON_DISABLED_COLOR
+        pygame.draw.rect(screen, color, rect, border_radius=6)
+        screen.blit(label_surface, label_surface.get_rect(center=rect.center))
+        y = rect.bottom + 6
+
+        for message in state.messages:
+            for line in _wrap_text(message, font, PANEL_WIDTH - 2 * PANEL_LEFT_PADDING):
+                screen.blit(font.render(line, True, PANEL_TEXT_COLOR), (x, y))
+                y += PANEL_LINE_HEIGHT
+        return y + PANEL_SUMMARY_GAP
+
     def _draw_speed_slider(self, screen: pygame.Surface, x: int, y: int, font: pygame.font.Font,
                             ticks_per_step: int) -> pygame.Rect:
         """Draws a horizontal "Speed" slider: a label showing the current
@@ -542,14 +593,15 @@ class FischertechnikVisualization(SimulationVisualization):
 
     def _draw_machine_panel(self, screen: pygame.Surface, machines, unowned_token_count: int, font: pygame.font.Font,
                              label_font: pygame.font.Font, selected_color: TokenColorKind, on_select_color,
-                             ticks_per_step: int, field_values: dict, focused_field, scroll_offset: int
+                             ticks_per_step: int, field_values: dict, focused_field, scroll_offset: int,
+                             live_update_state: LiveUpdateState | None = None, on_submit_update=None
                              ) -> tuple[list[tuple[pygame.Rect, object]], pygame.Rect, list[tuple[str, pygame.Rect]], int, pygame.Rect | None]:
         """Draws a side panel to the right of the viewport: a factory-wide
         summary line, then each machine's live attributes and an optional
         row of buttons, one stacked block per machine. Machines are
         labeled by their own SysML part name (e.g. "Belt: cb1") --
         `machine.name` (`PartSimulationModel`) holds the qualified name
-        `Factory.instantiate_machine()` assigned it (see
+        `Factory.instantiate_part()` assigned it (see
         `PartInstantiation.evaluate()`, runtime.py); the leaf segment
         after the last `::` is what the model itself calls the part
         (`part cb1 : ...`), same split `PartInstantiation.evaluate()`
@@ -613,6 +665,9 @@ class FischertechnikVisualization(SimulationVisualization):
 
         buttons: list[tuple[pygame.Rect, object]] = []
         input_fields: list[tuple[str, pygame.Rect]] = []
+        if live_update_state is not None:
+            y = self._draw_live_update_section(screen, x, y, font, label_font, mouse_pos,
+                                               live_update_state, on_submit_update, buttons)
         for machine in machines:
             drawer = self._drawers[type(machine)]
             part_name = machine.name.split("::")[-1]
@@ -701,7 +756,8 @@ class FischertechnikVisualization(SimulationVisualization):
         for token in factory.tokens:
             self._draw_token(screen, token)
 
-    def run(self, model, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60) -> None:
+    def run(self, model, on_start=lambda: None, on_tick=lambda: None, tick_rate: int = 60,
+            live_update=None, on_submit_update=None) -> None:
         """Static-picture render loop: every frame, redraws every registered
         machine at its placementCoordinate. Redrawing from scratch each frame
         is required by pygame (unlike tkinter, it has no persistent canvas),
@@ -712,6 +768,10 @@ class FischertechnikVisualization(SimulationVisualization):
         `on_tick`, which publishes a fresh snapshot there (TODAYS-TASKS.md step
         2). Defaults to a no-op so callers with nothing to do after a tick
         (e.g. factory_simulation_demo.py) don't need to pass anything.
+
+        `live_update`/`on_submit_update` (see SimulationVisualization): when
+        given, the running panel shows a "Live update" section, asking
+        `live_update()` for its LiveUpdateState every frame, after `on_tick`.
 
         Nothing runs until the user clicks "Start": `model.tick()` is
         skipped, and the panel shows `_draw_start_panel()` instead of the
@@ -829,7 +889,8 @@ class FischertechnikVisualization(SimulationVisualization):
                 buttons, speed_slider_rect, input_fields, panel_max_scroll, scrollbar_thumb_rect = self._draw_machine_panel(
                     screen, model.machines, unowned_token_count, font, label_font,
                     selected_color, handle_select_color, model.ticks_per_step,
-                    field_values, focused_field, panel_scroll_offset)
+                    field_values, focused_field, panel_scroll_offset,
+                    live_update() if live_update is not None else None, on_submit_update)
                 panel_scroll_offset = min(panel_scroll_offset, panel_max_scroll)
             else:
                 buttons = self._draw_start_panel(screen, font, label_font, handle_start)

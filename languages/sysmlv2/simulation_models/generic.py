@@ -1,6 +1,6 @@
 import dataclasses
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional
+from typing import Callable, Tuple, Optional
 
 
 class BaseSimulationModel(ABC):
@@ -9,13 +9,37 @@ class BaseSimulationModel(ABC):
     """
 
     @abstractmethod
-    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def instantiate_part(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         """Constructs and registers a new part -- idempotent, a no-op if
         `qualified_name` is already registered.
 
         :param qualified_name: the part's full SysML name
         :param part_def_name: which PartDef to construct
         :param attrs: attr_name -> (custom_class_name, values) pairs, one per custom attribute redefinition
+        :return: None
+        """
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def set_attribute(self, qualified_name: str, attrs: dict) -> None:
+        """Gives an already-instantiated part new configured attribute
+        values, from a live update (one entry of a `ModelUpdateCommand`
+        batch, see facade_proxy.py); takes effect from the next tick.
+
+        :param qualified_name: the part's full SysML name
+        :param attrs: attr_name -> (custom_class_name, values) pairs, same shape as instantiate_part's
+        :return: None
+        """
+        raise NotImplementedError("Sub-class must implement this method.")
+
+    @abstractmethod
+    def remove_part(self, qualified_name: str) -> None:
+        """Removes an instantiated part, from a live update (a
+        `RemovePartCommand`, see synchronization.py); gone from the next
+        tick. Only removes it: whether that was safe now is the
+        interpreter's decision (the update's tranquility).
+
+        :param qualified_name: the part's full SysML name
         :return: None
         """
         raise NotImplementedError("Sub-class must implement this method.")
@@ -57,16 +81,36 @@ class BaseSimulationModel(ABC):
         """
         raise NotImplementedError("Sub-class must implement this method.")
 
+@dataclasses.dataclass(frozen=True)
+class LiveUpdateState:
+    """What a visualization shows for live updates (the "update button"),
+    provided by the driver each frame through `run()`'s `live_update`: the
+    button's label, whether it can be clicked, and lines to show under it
+    (e.g. that an update waits for tranquility, or why a file was rejected).
+    The visualization only draws it; the driver decides everything.
+    """
+    label: str
+    enabled: bool
+    messages: tuple[str, ...] = ()
+
+
 class SimulationVisualization(ABC):
     """Shared base for a domain's own rendering of its `BaseSimulationModel`
     -- `run()` is the only method called from outside the concrete
     visualization; everything else (drawing, click handling) stays
     private to that implementation.
+
+    `live_update`/`on_submit_update` (optional, both or neither): a function
+    returning the current LiveUpdateState, asked every frame, and the
+    function to call when its button is clicked while enabled. Without
+    them, no live-update controls are shown.
     """
 
     @abstractmethod
     def run(self, model: BaseSimulationModel, on_start=lambda: None,
-            on_tick=lambda: None, tick_rate: int = 60) -> None:
+            on_tick=lambda: None, tick_rate: int = 60,
+            live_update: Optional[Callable[[], LiveUpdateState]] = None,
+            on_submit_update: Optional[Callable[[], None]] = None) -> None:
         raise NotImplementedError("Sub-class must implement this method.")
 
 class ActionSimulationModel(ABC):

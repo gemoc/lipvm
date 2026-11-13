@@ -16,6 +16,10 @@ class PartNotReadyError(Exception):
     non-fatal (e.g. a transition guard) can catch exactly this.
     """
 
+@dataclass(frozen=True)
+class SimulationBridgeCommand:
+
+    pass
 
 @dataclass(frozen=True)
 class InstantiateCommand:
@@ -91,7 +95,10 @@ class ThreadChannel(RuntimeStateElement):
     """Bundles everything the interpreter thread and the owning thread use
     to communicate: a published snapshot for reads, plus one-way queues
     for `instantiate`/`call_action` -- all 3 `SimulationBridge` operations,
-    none of them blocking.
+    none of them blocking. The one exception is lockstep while an update is
+    pending (design doc, Topic 10): the simulation asks on
+    `move_request_queue` and waits for the answer on `move_permission_queue`,
+    the only place where one thread waits for the other.
 
     A `RuntimeStateElement` so it can be registered directly on `runtime`
     and reached as `runtime.channel` -- `SimulationBridge` itself holds no
@@ -100,8 +107,13 @@ class ThreadChannel(RuntimeStateElement):
 
     self.latest_snapshot: the latest SimulationSnapshot published by the Simulation Model and its visualization
     self.action_queue: a queue of actions to be executed by the Simulation model and its visualization
-    self.instantiate_queue: a queue of parts to be instantiated in the Simulation model and its visualization
+    self.instantiate_queue: a queue of parts to be instantiated in the Simulation model and its visualization, at startup (live additions come on model_update_queue)
+    self.model_update_queue: a queue of model changes from live updates (one ModelUpdateCommand batch per update: added parts and changed attribute values)
     self.event_queue: a queue of events produced by the Simulation model, to be delivered to the interpreter
+    self.move_request_queue: the simulation's "may I move past frame N?", a frame number, while an update is pending
+    self.move_permission_queue: the interpreter's "go", the same frame number; both sides raise on a mismatch
+    self.lockstep_enabled: whether a simulation takes part in the request and response; False (e.g. in tests)
+        means nobody will ask, so the interpreter must not wait. Set by the driver before the interpreter thread starts
     """
 
     def __init__(self, **kwargs):
@@ -109,7 +121,13 @@ class ThreadChannel(RuntimeStateElement):
         self.latest_snapshot = SimulationSnapshot()
         self.action_queue = queue.Queue()
         self.instantiate_queue = queue.Queue()
+        self.model_update_queue = queue.Queue()
         self.event_queue = queue.Queue()
+
+        # Live experience-related functionality
+        self.move_request_queue = queue.Queue()
+        self.move_permission_queue = queue.Queue()
+        self.lockstep_enabled = False
 
 class SimulationBridge:
     """Static utility surface for whatever simulation domain is plugged in
@@ -142,6 +160,16 @@ class SimulationBridge:
         channel.action_queue.put(ActionCommand(qualified_name, action_name, args))
 
     @staticmethod
+    def send_model_update(channel: ThreadChannel, command):
+        """Enqueues one live update's batch of model changes (a
+        `ModelUpdateCommand`, built by the `SynchronizationManager` in
+        synchronization.py) -- fire-and-forget. The owning thread drains and
+        applies these once per tick, so every change in the batch lands in
+        the same frame.
+        """
+        channel.model_update_queue.put(command)
+
+    @staticmethod
     def emit_event(channel: ThreadChannel, item_name: str, source_qualified_name: str | None = None):
         """Enqueues an `EventCommand` -- fire-and-forget, the reverse
         direction from `instantiate`/`call_action`. The owning thread
@@ -152,24 +180,3 @@ class SimulationBridge:
         EVENT-QUEUE-DESIGN.md).
         """
         channel.event_queue.put(EventCommand(item_name, source_qualified_name))
-
-    @staticmethod
-    def read_attribute_from_snapshot(snapshot, qualified_name: str, attribute_name: str):
-        """Resolves one attribute off an already-captured snapshot (the
-        dict from a single `channel.latest_snapshot.read()` call). Callers
-        must capture that value once per evaluation pass and reuse it for
-        every lookup in that pass -- reading fresh per lookup can tear
-        reads across a compound guard.
-
-        Raises `PartNotReadyError` if no snapshot has been published yet,
-        or if `qualified_name` isn't in it -- an ordinary startup race,
-        not a real failure. Any other missing attribute surfaces as a
-        normal `AttributeError`.
-        """
-        if snapshot is None or qualified_name not in snapshot:
-            raise PartNotReadyError(
-                f"{qualified_name!r} not in the latest published snapshot yet -- "
-                f"can't read {attribute_name!r} on it (owning thread hasn't drained "
-                f"its instantiate() request yet)."
-            )
-        return getattr(snapshot[qualified_name], attribute_name)

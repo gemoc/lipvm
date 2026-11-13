@@ -18,14 +18,14 @@ MODEL_PATH = "tools/sysml_test_models/complete-ft-simulation.sysml"
 
 class MockFactory:
     """Dumb recorder standing in for a real Factory at exactly the seam
-    on_tick() drives it through (instantiate_machine/execute_action/
+    on_tick() drives it through (instantiate_part/execute_action/
     drain_events/build_snapshot) -- for tests that want to check
     interpreter runtime state (vm.state.sysml / rt.*) without also having
     to drive Factory's own physics (real machines, real token movement,
     real encoder pacing) just to produce the simulation-side values that
     state depends on.
 
-    instantiate_machine()/execute_action() do nothing but record the call
+    instantiate_part()/execute_action() do nothing but record the call
     -- no machine registry, no validation that a name was ever
     instantiated, no side effects -- so what the interpreter *decided to
     do* can be asserted on directly (self.instantiate_calls/action_calls).
@@ -50,7 +50,7 @@ class MockFactory:
         self.staged_events: list[tuple[str, str | None]] = []
         self.staged_snapshot: dict = {}
 
-    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def instantiate_part(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         self.instantiate_calls.append((qualified_name, part_def_name, attrs))
 
     def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
@@ -65,18 +65,23 @@ class MockFactory:
 
 
 def on_tick(vm: VirtualMachine, factory: MockFactory) -> None:
-    """The simulation-thread half of one frame -- verbatim copy of
-    on_tick()'s body from main_lipvm_dtsimulation.py's main(). Drains
-    whatever the interpreter side queued onto vm.state.channel since the
-    last call (instantiate first, so a part created this call already
-    exists for the action-drain/snapshot-publish that follow), then
-    republishes a fresh snapshot.
+    """The simulation-thread half of one frame -- a reduced copy of
+    on_tick() from main_lipvm_dtsimulation.py's main(). Drains what the
+    interpreter side queued onto vm.state.channel since the last call
+    (instantiate first, so a part created this call already exists for
+    the action-drain/snapshot-publish that follow), then republishes a
+    fresh snapshot.
+
+    Leaves out what these tests don't use: live updates
+    (`model_update_queue`, applied through each command's `accept`) and
+    lockstep (asking for "go" while an update is pending), so the mock
+    needs no set_attribute/remove_part.
     """
     channel = vm.state.channel
 
     while not channel.instantiate_queue.empty():
         command = channel.instantiate_queue.get_nowait()
-        factory.instantiate_machine(command.qualified_name, command.part_def_name, command.attrs)
+        factory.instantiate_part(command.qualified_name, command.part_def_name, command.attrs)
 
     while not channel.action_queue.empty():
         command = channel.action_queue.get_nowait()
@@ -172,7 +177,8 @@ def test_token_producer_platform_sensor_edge(lipvm_based_sysml_interpreter):
         ("TokenProducerSuccessEventMessage", tp_qualified_name),
         ("TokenPlatformBusyEventMessage", tp_qualified_name),
     ]
-    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(platformSens=True)}
+    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(
+        platformSens=True, currentCommand=None, lastUsedTokenColor=None, placementCoordinate=None)}
     wait_platform_free_state = (
         "TokenProducerSystem::TokenProducerStates::TokenProducerSimpleMission::WaitPlatformFree"
     )
@@ -234,7 +240,8 @@ def test_token_producer_to_feeder_conveyor_transport(lipvm_based_sysml_interpret
 
     # When: the simulation reports the token producer's platform sensor as
     # busy -- a token is now available on tokenProd's platform.
-    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(platformSens=True)}
+    factory.staged_snapshot = {tp_qualified_name: types.SimpleNamespace(
+        platformSens=True, currentCommand=None, lastUsedTokenColor=None, placementCoordinate=None)}
 
     # Then: vgrProdToFeed's Idle guard fires -- it picks up from
     # pickFromProducerPosition (`do vgr.pick { in targetPosition =

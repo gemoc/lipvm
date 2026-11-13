@@ -146,7 +146,7 @@ class Factory(BaseSimulationModel):
             if machine.is_idle():
                 self._pacer.reset(machine)
 
-    def instantiate_machine(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
+    def instantiate_part(self, qualified_name: str, part_def_name: str, attrs: dict) -> None:
         """The actual construction/registration logic behind an
         `InstantiateCommand` (facade_proxy.py) -- idempotent, same
         contract `FischertechnikBridge.instantiate()` used to implement
@@ -173,12 +173,76 @@ class Factory(BaseSimulationModel):
         instance = klass(self)
         instance.name = qualified_name
 
-        custom_attribute_registry = scan_for_subclasses(CustomAttributeModel)
         for attr_name, (custom_class_name, values) in attrs.items():
-            setattr(instance, attr_name, custom_attribute_registry[custom_class_name](**values))
+            setattr(instance, attr_name, self._custom_attribute_value(custom_class_name, values))
 
         self.register_machine(instance)
         print(f"Machine {part_def_name} with name {qualified_name} is Instantiated")
+
+    @staticmethod
+    def _custom_attribute_value(custom_class_name: str, values: dict):
+        """Builds the simulation-side object for one custom attribute value
+        (e.g. a FactoryCoordinate), resolved against the CustomAttributeModel
+        registry -- shared by instantiate_part and set_attribute, so both
+        build attribute values the same way.
+        """
+        return scan_for_subclasses(CustomAttributeModel)[custom_class_name](**values)
+
+    def set_attribute(self, qualified_name: str, attrs: dict) -> None:
+        """The simulation side of a live update (a `ModelUpdateCommand`
+        batch, drained in main_lipvm_dtsimulation.py's `on_tick`): gives an
+        existing machine new configured values, e.g. a new
+        placementCoordinate. Machines compute positions from their
+        attributes when needed, so the change shows from the next frame.
+
+        Only sets the values: whether it was safe to change them now is the
+        interpreter's decision (the update's tranquility), not compensated
+        here (e.g. tokens on a moved belt are not moved along).
+
+        Converts every value before setting any, so a bad entry leaves the
+        machine unchanged. Raises KeyError for an unknown machine,
+        TypeError for a value that isn't a (custom_class_name, values) pair
+        (scalars aren't supported yet, as at instantiation), and
+        AttributeError for an attribute the machine doesn't have, rather
+        than letting setattr create a new one.
+        """
+        machine = self.get_machine(qualified_name)
+        if machine is None:
+            raise KeyError(f"No machine named {qualified_name!r} to set attributes on")
+
+        new_values = {}
+        for attr_name, value in attrs.items():
+            if not (isinstance(value, tuple) and len(value) == 2):
+                raise TypeError(f"{qualified_name}.{attr_name}: expected a (custom_class_name, values) "
+                                f"pair, got {value!r}; scalar values aren't supported yet")
+            if not hasattr(machine, attr_name):
+                raise AttributeError(f"{qualified_name} ({type(machine).__name__}) has no attribute {attr_name!r}")
+            custom_class_name, values = value
+            new_values[attr_name] = self._custom_attribute_value(custom_class_name, values)
+
+        for attr_name, new_value in new_values.items():
+            setattr(machine, attr_name, new_value)
+        print(f"Machine {qualified_name}: set " + ", ".join(
+            f"{name}={class_name}({', '.join(f'{k}={v}' for k, v in values.items())})"
+            for name, (class_name, values) in attrs.items()))
+
+    def remove_part(self, qualified_name: str) -> None:
+        """The simulation side of a live removal (a `RemovePartCommand`):
+        unregisters the machine, so it no longer ticks, publishes or is
+        drawn. Raises KeyError for an unknown machine.
+
+        Tokens it held become unowned (shown as such in the panel), not
+        moved or deleted: whether removing it now was safe is the
+        interpreter's decision (the update's tranquility), not compensated
+        here.
+        """
+        machine = self._machines.pop(qualified_name, None)
+        if machine is None:
+            raise KeyError(f"No machine named {qualified_name!r} to remove")
+        for token in self.tokens_on(machine):
+            self.transfer_token(token, None)
+        self._pacer.reset(machine)
+        print(f"Machine {qualified_name} is removed")
 
     def execute_action(self, qualified_name: str, action_name: str, args: dict) -> None:
         """Looks up the machine and calls the named action on it with
@@ -202,7 +266,7 @@ class Factory(BaseSimulationModel):
         item_name is the ItemDef's bare declared name (e.g.
         "CBCommandSuccessEventMessage"), never a qualified one -- Factory
         has no access to the parsed SysML model to resolve one itself (see
-        instantiate_machine()'s identical bare-name convention on the
+        instantiate_part()'s identical bare-name convention on the
         reverse direction). source_qualified_name is this machine's own
         qualified name for a targeted event, or None for a broadcast event
         with no specific origin.

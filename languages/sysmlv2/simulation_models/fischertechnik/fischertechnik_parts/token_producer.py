@@ -31,6 +31,16 @@ TOKEN_PLATFORM_OFFSET = TOKEN_PROD_BASE_LENGTH / 2 + TOKEN_PLATFORM_LENGTH / 2
 # RECEIVER_ARRIVAL_TOLERANCE (token_depo.py).
 PLATFORM_ARRIVAL_TOLERANCE = min(TOKEN_PLATFORM_LENGTH, TOKEN_PLATFORM_WIDTH) / 2
 
+# Steps between receiving an emit command and the token appearing on the
+# platform: 0.6 s at 60 fps with the default TICKS_PER_STEP = 1, and scaled
+# by the speed slider like every other movement. Keeps the platform empty
+# (the producer's #Tranquility condition, `platformSens == false`) for long
+# enough for a live update to reach tranquility; without it the platform is
+# refilled within about 0.1 s. The window must cover about two interpreter
+# rounds plus one frame (~0.31 s) for the VM to see it and pause the
+# simulation in time; 0.6 s gives roughly twice that.
+TOKEN_EMIT_DELAY_STEPS = 36
+
 @dataclass(frozen=True)
 class TokenProducerMachineSnapshot:
     currentCommand: Optional[TokenProducerCommandKind]
@@ -53,6 +63,9 @@ class TokenProducerMachine(FischertechnikMachine):
         self._currentCommand: TokenProducerCommandKind = TokenProducerCommandKind.STOP
         self._lastUsedTokenColor: Optional[TokenColorKind] = None
         self._placementCoordinate: FactoryCoordinate = None
+        # Steps left before an emit command places its token; None when no
+        # emit command is waiting.
+        self._emit_steps_left: Optional[int] = None
 
     @property
     def platformSens(self):
@@ -122,20 +135,24 @@ class TokenProducerMachine(FischertechnikMachine):
     def emitToken(self, desiredColor: TokenColorKind):
         """
         This method allow a token to be produced according to the desired color.
-        The produced token will be placed on the platform.
+        The produced token will be placed on the platform after
+        TOKEN_EMIT_DELAY_STEPS steps.
         :param desiredColor: The produced token's color
         :return:
         """
         self._currentCommand = TokenProducerCommandKind.EMIT_TOKEN
         self._lastUsedTokenColor = desiredColor
+        self._emit_steps_left = TOKEN_EMIT_DELAY_STEPS
 
     def randomEmitToken(self):
         """
         This method allow a token to be produced, albeit the token's color is determined
-        randomly. The produced token will be placed on the platform.
+        randomly. The produced token will be placed on the platform after
+        TOKEN_EMIT_DELAY_STEPS steps.
         :return:
         """
         self._currentCommand = TokenProducerCommandKind.RANDOM_EMIT_TOKEN
+        self._emit_steps_left = TOKEN_EMIT_DELAY_STEPS
 
     def emptyPlatform(self):
         """
@@ -150,6 +167,7 @@ class TokenProducerMachine(FischertechnikMachine):
         :return:
         """
         self._currentCommand = TokenProducerCommandKind.STOP
+        self._emit_steps_left = None
         self.emit_event_to_factory(TokenProducerMessages.SUCCESS_MESSAGE)
 
     def tick(self) -> None:
@@ -163,10 +181,12 @@ class TokenProducerMachine(FischertechnikMachine):
         being captured locally within one call.
         """
         if self._currentCommand == TokenProducerCommandKind.EMIT_TOKEN:
-            self._emit_token(self._lastUsedTokenColor)
+            if self._emit_delay_elapsed():
+                self._emit_token(self._lastUsedTokenColor)
         elif self._currentCommand == TokenProducerCommandKind.RANDOM_EMIT_TOKEN:
-            self._lastUsedTokenColor = random.choice(list(TokenColorKind))
-            self._emit_token(self._lastUsedTokenColor)
+            if self._emit_delay_elapsed():
+                self._lastUsedTokenColor = random.choice(list(TokenColorKind))
+                self._emit_token(self._lastUsedTokenColor)
         elif self._currentCommand == TokenProducerCommandKind.EMPTY_PLATFORM:
             self._advance_empty_platform()
 
@@ -175,6 +195,13 @@ class TokenProducerMachine(FischertechnikMachine):
             self.emit_event_to_factory(TokenProducerMessages.PLATFORM_BUSY)
         elif edge is False:
             self.emit_event_to_factory(TokenProducerMessages.PLATFORM_EMPTY)
+
+    def _emit_delay_elapsed(self) -> bool:
+        """Counts down one step of the pending emit command's delay; True
+        once TOKEN_EMIT_DELAY_STEPS steps have passed since the command.
+        """
+        self._emit_steps_left -= 1
+        return self._emit_steps_left <= 0
 
     def _emit_token(self, color: TokenColorKind) -> None:
         """If the platform's already occupied, can't place a second token on top of one already there without

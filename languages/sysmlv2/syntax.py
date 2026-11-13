@@ -12,7 +12,9 @@ from core.operation import operation
 # its own `StateUsage` class below; `rt.StateUsage` keeps the runtime
 # registry's StateUsage unambiguous from the AST's.
 from languages.sysmlv2 import runtime as rt
+from languages.sysmlv2.observers import attach_registry_observers
 from languages.sysmlv2.simulation_models.facade_proxy import ThreadChannel
+from languages.sysmlv2.simulation_models.synchronization import SynchronizationManager
 from languages.sysmlv2.sysml_utility_classes import qualified_name
 from languages.sysmlv2.kerml_libraries.kerml_library_index import resolve_kerml_library_name
 
@@ -80,6 +82,45 @@ def _feature_chain(feature):
                 if isinstance(rel, FeatureChaining)
             ]
     return None
+
+
+# Qualified name of the metadata definition that labels a constraint as a
+# tranquility condition (see Language-Safe-and-Execution-Tranquility-points.md).
+TRANQUILITY_METADATA = "LiveModeling::Tranquility"
+
+
+def _is_tranquility_constraint(node):
+    """Whether `node` is a constraint labelled `#Tranquility`, i.e. it owns a
+    MetadataUsage typed by the LiveModeling::Tranquility metadata definition.
+
+    Reads the metadata through containment (a MetadataUsage annotates the
+    element that owns it) rather than MetadataUsage.annotatedElement, a
+    derived feature this module leaves unimplemented. Matched by qualified
+    name, so a same-named metadata definition in another package doesn't
+    count.
+
+    An asserted constraint (`assert constraint`) doesn't count either:
+    tranquility must not be an invariant (Topic 6), so it is ignored like any
+    other unsupported use of the label, rather than raising.
+    """
+    if not isinstance(node, ConstraintUsage) or isinstance(node, AssertConstraintUsage):
+        return False
+    return any(
+        isinstance(metadata, MetadataUsage)
+        and qualified_name(_feature_type(metadata)) == TRANQUILITY_METADATA
+        for metadata in _owned_by_kind(node, OwningMembership)
+    )
+
+
+def _tranquility_condition(constraint):
+    """Builds the runtime Value tree for a #Tranquility constraint's Boolean
+    expression (its ResultExpressionMembership), with the same
+    _build_expression used for `accept when` conditions. Raises if the
+    constraint has no expression, rather than storing an empty condition.
+    """
+    for expression in _owned_by_kind(constraint, ResultExpressionMembership):
+        return _build_expression(expression)
+    raise ValueError(f"#Tranquility constraint {qualified_name(constraint)} has no expression.")
 
 
 def _resolve_feature_reference(node):
@@ -976,15 +1017,22 @@ endif
 
     def read_events_and_execute(self, runtime, executable_stats):
 
-        # Part instantiation (parsed from SysML model and to be performed by the simulation model) and
-        # event occurrences (produced by the simulation model and to be evaluated according to the SysML model)
-        # are constantly checked for every VM step
+        # Event occurrences (produced by the simulation model and to be
+        # evaluated according to the SysML model) are checked every round
         if runtime.channel is not None:
-            part_instantiation_elements = part_instantiations(runtime.sysml.lookup_table_part_instantiations)
-            for an_instantiation in part_instantiation_elements:
-                an_instantiation.evaluate(runtime)
+            # Start of a round: send what live updates changed during the
+            # previous one, as one batch; while an update is pending, wait for
+            # the simulation's question first, so this round's events and
+            # values come from a frozen frame.
+            runtime.synchronization_manager.start_round(runtime.channel, runtime.has_pending_update())
+
+            part_instantiation_elements = get_part_instantiations(runtime.sysml.lookup_table_part_instantiations)
 
             drain_event_queue(runtime.channel, runtime.sysml.lookup_table_item_defs, executable_stats)
+
+            # After draining events, before the state machines run: they react
+            # to this round's events while seeing values at least as recent.
+            refresh_part_values(runtime.channel, runtime.sysml.lookup_table_part_defs, part_instantiation_elements)
 
         return lazy_loop(executable_stats, lambda element, runtime: element.evaluate(runtime), args=(runtime,))
 
@@ -1001,12 +1049,25 @@ endif
 
         #Initialization for Bridge to the simulation
         runtime.elements.append(ThreadChannel(name="channel"))
+
+        # The registry is built: ask the simulation to create the startup
+        # parts' machines, once.
+        synchronization_manager = SynchronizationManager(name="synchronization_manager")
+        runtime.elements.append(synchronization_manager)
+        for part in get_part_instantiations(sysml_state.lookup_table_part_instantiations):
+            part.evaluate(runtime)
+
         runtime.elements.append(rt.ExecutionContext(name="execution_context"))
 
-        executable_stats = executable_state_usages(runtime.sysml.lookup_table_executable_state_usages)
+        executable_stats = get_executable_state_usages(runtime.sysml.lookup_table_executable_state_usages)
         if not executable_stats:
             print("No ExecutableStateUsage found in this model; nothing to run.")
             return
+
+        # Watch the registry, so what live updates change is sent to the
+        # simulation through the SynchronizationManager. Updates edit the
+        # registry, never re-walk the AST.
+        attach_registry_observers(sysml_state, synchronization_manager)
 
         return lazy_while(
             lambda runtime, stats: self.read_events_and_execute(runtime, stats),
@@ -1014,11 +1075,11 @@ endif
             args=(runtime, executable_stats)
         )
 
-def executable_state_usages(lookup_table_executable_state_usages):
+def get_executable_state_usages(lookup_table_executable_state_usages):
     return [record.element_type
             for record in lookup_table_executable_state_usages.records]
 
-def part_instantiations(lookup_table_part_instantiations):
+def get_part_instantiations(lookup_table_part_instantiations):
     return [record.element_type
             for record in lookup_table_part_instantiations.records]
 
@@ -1065,6 +1126,40 @@ def drain_event_queue(channel, item_defs_table, executable_stats) -> None:
         occurrence = rt.EventOccurrence(event_type=record.element_type, source=source)
         for usage in executable_stats:
             usage.pending.append(occurrence)
+
+
+def refresh_part_values(channel, part_defs_table, part_instantiations) -> None:
+    """Copies the simulation's latest published values onto each
+    PartInstantiation's observed_values -- same shape as drain_event_queue()
+    above (read from the channel, resolve against the registry, write into
+    registry records), but a copy rather than a drain: a snapshot is state,
+    so each refresh simply overwrites the previous values.
+
+    The snapshot is read once, so every part reflects the same moment for the
+    whole round. A part not in it yet (the simulation hasn't created it) is
+    skipped and keeps whatever it had, None at startup. Only the attributes
+    the part's PartDef declares in SysML are copied: the SysML part def is
+    the interface, so extra simulation-side fields are ignored, and a missing
+    declared one raises AttributeError (the simulation doesn't fulfil the
+    interface), as PartSimulationModel.snapshot() does on its own side. See
+    Language-Safe-and-Execution-Tranquility-points.md, Topic 12.
+    """
+    snapshot = channel.latest_snapshot.read()
+    if snapshot is None:
+        return
+    for part in part_instantiations:
+        if part.qualified_name not in snapshot:
+            continue
+        record = part_defs_table.get_reference(part.part_def_origin.qualified_name)
+        if record is None:
+            raise LookupError(
+                f"{part.qualified_name!r} is typed by {part.part_def_origin.qualified_name!r}, "
+                f"which isn't a registered PartDef.")
+        live = snapshot[part.qualified_name]
+        part.observed_values = {
+            attribute.name: getattr(live, attribute.name)
+            for attribute in record.element_type.attributes
+        }
 
 class DerivedRelatedelement(EDerivedCollection):
     pass
@@ -6089,6 +6184,10 @@ owningFeatureMembership.oclIsKindOf(StakeholderMembership) implies
         record for a PartUsage declared directly under a package/namespace
         (e.g. `cb1 : ConveyorBeltMachine` in Main) — the actual instance of
         a part, as opposed to its PartDefinition (the shared blueprint).
+
+        Collects the usage's own #Tranquility constraints the same way
+        PartDefinition.visit() does; the part's tranquility combines them with
+        its part def's (PartInstantiation.is_tranquil()).
         """
         instantiation = rt.PartInstantiation(
             name=self.declaredName, qualified_name=qualified_name(self), definition=self)
@@ -6098,6 +6197,11 @@ owningFeatureMembership.oclIsKindOf(StakeholderMembership) implies
         instantiation.part_def_origin = _build_reference(_feature_type(self), rt.PartDef.__name__)
         instantiation.attribute_redefinitions = _owned_attribute_redefinitions(
             self, instantiation.qualified_name)
+        instantiation.tranquility_conditions = [
+            _tranquility_condition(feature)
+            for feature in _owned_by_kind(self, FeatureMembership)
+            if _is_tranquility_constraint(feature)
+        ]
         parent.add_part_instantiation(instantiation)
 
 
@@ -7542,6 +7646,11 @@ specializesFromLibrary('Parts::Part')"""
                 for feature in _owned_by_kind(self, FeatureMembership)
                 if isinstance(feature, ActionUsage)
             ],
+            tranquility_conditions=[
+                _tranquility_condition(feature)
+                for feature in _owned_by_kind(self, FeatureMembership)
+                if _is_tranquility_constraint(feature)
+            ],
         )
         parent.add_part_def(part_def)
 
@@ -7944,6 +8053,15 @@ specializesFromLibrary('Metadata::MetadataItem')"""
     def __init__(self, **kwargs):
 
         super().__init__(**kwargs)
+
+    def visit(self, parent):
+        """Overrides ItemDefinition.visit(): a metadata definition (e.g.
+        LiveModeling::Tranquility) labels model elements for the interpreter,
+        it isn't an item the state machines exchange, so it registers nothing.
+        Annotated elements read their metadata directly (see
+        _is_tranquility_constraint).
+        """
+        pass
 
 
 class DerivedRendering(EDerivedCollection):

@@ -1,20 +1,22 @@
 import logging
-from collections import deque
 from enum import Enum
-from typing import Optional
 
-from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum
+from pyecore.ecore import MetaEClass, EAttribute, EReference, EString, EObject, EProxy, EEnum, EDataType
 
 from core.language import AbstractSyntaxElement, RuntimeStateElement, RuntimeState
 from core.operation import operation
 from languages.sysmlv2.runtime_utility import ScalarType, _LITERAL_PYTHON_CONVERTERS, TypeKind, ParamDirection, \
     _BINARY_OPERATORS, _SCALAR_TYPE_BY_NAME
 from languages.sysmlv2.sysml_utility_classes import qualified_name
-from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError, SimulationSnapshot, SimulationBridge
+from languages.sysmlv2.simulation_models.facade_proxy import PartNotReadyError, SimulationBridge
 from languages.sysmlv2.simulation_models.generic import ActionSimulationModel, CustomAttributeModel
 from languages.sysmlv2.simulation_models.registry import scan_for_subclasses
 
 logger = logging.getLogger(__name__)
+
+# A part's observed attribute values (name -> plain Python value), see
+# PartInstantiation.observed_values.
+ObservedValues = EDataType('ObservedValues', eType=dict)
 
 def _simulation_model_registry() -> dict:
     """Maps each concrete ActionSimulationModel subclass's name (e.g. "Print")
@@ -148,6 +150,13 @@ class ReferenceValue(Value):
           message) rather than silently handing back the bare qualified
           name, which a caller (e.g. BinaryExpression) could otherwise
           compare against as if it were a real value.
+        - "AttributeUsage" (a bare attribute name, e.g. receiverSens in a
+          part def's #Tranquility constraint) is only meaningful relative to
+          the part instance being checked, the execution context's
+          current_part (set by TranquilityHolder.is_tranquil()). It reads
+          that part's observed value, which raises PartNotReadyError if the
+          simulation hasn't published the part yet. Raises if there is no
+          current_part, rather than reading some other part's value.
         - Anything else, with a registered lookup table (today, just
           "PartInstantiation", e.g. conveyorBelt=cb1 -- confirmed by
           walking both real models, nothing else shows up) resolves to
@@ -155,7 +164,11 @@ class ReferenceValue(Value):
           not just its qualified name -- these are absolute, globally
           registered names (cb1 is declared directly under package Main),
           so a flat table lookup is correct and doesn't depend on which
-          instance is asking. Anything with neither a table entry nor
+          instance is asking. A name missing from its table raises
+          LookupError rather than resolving to None: e.g. a part removed by
+          a live update while a state machine still binds it, a dangling
+          pointer the language user has to avoid (the Parameter branch adds
+          which binding it was). Anything with neither a table entry nor
           "Parameter"/"EnumerationUsage" (none observed today) raises,
           naming the unrecognized reference_type and what's actually
           handled, for the same reason.
@@ -184,17 +197,37 @@ class ReferenceValue(Value):
                     f"(available: {sorted(argument.name for argument in current.arguments)}) -- "
                     f"cannot resolve parameter reference '{self.el.qualified_name}'."
                 )
-            return binding.value.evaluate(runtime)
+            try:
+                return binding.value.evaluate(runtime)
+            except LookupError as error:
+                # Name the binding, so the language user can find e.g. a
+                # re-appointment a live update forgot.
+                raise LookupError(
+                    f"Argument '{param_name}' of '{current.qualified_name}': {error}") from error
+
+        if self.el.reference_type == "AttributeUsage":
+            part = runtime.execution_context.current_part
+            if part is None:
+                raise RuntimeError(
+                    f"Cannot resolve attribute reference '{self.el.qualified_name}': no "
+                    f"current_part in the execution context, but a bare attribute name can "
+                    f"only be resolved against the part instance being checked."
+                )
+            return part.observed_value(self.el.qualified_name.split("::")[-1])
 
         table_name = _LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE.get(self.el.reference_type)
         if table_name is not None:
             record = getattr(runtime.sysml, table_name).get_reference(self.el.qualified_name)
-            return record.element_type if record is not None else None
+            if record is None:
+                raise LookupError(
+                    f"'{self.el.qualified_name}' isn't a registered {self.el.reference_type} "
+                    f"(e.g. removed by a live update without re-appointing what pointed to it).")
+            return record.element_type
 
         raise LookupError(
             f"No resolution rule for reference_type '{self.el.reference_type}' "
             f"(qualified_name='{self.el.qualified_name}') -- handled types: "
-            f"'EnumerationUsage', 'Parameter', {sorted(_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE)}."
+            f"'EnumerationUsage', 'Parameter', 'AttributeUsage', {sorted(_LOOKUP_TABLE_NAME_BY_REFERENCE_TYPE)}."
         )
 
 class AttributeReference(Value):
@@ -220,28 +253,22 @@ class AttributeReference(Value):
         (with the same informative errors on failure), so this no longer
         duplicates that lookup inline.
 
-        Only reads `attribute` off the resolved value through the bridge if
-        it actually resolved to a PartInstantiation -- the one case that
-        genuinely has a live simulation counterpart to read an attribute
-        from. Every model today binds `target` to a part (e.g.
-        conveyorBelt=cb1), so this is what actually happens in practice,
-        but nothing enforces a formal parameter must be bound to a part
-        specifically -- if it resolved to something else (e.g. a plain
-        scalar bound to that parameter instead), there's no "instance" to
-        read an attribute off of, so the resolved value itself, whatever
-        it is, is simply returned as-is rather than crashing on
-        `.qualified_name` (which only a PartInstantiation actually has).
+        Reads `attribute` from the resolved PartInstantiation's observed
+        values, the ones refresh_part_values() (syntax.py) copied from the
+        simulation this round -- the same values tranquility checks read, so
+        every state machine in a round sees one moment (see
+        Language-Safe-and-Execution-Tranquility-points.md, Topic 12, Part B).
+        observed_value() raises PartNotReadyError while the simulation hasn't
+        published the part yet. Every model today binds `target` to a part
+        (e.g. conveyorBelt=cb1); anything else raises NotImplementedError,
+        since there's no part to read an attribute from.
         """
-
-        snapshot_from_bridge = runtime.execution_context.current_snapshot
-
         resolved = ReferenceValue(el=self.target).evaluate(runtime)
         if not isinstance(resolved, PartInstantiation):
             raise NotImplementedError('Currently, only handling a case where attribute reference involves'
                                       'Part Instantiation. Please handle it first before continuing.')
         attribute_name = self.attribute.qualified_name.split("::")[-1]
-        return SimulationBridge.read_attribute_from_snapshot(
-            snapshot_from_bridge, resolved.qualified_name, attribute_name)
+        return resolved.observed_value(attribute_name)
 
 class BinaryExpression(Value):
     """A binary operation over two sub-values (e.g. `conveyorBelt.
@@ -269,6 +296,23 @@ class BinaryExpression(Value):
         left = self.left.evaluate(runtime)
         right = self.right.evaluate(runtime)
         return _BINARY_OPERATORS[self.operator](left, right)
+
+class TranquilityHolder(RuntimeStateElement, metaclass=MetaEClass):
+    """An abstract class for runtime records that can carry tranquility
+    conditions: the built expressions of the #Tranquility constraints a
+    modeller wrote on the corresponding AST element (see
+    Language-Safe-and-Execution-Tranquility-points.md, Topic 11). A hot update
+    may only be applied while they hold. Extended by PartDef and
+    PartInstantiation (a part usage's own constraints).
+    """
+    tranquility_conditions = EReference(eType=Value, lower=0, upper=-1, containment=True)
+
+    def is_tranquil(self, runtime: RuntimeState) -> bool:
+        """Whether this element is tranquil right now. Only running elements
+        answer (PartInstantiation); a definition holds conditions but isn't
+        asked (PartDef refuses).
+        """
+        raise NotImplementedError("Subclasses has to implement this")
 
 class Record(ElementDefinition, metaclass=MetaEClass):
     element_type = EReference(eType=ElementDefinition, lower=1, upper=1, containment=False)
@@ -538,9 +582,9 @@ class TransitionTriggerBySignal(TransitionTrigger, metaclass=MetaEClass):
         if event_occurrence.source is None:
             return False
 
-        # If no, then continue to evaluate
+        # If no, then continue to evaluate (a missing bound part raises, see ReferenceValue)
         bound_part = ReferenceValue(el=self.via).evaluate(runtime)
-        return bound_part is not None and bound_part.qualified_name == event_occurrence.source.qualified_name
+        return bound_part.qualified_name == event_occurrence.source.qualified_name
 
 class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
 
@@ -555,8 +599,9 @@ class TransitionTriggerByWhenCondition(TransitionTrigger, metaclass=MetaEClass):
         immediate yes/no by whoever decides whether to fire a transition.
 
         `PartNotReadyError` (facade_proxy.py) means a nested
-        `AttributeReference` asked about a part the owning thread hasn't
-        finished instantiating/publishing yet -- an ordinary startup race,
+        `AttributeReference` asked about a part that has no observed values
+        yet, because the owning thread hasn't finished instantiating/publishing
+        it -- an ordinary startup race,
         not a real failure (see that exception's docstring). Treated the
         same as any other not-yet-satisfied condition: this trigger just
         doesn't fire this tick, and gets re-checked the next one, same as
@@ -732,7 +777,7 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         """
 
         #Step 0, set the execution context
-        runtime.execution_context.begin(self, runtime.channel)
+        runtime.execution_context.begin(self)
 
         #Step 1: Only start executing this ExecutableStateUsage if the StateDef is resolved, otherwise just return None
         record_referenced_state_def: Record = runtime.sysml.lookup_table_state_defs.get_reference(
@@ -871,10 +916,16 @@ class ExecutableStateUsage(ElementDefinition, metaclass=MetaEClass):
         if target_state.entry is not None:
             target_state.entry.evaluate(runtime)
 
-class PartDef(ElementDefinition, metaclass=MetaEClass):
+class PartDef(ElementDefinition, TranquilityHolder, metaclass=MetaEClass):
 
     contained_perform_actions = EReference(eType=ActualAction, lower=0, upper=-1, containment=True)
     attributes = EReference(eType=AttributeUsageElement, lower=0, upper=-1, containment=True)
+
+    def is_tranquil(self, runtime: RuntimeState) -> bool:
+        """Refuses: a definition has no observed values, so its conditions
+        are evaluated on each part typed by it (PartInstantiation.is_tranquil).
+        """
+        raise ValueError('Tranquility of Part Def should be checked at its corresponding PartInstantiation instances')
 
 class CompositeCustomValue(Value):
     """A structured value made of named sub-values (e.g. placementCoordinate's
@@ -898,7 +949,7 @@ class CompositeCustomValue(Value):
     def evaluate(self, runtime: RuntimeState):
         """Resolves `type`'s bare class name against the same
         scan_for_subclasses(CustomAttributeModel) registry
-        Factory.instantiate_machine() already uses on the simulation side
+        Factory.instantiate_part() already uses on the simulation side
         (same "EnumerationUsage" precedent ReferenceValue.evaluate() already
         sets for reaching into a different registry, scan_for_subclasses(Enum)
         -- runtime.py:173), and constructs the actual object right here.
@@ -967,7 +1018,7 @@ def _custom_attribute_value(value: "CompositeCustomValue"):
     }
     return class_name, values
 
-class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
+class PartInstantiation(ElementDefinition, TranquilityHolder, metaclass=MetaEClass):
 
     # Reference to the PartDef this usage is typed by
     part_def_origin = EReference(eType=Reference, lower=0, upper=1, containment=False)
@@ -975,6 +1026,84 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
     # This usage's own attribute redefinitions (e.g. cb1's placementCoordinate
     # override).
     attribute_redefinitions = EReference(eType=AttributeRedefinition, lower=0, upper=-1, containment=True)
+
+    # Mirror of the simulation's latest values for this part's declared
+    # attributes (name -> plain Python value), set each VM round by
+    # refresh_part_values() (syntax.py); None until the simulation has
+    # published this part. Observed state, kept apart from the configured
+    # attribute_redefinitions above. A plain dict for now, declared but
+    # transient, so it isn't saved to XMI (see
+    # Language-Safe-and-Execution-Tranquility-points.md, Topic 12); read it
+    # only through observed_value().
+    observed_values = EAttribute(eType=ObservedValues, lower=0, upper=1, transient=True)
+
+    def observed_value(self, name: str):
+        """The latest value the simulation published for this part's
+        declared attribute `name`. Raises PartNotReadyError while the
+        simulation hasn't published this part yet (the same startup signal
+        AttributeReference's snapshot reads raise).
+        """
+        if self.observed_values is None:
+            raise PartNotReadyError(
+                f"{self.qualified_name!r} has no observed values yet -- the simulation "
+                f"hasn't published it, so {name!r} can't be read.")
+        return self.observed_values[name]
+
+    def is_tranquil(self, runtime: RuntimeState) -> bool:
+        """Whether this part is tranquil right now: every tranquility
+        condition it carries holds against its own observed values. It
+        carries its part def's conditions (a usage inherits its definition's
+        features) plus its own, from #Tranquility constraints in the part
+        usage; they accumulate, so all of them must hold. While
+        evaluating, this part is the execution context's current_part, which
+        bare attribute names in a condition (e.g. `receiverSens`) resolve
+        against; it is cleared afterwards.
+
+        With lockstep enabled, not tranquil while this round's values were
+        copied as the simulation moved, whether or not it has conditions:
+        the values may already be stale (Topic 10, "the mid-round gap"), and
+        an update must only be applied in a round that took the simulation's
+        question, since only such a round answers it. Without lockstep there
+        is no paused copy to wait for, so this doesn't apply.
+
+        Not tranquil while it has no observed values yet (the simulation
+        hasn't published it): its conditions can't be confirmed. A part
+        without any conditions (none on its part def, none of its own) is
+        tranquil: leaving out #Tranquility is the modeller's choice, so only
+        the language safe point applies (see
+        Language-Safe-and-Execution-Tranquility-points.md, step 4). Conditions
+        on the part def's supertypes are not followed yet
+        (ARCHITECTURAL-CONFUSION.md, Topic 5).
+        """
+        # With lockstep, only judge on values copied while the simulation was
+        # paused, conditions or not.
+        if (runtime.channel.lockstep_enabled
+                and not runtime.synchronization_manager.values_copied_while_paused):
+            return False
+
+        record = runtime.sysml.lookup_table_part_defs.get_reference(self.part_def_origin.qualified_name)
+        if record is None:
+            raise LookupError(
+                f"{self.qualified_name!r} is typed by {self.part_def_origin.qualified_name!r}, "
+                f"which isn't a registered PartDef.")
+
+        # Tranquility conditions shared from the Part Def
+        conditions_from_part_def = record.element_type.tranquility_conditions
+
+        # Its own tranquility condition (if there is any)
+        conditions_from_self = self.tranquility_conditions
+
+        # Compounding both tranquility conditions
+        conditions = [*conditions_from_part_def, *conditions_from_self]
+
+        context = runtime.execution_context
+        context.current_part = self
+        try:
+            return all(bool(condition.evaluate(runtime)) for condition in conditions)
+        except PartNotReadyError:
+            return False
+        finally:
+            context.current_part = None
 
     def evaluate(self, runtime: RuntimeState):
         """Ensures this usage's live simulation counterpart exists, via
@@ -998,25 +1127,35 @@ class PartInstantiation(ElementDefinition, metaclass=MetaEClass):
         shapes either -- only which Python class (see
         FischertechnikBridge.instantiate()) mirrors the custom type named.
         """
-        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
-
-        attrs = {}
-        for redefinition in self.attribute_redefinitions:
-            if isinstance(redefinition.value, CompositeCustomValue):
-                attrs[redefinition.name] = _custom_attribute_value(redefinition.value)
-
+        part_def_name, attrs = self.simulation_instantiation()
         SimulationBridge.instantiate(runtime.channel, self.qualified_name, part_def_name, **attrs)
+
+    def simulation_instantiation(self) -> tuple[str, dict]:
+        """What the simulation needs to create this part's machine: the part
+        def's bare name and the configured values, `{attr_name:
+        (custom_class_name, values)}`. Shared by startup (`evaluate`) and live
+        additions (the SynchronizationManager), so both send the same shape.
+        Only composite values are included (see `evaluate`).
+        """
+        part_def_name = self.part_def_origin.qualified_name.split("::")[-1]
+        attrs = {
+            redefinition.name: _custom_attribute_value(redefinition.value)
+            for redefinition in self.attribute_redefinitions
+            if isinstance(redefinition.value, CompositeCustomValue)
+        }
+        return part_def_name, attrs
 
 class ExecutionContext(RuntimeStateElement, metaclass=MetaEClass):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.current_state_usage = None
-        self.current_snapshot = None
+        # The part instance a tranquility check is evaluating, set only for
+        # the duration of TranquilityHolder.is_tranquil().
+        self.current_part = None
 
-    def begin(self, state_usage: "ExecutableStateUsage", channel) -> None:
+    def begin(self, state_usage: "ExecutableStateUsage") -> None:
         self.current_state_usage = state_usage
-        self.current_snapshot = channel.latest_snapshot.read()
 
 class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
@@ -1074,6 +1213,17 @@ class SysmlRuntimeState(RuntimeStateElement, metaclass=MetaEClass):
 
     def add_part_instantiation(self, instantiation):
         self.lookup_table_part_instantiations.set_reference(instantiation.qualified_name, instantiation)
+
+    def remove_part_instantiation(self, qualified_name: str) -> None:
+        """Removes a running part's record (a live removal). Raises
+        LookupError if no part runs under `qualified_name`. Whatever still
+        points to it (e.g. a state usage's binding) is left as it is: a
+        dangling pointer is the language user's to avoid, and
+        ReferenceValue reports it where it is used."""
+        record = self.lookup_table_part_instantiations.get_reference(qualified_name)
+        if record is None:
+            raise LookupError(f"{qualified_name!r} is not a part usage of the running model.")
+        self.lookup_table_part_instantiations.records.remove(record)
 
 def _resolve_definition(tables, type_node):
     """Looks up the ElementDefinition registered under `type_node`'s qualified

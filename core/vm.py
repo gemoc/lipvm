@@ -40,6 +40,10 @@ class VirtualMachine:
         self._runtime = RuntimeState()
         self._operation = self.scenario.init(self._runtime)
 
+        # Lets language code ask the VM, through the runtime state, whether
+        # an update is pending; the bound method reads _pending_update live.
+        self._runtime.pending_update_check = self.has_pending_update
+
     def stop(self) -> None:
         self.running = False
 
@@ -136,3 +140,41 @@ class VirtualMachine:
             update.edit_script.apply()
         update.apply(self._runtime)
         self._pending_update = None
+
+    def has_pending_update(self) -> bool:
+
+        """
+        This method inform its caller on whether there is a pending update
+        to be applied by the VM
+        :return: True if there is pending update, False otherwise
+        """
+        return self._pending_update is not None
+
+    def submit(self, update_script: Update, option: ProgramUpdateOption) -> None:
+
+        """
+        Submit a code change (an Update) as pending update to be applied by the VM.
+
+        Compared to .update() method, this method only attach the script to the VM
+        without considering to stop or run. The expectation here is that the VM execution
+        is paced by a thread controlled in a simulation driver (Check main_lipvm_dtsimulation.py).
+
+        If there is already a pending update in the VM, the method will reject the latest update script.
+        As for the option, this is only fitting for HOTSWAP. Otherwise, the method will reject it.
+
+        :param update_script: The update script to be applied by the VM
+        :param option: ProgramUpdateOption variant
+        :return:
+        """
+
+        # Refuse before changing anything: the scenario and the pending
+        # update stay as they were.
+        if option != ProgramUpdateOption.HOTSWAP:
+            raise ValueError(f"submit() only takes HOTSWAP updates, got {option.value}; use update() for RESTART")
+        if self._pending_update is not None:
+            raise RuntimeError("An update is already pending; submit the next one once it has been applied")
+
+        if update_script.edit_script is not None:
+            update_script.edit_script.attach_to(self.scenario)
+
+        self._pending_update = update_script

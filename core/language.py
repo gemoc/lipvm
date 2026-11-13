@@ -33,9 +33,25 @@ class RuntimeStateElement(EObject, metaclass=MetaEClass):
         return None
 
 
+# A function answering whether the VM has a pending update, see
+# RuntimeState.pending_update_check.
+PendingUpdateCheck = EDataType('PendingUpdateCheck', eType=object)
+
+
 class RuntimeState(EObject, metaclass=MetaEClass):
 
     elements = EReference(eType=RuntimeStateElement, lower=0, upper=-1)
+    pending_update_check = EAttribute(eType=PendingUpdateCheck, lower=0, upper=1, transient=True)
+
+    def has_pending_update(self) -> bool:
+        """Whether the VM running this runtime state has an update pending,
+        answered live by the VM itself (one source of truth).
+
+        Raises RuntimeError if this runtime state wasn't created by a VM.
+        """
+        if self.pending_update_check is None:
+            raise RuntimeError("This runtime state isn't attached to a VM, so it can't tell whether an update is pending")
+        return self.pending_update_check()
 
     def __getattr__(self, attr_name: LiteralString) -> Any:
         for element in self.elements:
